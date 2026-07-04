@@ -1,0 +1,10 @@
+{
+  "feature_number": "001",
+  "slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "friendly_name": "Build a Kubernetes (k3s) cluster on Proxmox using OpenTofu +",
+  "mission": "research",
+  "source_description": "Research: Build a Kubernetes (k3s) cluster on Proxmox using OpenTofu + kube-vip + Proxmox CSI Plugin + Packer image pipeline",
+  "created_at": "2026-07-04T22:46:40.847987+00:00",
+  "target_branch": "main",
+  "vcs": "git"
+}

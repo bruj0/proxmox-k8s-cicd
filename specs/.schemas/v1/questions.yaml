@@ -1,0 +1,22 @@
+artifact_type: questions
+schema_version: v1
+fields:
+  - name: feature_slug
+    type: str
+    required: true
+  - name: question_count
+    type: int
+    required: true
+  - name: answered_count
+    type: int
+    required: true
+  - name: audit_mode
+    type: str
+    required: true
+    allowed_values:
+      - review
+      - import
+  - name: import_source
+    type: str
+    required: false
+    default: ""

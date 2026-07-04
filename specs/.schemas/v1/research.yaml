@@ -1,0 +1,9 @@
+artifact_type: research
+schema_version: v1
+fields:
+  - name: feature_slug
+    type: str
+    required: true
+  - name: last_updated
+    type: str
+    required: true

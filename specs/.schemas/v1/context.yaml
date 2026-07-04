@@ -1,0 +1,20 @@
+artifact_type: context
+schema_version: v1
+fields:
+  - name: context_name
+    type: str
+    required: true
+  - name: version
+    type: str
+    required: true
+    default: "1"
+  - name: subsystem
+    type: str
+    required: false
+    default: ""
+  - name: created
+    type: str
+    required: true
+  - name: updated
+    type: str
+    required: false

@@ -1,0 +1,19 @@
+artifact_type: decomposition
+schema_version: v1
+fields:
+  - name: feature_slug
+    type: str
+    required: true
+  - name: status
+    type: str
+    required: true
+    default: "draft"
+  - name: created
+    type: str
+    required: true
+  - name: misfits_count
+    type: int
+    required: false
+  - name: subsystems_count
+    type: int
+    required: false

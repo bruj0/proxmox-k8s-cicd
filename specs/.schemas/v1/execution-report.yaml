@@ -1,0 +1,126 @@
+artifact_type: execution-report
+schema_version: v1
+description: "Execution report with per-WP results, warnings, and next-steps guidance"
+
+fields:
+  - name: report_version
+    type: str
+    required: true
+    pattern: "^v\\d+$"
+    description: "Schema version"
+
+  - name: feature_slug
+    type: str
+    required: true
+    pattern: "^\\d{3}-.+$"
+    description: "Feature slug"
+
+  - name: execution_summary
+    type: object
+    required: true
+    description: "High-level execution statistics"
+    required_fields: [total_wps, succeeded, failed, skipped, total_elapsed_seconds]
+    properties:
+      total_wps:
+        type: int
+        required: true
+        minimum: 1
+        description: "Total number of WPs processed"
+      succeeded:
+        type: int
+        required: true
+        minimum: 0
+        description: "Number of WPs that completed successfully"
+      failed:
+        type: int
+        required: true
+        minimum: 0
+        description: "Number of WPs that failed"
+      skipped:
+        type: int
+        required: true
+        minimum: 0
+        description: "Number of WPs skipped due to stop-on-error"
+      total_elapsed_seconds:
+        type: float
+        required: true
+        minimum: 0
+        description: "Total execution time in seconds"
+
+  - name: work_package_results
+    type: list
+    required: true
+    description: "Per-WP execution results"
+    items:
+      type: object
+      required_fields: [wp_id, impl_status, review_status, elapsed_seconds]
+      properties:
+        wp_id:
+          type: str
+          required: true
+          pattern: "^WP\\d{2}$"
+        impl_status:
+          type: str
+          required: true
+          enum: [pass, fail, skipped]
+        review_status:
+          type: str
+          required: true
+          enum: [approved, changes_requested, skipped]
+        worktree_path:
+          type: str
+          required: false
+          description: "Path to WP worktree"
+        elapsed_seconds:
+          type: float
+          required: true
+          minimum: 0
+
+  - name: warnings
+    type: list
+    required: true
+    description: "Non-fatal anomalies detected during execution"
+    items:
+      type: object
+      required_fields: [category, message]
+      properties:
+        wp_id:
+          type: str
+          required: false
+          pattern: "^WP\\d{2}$"
+        category:
+          type: str
+          required: true
+          enum: [performance, state, retry, review_feedback]
+        message:
+          type: str
+          required: true
+
+  - name: uncaught_errors
+    type: list
+    required: true
+    description: "Errors from skill stderr not handled as structured validation errors"
+    items:
+      type: object
+      required_fields: [source, error]
+      properties:
+        wp_id:
+          type: str
+          required: false
+        source:
+          type: str
+          required: true
+          enum: [implement, review, orchestrator]
+        error:
+          type: str
+          required: true
+
+  - name: next_steps
+    type: str
+    required: true
+    description: "Human-readable guidance for what to do next"
+
+validation_rules:
+  - execution_summary totals must be consistent: total_wps == succeeded + failed + skipped
+  - work_package_results array length must match execution_summary.total_wps
+  - Each warning/uncaught_error with a wp_id must reference a WP from work_package_results

@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-04T22:55:00Z",
+  "topic": "Build a Kubernetes (k3s) cluster on a single Proxmox host using OpenTofu for provisioning, Packer for image baking, kube-vip for control-plane HA and LoadBalancer, and the sergelogvinov Proxmox CSI Plugin for persistent storage.",
+  "research_type": "integration",
+  "developer_objective": "implementation-details",
+  "starting_context": [
+    {
+      "type": "codebase",
+      "reference": "vendored/proxmox-csi-plugin (sergelogvinov/proxmox-csi-plugin, chart 0.5.9, appVersion v0.19.1, released 2026-06-25)",
+      "summary": "Reference CSI implementation, docs/install.md contains a ready-to-paste OpenTofu (bpg/proxmox) snippet for creating the CSI role, user, token and ACL. Requires SC++ Controller 'VirtIO SCSI single' on all nodes, topology labels (region=cluster-name, zone=pve-node-name), and a `csi-proxmox` namespace.",
+      "relationship": "informs"
+    },
+    {
+      "type": "codebase",
+      "reference": "vendored/Proxmox-Kubernetes-Engine (PKE)",
+      "summary": "PKE is the same author's larger project that already wires k3s + kube-vip + Proxmox CSI + Cilium via Cluster API. Demonstrates the target shape (Boot VM via k3sup, build VM template with image-builder which is Packer+Ansible, then declare workload clusters).",
+      "relationship": "informs"
+    },
+    {
+      "type": "constraint",
+      "reference": "docs.k3s.io/datastore/ha-embedded (High Availability Embedded etcd)",
+      "summary": "Embedded etcd requires 3+ server nodes and the `--cluster-init` flag on the first server plus a shared `--tls-san` matching the kube-vip VIP. SQLite cannot be used on multi-server clusters.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "kube-vip.io/docs/usage/k3s (Step 4: Install a HA K3s Cluster)",
+      "summary": "On k3s, kube-vip runs as a DaemonSet (not a static pod). When you want the kube-vip cloud-controller to manage LoadBalancer services you must pass `--disable servicelb` so k3s's built-in ServiceLB does not race with it. The `--tls-san` flag must equal the kube-vip VIP.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "document",
+      "reference": "registry.terraform.io/providers/bpg/proxmox/latest/docs",
+      "summary": "bpg/proxmox provider is the maintained Terraform/OpenTofu provider for Proxmox VE. Latest 0.111.1 (publishes through the registry). Supports API token auth (recommended), optional SSH, and resources for VMs, files, users, roles, ACLs.",
+      "relationship": "informs"
+    },
+    {
+      "type": "document",
+      "reference": "developer.hashicorp.com/packer/integrations/hashicorp/proxmox (v1.2.3)",
+      "summary": "HashiCorp's official Packer plugin (proxmox-iso and proxmox-clone builders) can build a VM template directly on Proxmox. For k3s nodes the image-builder project (used by PKE) is the de-facto community option because it ships pre-baked Ansible for common distros.",
+      "relationship": "informs"
+    }
+  ],
+  "tool_invocations": [
+    {
+      "tool_name": "spec-bridge-skill-tool research-bootstrap",
+      "query": "Build a Kubernetes (k3s) cluster on Proxmox using OpenTofu + kube-vip + Proxmox CSI Plugin + Packer",
+      "result_summary": "Created feature dir 001-build-a-kubernetes-k3s-cluster-on-proxmo"
+    },
+    {
+      "tool_name": "spec-bridge-skill-tool config",
+      "query": "load project settings",
+      "result_summary": "session_id 483cf4cb-6eca-4613-90a6-588ca40d8290, artifacts_dir=specs"
+    },
+    {
+      "tool_name": "fetch_webpage (kube-vip.io/docs/installation/static)",
+      "query": "kube-vip static pod manifest ARP vs BGP control plane",
+      "result_summary": "Got the manifest command pattern: kube-vip manifest pod --controlplane --arp --leaderElection --interface ens192 --address VIP | tee /etc/kubernetes/manifests/kube-vip.yaml"
+    },
+    {
+      "tool_name": "fetch_webpage (kube-vip.io/docs/usage/k3s)",
+      "query": "kube-vip k3s DaemonSet install steps",
+      "result_summary": "For k3s: kube-vip runs as DaemonSet dropped into /var/lib/rancher/k3s/server/manifests/. Cluster bootstrap sequence: 1) mkdir manifests dir 2) drop RBAC 3) generate DaemonSet manifest 4) install k3s with --tls-san=$VIP 5) optionally --disable servicelb if using kube-vip cloud-provider."
+    },
+    {
+      "tool_name": "fetch_webpage (docs.k3s.io/datastore/ha-embedded)",
+      "query": "k3s HA embedded etcd cluster-init tls-san",
+      "result_summary": "Three+ server nodes, first server uses --cluster-init + --tls-san=FIXED_IP, additional servers join with --server and matching --tls-san. SQLite cannot be used for multi-server."
+    },
+    {
+      "tool_name": "read_file (vendored/proxmox-csi-plugin/docs/install.md)",
+      "query": "CSI plugin Proxmox role, user, Terraform/OpenTofu snippets",
+      "result_summary": "bpg/proxmox snippet creates Kubernetes-CSI role with VM.Audit, VM.Config.Disk, Datastore.Allocate, Datastore.AllocateSpace, Datastore.Audit; user kubernetes-csi@pve with ACL; token kubernetes-csi@pve!csi. Secret becomes config.yaml storing clusters[].url, token_id, token_secret, region."
+    },
+    {
+      "tool_name": "read_file (vendored/proxmox-csi-plugin/Chart.yaml)",
+      "query": "current chart version",
+      "result_summary": "chart 0.5.9, appVersion v0.19.1"
+    },
+    {
+      "tool_name": "fetch_webpage (docs.k3s.io/datastore)",
+      "query": "k3s datastore HA external postgres etcd mysql",
+      "result_summary": "External datastores supported: etcd (3.5.21), MySQL 8.0/8.4, MariaDB 10.11/11.4, Postgres 15.12/16.7/17.3. Format is a lib/pq-style URL. Use environment variables not CLI flags for credentials."
+    }
+  ],
+  "sources": [
+    {
+      "url": "https://kube-vip.io/docs/usage/k3s/",
+      "title": "kube-vip :: K3s",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    },
+    {
+      "url": "https://kube-vip.io/docs/installation/static/",
+      "title": "kube-vip :: Static Pod installation",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    },
+    {
+      "url": "https://docs.k3s.io/datastore/ha-embedded",
+      "title": "K3s High Availability Embedded etcd",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    },
+    {
+      "url": "https://docs.k3s.io/datastore",
+      "title": "K3s Cluster Datastore",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    },
+    {
+      "url": "https://registry.terraform.io/providers/bpg/proxmox/latest/docs",
+      "title": "bpg/proxmox Terraform/OpenTofu Provider",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    },
+    {
+      "url": "https://developer.hashicorp.com/packer/integrations/hashicorp/proxmox",
+      "title": "HashiCorp Packer Proxmox builder",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    },
+    {
+      "url": "https://github.com/sergelogvinov/proxmox-csi-plugin/blob/main/docs/install.md",
+      "title": "Proxmox CSI Plugin installation (vendored, raw)",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    },
+    {
+      "url": "https://github.com/sergelogvinov/proxmox-cloud-controller-manager",
+      "title": "Proxmox Cloud Controller Manager (manages topology labels automatically)",
+      "type": "documentation",
+      "checked_at": "2026-07-04"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "option": "Telmate/terraform-provider-proxmox for OpenTofu",
+      "pros": ["Long-established provider", "Some niche resources bpg does not yet cover"],
+      "cons": ["Less actively maintained", "No TOTP/auth-ticket support", "Same compatibility with OpenTofu as bpg"],
+      "reason_rejected": "bpg/proxmox is the project recommended by the CSI plugin author's own docs and is the leading maintained fork; we keep Telmate only if a hard dependency on its features is required."
+    },
+    {
+      "option": "Talos Linux instead of k3s",
+      "pros": ["Immutable OS", "Native kube-vip + CSI patterns published by sergelogvinov (charts/proxmox-csi-plugin/values.talos.yaml)", "No SSH on the cluster"],
+      "cons": ["Steeper learning curve", "User explicitly asked for k3s"],
+      "reason_rejected": "Out of scope per the request; flagged as a future-fast-iterate variant."
+    },
+    {
+      "option": "External etcd instead of embedded etcd",
+      "pros": ["Decouples datastore lifecycle from k3s upgrades", "Re-use an existing etcd cluster"],
+      "cons": ["Adds 3 extra VMs/hosts to bootstrap", "Embedded etcd is now the recommended default per docs.k3s.io"],
+      "reason_rejected": "Embedded etcd is simpler for a single Proxmox host."
+    },
+    {
+      "option": "keepalived + HAProxy instead of kube-vip",
+      "pros": ["Battle-tested", "BGP outside the L2 segment works"],
+      "cons": ["Two processes to operate", "No LoadBalancer Service support without a CCM", "kube-vip is the upstream-recommended path for k3s+Proxmox"],
+      "reason_rejected": "kube-vip covers both control-plane HA and Service LoadBalancer in one binary and matches the user's stack."
+    },
+    {
+      "option": "BGP mode in kube-vip (vs ARP/L2)",
+      "pros": ["Multi-VLAN, no gratuitous ARP", "Scales beyond a single L2 domain"],
+      "cons": ["Requires a BGP-speaking router on the network", "More complex first-time setup"],
+      "reason_rejected": "Assume single L2 segment; ARP mode is the default and matches typical homelab. Document BGP as an escape hatch."
+    }
+  ],
+  "recommendation": "Adopt the PKE-style, fully API-driven pattern: build a hardened Ubuntu Proxmox template once with Packer (proxmox-iso), then have OpenTofu + bpg/proxmox clone it for the control-plane nodes. First control plane is bootstrapped with k3s --cluster-init --tls-san=<VIP>; the kube-vip DaemonSet manifest is auto-deployed via /var/lib/rancher/k3s/server/manifests so the VIP comes up as soon as the cluster is reachable. Subsequent servers join with the same --tls-san and the same kube-vip DaemonSet logic. Once the cluster is up, install the CSI plugin via Helm with the Proxmox credentials + region baked by OpenTofu.",
+  "rationale": "Starting context constrains us to: (a) a single Proxmox host, (b) k3s as the cluster manager, (c) kube-vip for HA, and (d) Proxmox CSI for storage. The CSI author's published OpenTofu snippet gives us the exact role/user/token/ACL resource set to wire into bpg/proxmox. The k3s docs require --tls-san=<VIP> on every server and --cluster-init on the first. The kube-vip docs require manifests dropped into /var/lib/rancher/k3s/server/manifests so the DaemonSet is auto-created. Layering OpenTofu → Packer template → bpg VM clones → cloud-init k3s install → kube-vip manifests → CSI Helm release is the shortest path that respects every constraint."
+}

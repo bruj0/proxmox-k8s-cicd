@@ -1,0 +1,130 @@
+artifact_type: research-log
+schema_version: v1
+fields:
+  - name: version
+    type: int
+    required: true
+  - name: feature_slug
+    type: str
+    required: true
+  - name: timestamp
+    type: str
+    required: true
+  - name: topic
+    type: str
+    required: true
+  - name: research_type
+    type: str
+    required: true
+    allowed_values:
+      - version
+      - best-practices
+      - comparison
+      - integration
+      - security
+      - performance
+      - api
+      - troubleshooting
+      - rfc
+      - adr
+      - exploratory
+  - name: developer_objective
+    type: str
+    required: true
+    allowed_values:
+      - decision
+      - understanding
+      - problem-solving
+      - validation
+      - implementation-details
+      - risk-assessment
+  - name: starting_context
+    type: list
+    required: true
+    min_items: 1
+    item_fields:
+      - name: type
+        type: str
+        required: true
+        allowed_values:
+          - codebase
+          - decision
+          - rfc
+          - adr
+          - spec
+          - document
+          - conversation
+          - constraint
+      - name: reference
+        type: str
+        required: true
+      - name: summary
+        type: str
+        required: true
+      - name: relationship
+        type: str
+        required: true
+        allowed_values:
+          - informs
+          - constrains
+          - contradicts
+          - extends
+          - implements
+  - name: tool_invocations
+    type: list
+    required: true
+    item_fields:
+      - name: tool_name
+        type: str
+        required: true
+      - name: query
+        type: str
+        required: true
+      - name: result_summary
+        type: str
+        required: true
+  - name: sources
+    type: list
+    required: true
+    min_items: 1
+    item_fields:
+      - name: url
+        type: str
+        required: true
+      - name: title
+        type: str
+        required: true
+      - name: type
+        type: str
+        required: true
+        allowed_values:
+          - documentation
+          - article
+          - code
+          - discussion
+          - official-release
+      - name: checked_at
+        type: str
+        required: true
+  - name: alternatives_considered
+    type: list
+    required: true
+    item_fields:
+      - name: option
+        type: str
+        required: true
+      - name: pros
+        type: list
+        required: false
+      - name: cons
+        type: list
+        required: false
+      - name: reason_rejected
+        type: str
+        required: false
+  - name: recommendation
+    type: str
+    required: true
+  - name: rationale
+    type: str
+    required: true

@@ -1,0 +1,20 @@
+artifact_type: plan
+schema_version: v1
+fields:
+  - name: feature_slug
+    type: str
+    required: true
+  - name: status
+    type: str
+    required: true
+  - name: created
+    type: str
+    required: true
+  - name: target_branch
+    type: str
+    required: false
+    default: ""
+  - name: vcs
+    type: str
+    required: false
+    default: ""

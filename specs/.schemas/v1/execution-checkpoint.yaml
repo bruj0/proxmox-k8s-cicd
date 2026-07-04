@@ -1,0 +1,76 @@
+artifact_type: execution-checkpoint
+schema_version: v1
+description: "Execution checkpoint for crash recovery and resume support"
+
+fields:
+  - name: checkpoint_version
+    type: str
+    required: true
+    pattern: "^v\\d+$"
+    description: "Schema version (e.g., v1)"
+
+  - name: feature_slug
+    type: str
+    required: true
+    pattern: "^\\d{3}-.+$"
+    description: "Feature slug this checkpoint belongs to"
+
+  - name: started_at
+    type: str
+    required: true
+    format: iso8601
+    description: "When orchestrator first ran (ISO 8601 UTC)"
+
+  - name: last_updated
+    type: str
+    required: true
+    format: iso8601
+    description: "When checkpoint was last written"
+
+  - name: work_packages
+    type: list
+    required: true
+    min_length: 1
+    description: "Per-WP status tracking"
+    items:
+      type: object
+      required_fields: [wp_id, status]
+      properties:
+        wp_id:
+          type: str
+          required: true
+          pattern: "^WP\\d{2}$"
+          description: "Work package ID (e.g., WP01)"
+        status:
+          type: str
+          required: true
+          enum: [pending, implementing, impl_done, reviewing, done, failed]
+          description: "Current status in execution lifecycle"
+        implementation_exit_code:
+          type: int
+          required: false
+          description: "Exit code from spec-bridge-skill-tool implement"
+        review_verdict:
+          type: str
+          required: false
+          enum: [approved, changes_requested]
+          description: "Verdict from spec-bridge-skill-tool review"
+        started_at:
+          type: str
+          required: false
+          format: iso8601
+          description: "When this WP execution started"
+        completed_at:
+          type: str
+          required: false
+          format: iso8601
+          description: "When this WP execution finished"
+
+validation_rules:
+  - checkpoint_version must match pattern ^v\d+$
+  - feature_slug must match pattern ^\d{3}-.+$
+  - started_at and last_updated must be valid ISO 8601 timestamps
+  - work_packages array must not be empty (at least one WP required)
+  - Each WP entry must have wp_id and status
+  - status must be one of the 6 enum values
+  - If status is done, implementation_exit_code should be 0 and review_verdict should be approved

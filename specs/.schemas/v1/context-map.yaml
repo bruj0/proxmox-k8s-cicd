@@ -1,0 +1,19 @@
+artifact_type: context-map
+schema_version: v1
+fields:
+  - name: version
+    type: str
+    required: true
+    default: "1"
+  - name: project_name
+    type: str
+    required: true
+  - name: created
+    type: str
+    required: true
+  - name: updated
+    type: str
+    required: false
+  - name: contexts_count
+    type: int
+    required: false

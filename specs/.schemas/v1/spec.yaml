@@ -1,0 +1,25 @@
+artifact_type: spec
+schema_version: v1
+fields:
+  - name: feature_slug
+    type: str
+    required: true
+  - name: status
+    type: str
+    required: true
+    allowed_values:
+      - draft
+      - planned
+      - planned_tasks
+      - planned_accepted
+      - implemented
+  - name: created
+    type: str
+    required: true
+  - name: input
+    type: str
+    required: false
+    default: ""
+  - name: misfits_count
+    type: int
+    required: false

@@ -1,0 +1,97 @@
+artifact_type: wp
+schema_version: v1
+fields:
+  - name: work_package_id
+    type: str
+    required: true
+  - name: title
+    type: str
+    required: true
+  - name: lane
+    type: str
+    required: true
+  - name: dependencies
+    type: list
+    required: false
+    default: []
+  - name: subtasks
+    type: list
+    required: false
+    default: []
+  - name: phase
+    type: str
+    required: false
+    default: ""
+  - name: assignee
+    type: str
+    required: false
+    default: ""
+  - name: agent
+    type: str
+    required: false
+    default: ""
+  - name: review_status
+    type: str
+    required: false
+    default: ""
+  - name: reviewed_by
+    type: str
+    required: false
+    default: ""
+  - name: shell_pid
+    type: str
+    required: false
+    default: ""
+  - name: base_branch
+    type: str
+    required: false
+    default: ""
+  - name: base_commit
+    type: str
+    required: false
+    default: ""
+  - name: created_at
+    type: str
+    required: false
+    default: ""
+  - name: history
+    type: list
+    required: false
+    default: []
+  - name: requirement_refs
+    type: list
+    required: false
+    default: []
+  - name: subsystem
+    type: str
+    required: false
+    default: ""
+  - name: misfits_addressed
+    type: list
+    required: false
+    default: []
+  - name: abstract_components
+    type: list
+    required: false
+    default: []
+  - name: tdd_red_clean
+    type: bool
+    required: false
+    default: false
+    description: >
+      Set to true by the agent only after verifying that all red-phase tests
+      fail because implementation logic is missing (AssertionError,
+      NotImplementedError, etc.) and NOT because of import errors,
+      missing modules, or syntax errors.  The implement skill validates
+      this field as a pre-condition for proceeding to for_review.
+  - name: build_validated
+    type: bool
+    required: false
+    default: false
+    description: >
+      Set to true by the implementing agent after running the language
+      type-checker (e.g. mypy --strict, tsc --noEmit, cargo check) and
+      confirming exit 0.  The implement skill validates this field as a
+      pre-condition for proceeding to for_review.  Language-agnostic:
+      any static type-checker that exits 0 on a clean build satisfies
+      this criterion.
