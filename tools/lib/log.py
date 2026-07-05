@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import uuid
@@ -123,3 +124,11 @@ class StructuredLogger:
 # Use logging only as a fallback sink for third-party libs; StructuredLogger
 # is the canonical channel for our own events.
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+def _one_line(text: str, *, limit: int = 240) -> str:
+    """Collapse a multi-line string to a single line for log readability."""
+    collapsed = re.sub(r"\s+", " ", text or "").strip()
+    if len(collapsed) > limit:
+        return collapsed[: limit - 1] + "…"
+    return collapsed

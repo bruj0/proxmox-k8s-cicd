@@ -145,8 +145,11 @@ class PveClient:
 
 
 def _one_line(text: str, *, limit: int = 240) -> str:
-    """Collapse a multi-line string to a single line for log readability."""
-    collapsed = re.sub(r"\s+", " ", text or "").strip()
-    if len(collapsed) > limit:
-        return collapsed[: limit - 1] + "…"
-    return collapsed
+    """Backwards-compat shim: collapse multi-line text for log readability.
+
+    Implementation now lives in :mod:`tools.lib.log` (single source of
+    truth). This thin wrapper exists so existing imports keep working
+    until the call sites are migrated.
+    """
+    from tools.lib.log import _one_line as _impl
+    return _impl(text, limit=limit)

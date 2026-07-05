@@ -14,6 +14,7 @@ TDD red-phase coverage of the three misfits this WP addresses:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -210,20 +211,87 @@ def test_secrets_never_logged_even_on_failure(
 def test_concurrent_run_is_blocked_by_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """M1 real concurrency: an OS-level fcntl.flock from another process
+    must block our acquire. We open the lockfile and hold LOCK_EX for the
+    duration of the test (released on fd.close()).
+    """
+    import fcntl
+
     bi, audit = _build(tmp_path, monkeypatch)
     bi.build_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pretend another process holds the lock.
+    # Hold the lock from a separate fd so our atomic acquire fails.
     lock_path = bi.build_dir / ".build.lock"
-    lock_path.write_text("9999")  # fake PID
+    holder_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(holder_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.write(holder_fd, b"9999\n")
+    try:
+        rc = bi.run()
+    finally:
+        fcntl.flock(holder_fd, fcntl.LOCK_UN)
+        os.close(holder_fd)
+        if lock_path.exists():
+            lock_path.unlink()
 
-    rc = bi.run()
     assert rc != 0
 
     parsed = [json.loads(line) for line in audit.read_text().strip().split("\n")]
     race_steps = [p for p in parsed if p.get("step") == "lock_held"]
     assert len(race_steps) == 1
     assert "resolution" in race_steps[0]
+
+
+def test_concurrent_acquire_is_atomic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Empirical M1 proof: in 8 concurrent acquire attempts, exactly
+    ONE returns True. (Subprocess-based so the fcntl fd is process-local.)
+    """
+    import multiprocessing as mp
+
+    bi, _ = _build(tmp_path, monkeypatch)
+    bi.build_dir.mkdir(parents=True, exist_ok=True)
+
+    barrier = mp.Barrier(8)
+
+    def worker(_idx: int, q: "mp.Queue[int]") -> None:
+        b = BuildImage(
+            talos_version=bi.talos_version,
+            pve_endpoint=bi.pve_endpoint,
+            pve_node=bi.pve_node,
+            pve_token_id=bi.pve_token_id,
+            pve_token_secret=bi.pve_token_secret,
+            build_dir=bi.build_dir,
+            versions_yaml=bi.versions_yaml,
+            logger=bi.logger,
+            verbose=False,
+            dry_run=False,
+        )
+        # Synchronise so all 8 workers enter _acquire_lock simultaneously.
+        # We must NOT release the lock; the winner holds it so the loser
+        # branches are forced to flock a held file and fail.
+        barrier.wait()
+        result = b._acquire_lock()
+        q.put(1 if result else 0)
+        # Intentionally leave _lock_fd open: it represents the live holding
+        # process. The test teardown unlinks the lock file.
+
+    q: "mp.Queue[int]" = mp.Queue()
+    procs = [mp.Process(target=worker, args=(i, q)) for i in range(8)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
+    acquired = sum(q.get_nowait() for _ in range(8))
+    # Cleanup: tear down the winner's fd by unlinking the file and
+    # best-effort ignoring lingering fds in worker processes.
+    lock_file = bi.build_dir / ".build.lock"
+    if lock_file.exists():
+        lock_file.unlink()
+    assert acquired == 1, (
+        f"M1 violated: expected exactly 1 winner among 8 concurrent acquires, "
+        f"got {acquired}. The lock is not exclusive."
+    )
 
 
 def test_lock_is_acquired_and_released(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -30,7 +30,7 @@ build-image:
 		echo "ERROR: set PVE_ENDPOINT, PVE_TOKEN_ID, PVE_TOKEN_SECRET in .env or env vars" >&2; \
 		exit 2; \
 	fi
-	@$(PYTHON) tools/build_image.py \
+	@$(PYTHON) -m tools.build_image \
 		--talos-version $(TALOS_VERSION) \
 		--pve-endpoint $$PVE_ENDPOINT \
 		--pve-node "$${PVE_NODE:-bigbertha}" \
