@@ -1,0 +1,34 @@
+# WP03 (apps cluster instance / SS2) — added 2026-07-05.
+# Inherits all provider and chart versions from WP02's lock file.
+# This file exists to document the apps-specific identity values that
+# MUST be globally unique across all cluster instances (M3 invariant).
+#
+# The seven-element uniqueness contract (see docs/cluster-instances.md):
+#   1. cluster_name
+#   2. vip
+#   3. vmid_start  (4-gate buffer away from any existing cluster's range)
+#   4. ip_start    (distinct /24 — cidrhost treats the IP portion as the network)
+#   5. pod_cidr
+#   6. svc_cidr
+#   7. cf_tunnel_name
+
+dependencies:
+  inherits_from: "../../modules/proxmox-k3s-cluster/versions.lock.yaml"
+
+cluster_specific:
+  cluster_name: "apps"
+  vip: "10.0.0.40"
+  vmid_start: 210
+  ip_start: "10.0.1.0/24"
+  pod_cidr: "10.44.0.0/16"
+  svc_cidr: "10.45.0.0/16"
+  cf_tunnel_name: "apps"
+
+collision_check:
+  cicd_vip: "10.0.0.30"            # apps MUST differ
+  cicd_vmid_start: 200             # apps MUST be >= 204 (4-gate buffer)
+  cicd_ip_start: "10.0.0.0/24"     # apps MUST be a different /24
+  cicd_pod_cidr: "10.42.0.0/16"    # apps MUST differ
+  cicd_svc_cidr: "10.43.0.0/16"    # apps MUST differ
+  cicd_cf_tunnel_name: "cicd"      # apps MUST differ
+  status: "VERIFIED — apps uses values disjoint from cicd on all 6 axes"

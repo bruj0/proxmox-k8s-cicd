@@ -1,0 +1,31 @@
+###############################################################################
+# terraform.tfvars.example — copy to terraform.tfvars and fill in.
+#
+# M7/NFR-007: secrets are NEVER hardcoded. They live in infra/tokens/output.json
+# (the SS0 contract) and are read via local_sensitive_file in main.tf.
+#
+# This file holds only the non-secret cluster topology inputs. The root reads
+# cluster_name, vip, vmid_start, ip_start, image_id, control_plane, workers,
+# pod_cidr, svc_cidr, cf_tunnel_name, cf_ingress_class, cf_publish_traefik_publicly
+# from here; cf_api_token and cf_account_id are pulled from output.json.
+#
+# Spec acceptance: tofu plan must succeed against a real PVE host.
+###############################################################################
+
+# Image VMID is sourced from build/image-id.txt (SS1 contract). Do not
+# override here — keep it as the single source of truth.
+# image_id = "900"
+
+# Cluster topology (defaults match spec):
+# control_plane.count = 1     # FR-030: must be 1 or 3
+# workers.count       = 1
+# vip                 = "10.0.0.30"
+# vmid_start          = 200
+# ip_start            = "10.0.0.201/24"
+
+# Cloudflare fallback (off by default — NFR-007).
+# Set to true ONLY if you want to publish Traefik on hostPorts AND install the
+# cloudflare-tunnel-ingress-controller Helm release.
+# cf_publish_traefik_publicly = false
+# cf_tunnel_name               = "cicd"
+# cf_ingress_class             = "cloudflare-tunnel"

@@ -1,0 +1,61 @@
+# versions.lock.yaml — per-WP compatibility matrix for modules/proxmox-k3s-cluster.
+#
+# Authoritative source for version pins in this module. Mirrors versions.tf.
+#
+# Source: context7-auto-research on 2026-07-05.
+dependencies:
+  - name: bpg/proxmox
+    version: ">= 0.111.1"
+    rationale: >
+      Spec T001-mandated minimum. The v0.111.1 release adds the
+      `operating_system.type` attribute required for the l26 OS hint on the
+      Talos clones, and fixes the `network_device.vlan_id` validation.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: hashicorp/helm
+    version: ">= 2.0.0"
+    rationale: >
+      The v2 line is required for the `helm_release.manifest` attribute used
+      for drift detection. The STRRL/cloudflare-tunnel-ingress-controller
+      chart exposes a manifest field that we want to surface.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: hashicorp/local
+    version: ">= 2.0.0"
+    rationale: >
+      The v2 line deprecates `local_file.sensitive_content` in favour of
+      `local_sensitive_file` (api_discovery from WP00). The SS2->SS3 contract
+      is `local_sensitive_file.cluster_output` with file_permission = "0600".
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: strrl/cloudflare-tunnel-ingress-controller
+    version: "0.0.23"
+    rationale: >
+      Pin to the spec-mandated Helm chart version. The chart lives at
+      oci://ghcr.io/strrl/charts. Helm release is gated on
+      var.cf_publish_traefik_publicly=true (off by default).
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: cilium
+    version: "1.16.x"
+    rationale: >
+      Matches versions.yaml['talos']['v1.10.0']['cilium_max']. WP04 will install
+      Cilium at this version; the Talos machineconfig that this module renders
+      must be compatible with Cilium 1.16.x (e.g. correct kubeProxyReplacement
+      knob, BPF host routing).
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: kube-vip
+    version: "1.2.1"
+    rationale: >
+      Pin to the spec T003-mandated kube-vip version. The Talos machineconfig
+      references kube-vip's static pod manifest shape that 1.2.1 emits.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: traefik
+    version: "v3.x (bundled with k3s)"
+    rationale: >
+      k3s bundles Traefik as a HelmChart; we don't pin a separate version, but
+      the chartconfig template we render must be compatible with the v3 line
+      (service.type=ClusterIP, ingressClass.name=traefik-internal).
+    source: "context7-auto-research on 2026-07-05"
