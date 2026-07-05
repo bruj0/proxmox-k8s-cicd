@@ -1,0 +1,98 @@
+# WP04 (Bootstrap Orchestration / SS3) — added 2026-07-05.
+# Mirrors modules/proxmox-k3s-cluster/versions.lock.yaml (T000 gate).
+#
+# Bootstrap phase: talosctl -> k3s -> helm (Cilium + kube-vip) -> kubeconfig merge.
+# All version pins are operator-overridable via env vars; this file is the
+# canonical default recorded by the implement agent.
+
+dependencies:
+  - name: talosctl
+    version: "v1.10.x"
+    rationale: >
+      Pin matches the Talos version baked into the image template
+      (versions.yaml['talos']['v1.10.0']). talosctl 1.10.x is API-compatible
+      with the v1alpha1 machineconfig emitted by modules/proxmox-k3s-cluster.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: k3s
+    version: "v1.34.x"
+    rationale: >
+      Spec-mandated k3s minor version. k3s 1.34 bundles Traefik v3.x as a
+      manifest; we run with --disable=traefik and install Traefik as a
+      standalone Helm release (handled by SS3's helm phase).
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: cilium
+    version: "1.16.x"
+    rationale: >
+      Matches versions.yaml['talos']['v1.10.0']['cilium_max']. Cilium 1.16
+      supports kube-proxy replacement + Gateway API + eBPF host routing
+      against the BigBertha kernel 7.0.6-2-pve.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: kube-vip
+    version: "1.2.1"
+    rationale: >
+      Spec-mandated kube-vip version. Talos machineconfig references
+      kube-vip's static pod manifest shape that 1.2.1 emits.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: python
+    version: ">= 3.11"
+    rationale: "Project-wide pinned_toolchain.python floor."
+
+  - name: helm
+    version: ">= 3.13"
+    rationale: >
+      Required for --wait flag semantics on `helm upgrade --install`.
+      3.13.x is the latest stable line as of 2026-07.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: kubectl
+    version: "matches k3s minor (1.34)"
+    rationale: "Version skew policy requires kubectl to match the apiserver minor."
+
+cross_check:
+  talos_k3s_shim: "compatible"
+  cilium_pve_kernel: "compatible (7.0.6-2-pve has all eBPF features)"
+  k3s_traefik_bundled: "compatible (v3.x supports IngressClass + ClusterIP)"
+  kubevip_cilium: "compatible (kube-vip runs in host network; Cilium runs in pod network)"
+
+secrets_redaction:
+  scrub_pattern: "(?i)(token|secret|password|ssh_key|sshkey)"
+  log_keys_never_logged: ["cf_api_token", "proxmox_token_secret", "ssh_private_key"]
+  enforced_by: "tools/lib/log.py:StructuredLogger._scrub"
+# ---- WP05 append (2026-07-05) ----
+additional_dependencies:
+  - name: sergelogvinov/proxmox-cloud-controller-manager
+    version: "0.14.0"
+    rationale: "Pinned by spec. Provides providerID + topology.kubernetes.io labels so nodes get region/zone."
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: sergelogvinov/proxmox-csi-plugin
+    version: "chart 0.5.9 (app v0.19.1)"
+    rationale: "Pinned by spec. v0.5.9 chart supports PVE 9.x and lvm-thin on data1."
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: strrl/cloudflare-tunnel-ingress-controller
+    version: "0.0.23"
+    rationale: "Pinned by spec. v0.0.23 is the only stable on the strrl chart repo as of 2026-07."
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: cert-manager
+    version: "v1.16.x"
+    rationale: "Pinned by spec. v1.16.x supports k8s 1.34 (in-cluster CA only, NO ACME)."
+    source: "context7-auto-research on 2026-07-05"
+
+cross_check:
+  proxmox_ccm_ve_api: "compatible (v0.14.0 supports PVE 9.x)"
+  proxmox_csi_lvm: "compatible (lvm-thin on data1 supported)"
+  strrl_cf_api: "compatible (Cloudflare scoped token matches API endpoint)"
+  cert_manager_k8s: "compatible (v1.16.x supports k8s 1.34)"
+
+verifier:
+  no_new_host_ports:
+    phase: "host_ports"
+    baseline_file: "clusters/<name>/host_ports_baseline.txt"
+    transport: "ssh -p 6022 root@10.0.0.1 nft list chain ip nat prerouting"
+    raising: "HostPortsAddedError -> BootstrapError"
