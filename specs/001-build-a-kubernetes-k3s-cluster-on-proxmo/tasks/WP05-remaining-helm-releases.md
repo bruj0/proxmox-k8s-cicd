@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP05"
 title: "Remaining Helm Releases + kubeconfig Merge"
-lane: "for_review"
+lane: "doing"
 dependencies:
   - WP04
 subsystem: "SS3 (Bootstrap Orchestration + Agent Skill)"
@@ -13,6 +13,7 @@ abstract_components:
   - tools/bootstrap_cluster.py (extended)
   - clusters/cicd/manifests/ (any pre-rendered Helm values)
 agent: "spec-bridge-implement"
+reviewed_by: "spec-bridge-review"
 build_validated: true
 tdd_red_clean: true
 history:
@@ -24,6 +25,10 @@ history:
     lane: for_review
     agent: spec-bridge-implement
     action: implementation complete -- ready for review
+  - timestamp: "2026-07-06T03:45:00+00:00"
+    lane: doing
+    agent: spec-bridge-review
+    action: review started
 ---
 
 # WP05 — Remaining Helm Releases + kubeconfig Merge
