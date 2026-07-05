@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP06"
 title: "Cross-Cluster Services + Apps Bootstrap"
-lane: "doing"
+lane: "for_review"
 dependencies:
   - WP03
   - WP05
@@ -20,6 +20,10 @@ history:
     lane: doing
     agent: spec-bridge-implement
     action: started implementation
+  - timestamp: "2026-07-05T14:41:25+00:00"
+    lane: for_review
+    agent: spec-bridge-implement
+    action: implementation complete -- ready for review
 ---
 
 # WP06 — Cross-Cluster Services + Apps Bootstrap
@@ -224,3 +228,30 @@ Update `docs/architecture.md` (cross-link from spec.md, plan.md, research.md) to
 ```bash
 python tools/bootstrap_cluster.py --cluster apps --phase all
 ```
+
+---
+
+## Implementation Summary
+
+**Worktree**: `.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP06` on branch `001-build-a-kubernetes-k3s-cluster-on-proxmo-WP06`
+
+WP06 wires the apps cluster to the cicd cluster via four ExternalName Services rendered as a kustomization, applied by a new bootstrap phase. TDD: red phase produced 5 logic failures on the bootstrap_cluster.py side (the manifest YAML tests passed because the YAML was authored first). After implementing _run_externalname + extending PHASES to include 'externalname', all 7 new tests pass and the full suite rises to 43 (was 36). The externalname phase is a no-op for the cicd cluster (it logs the skip with reason 'only the apps cluster owns the cross-cluster wiring') and a no-op for the apps cluster when the kustomization directory has not yet been emitted by `tofu apply` (it warns + records phases_done so the next run is idempotent). The phase invokes `kubectl --kubeconfig <cluster_dir>/kubeconfig apply -k <cluster_dir>/manifests/cicd-system/`. Misconfigurations or non-zero exits surface as BootstrapError(phase='externalname'). Existing test_list_phases_returns_all_five was renamed to test_list_phases_returns_all_six (kept the rename minimal). modules/CONTEXT.md unchanged -- the SS3 lib vocabulary already covers what the new phase touches.
+
+### Files created
+
+| File | Description |
+|------|-------------|
+| `clusters/apps/manifests/cicd-system/externalname.yaml` | WP06 T001: ExternalName Services for gitlab, registry, minio, minio-console in cicd-system namespace. Each Service CNAMEs to <name>.intranet which PowerDNS at 10.0.0.3 resolves to the cicd VIP 10.0.0.30 (FR-034). M3 misfit: apps workload reaches cicd services without apps knowing any cicd IP/port details. |
+| `clusters/apps/manifests/cicd-system/kustomization.yaml` | WP06 T002: kustomize v1beta1 manifest that bundles externalname.yaml under the cicd-system namespace. Allows idempotent `kubectl apply -k`. |
+| `tools/bootstrap_cluster.py` | WP06 T003: extended PHASES from 5 to 6 entries (added 'externalname'), added _run_externalname(state, cluster_dir, topo) which is a no-op for non-apps clusters and applies the kustomization for apps via `kubectl apply -k`. Errors raise BootstrapError(phase='externalname'). Module docstring updated to reflect the 6-phase layout. |
+| `tools/tests/test_cross_cluster.py` | WP06 acceptance tests (7): externalname.yaml renders exactly four ExternalName Services, kustomization.yaml references externalname.yaml, list_phases() includes 'externalname', apps cluster applies the kustomization via subprocess, cicd cluster skips the phase, non-zero kubectl exit surfaces as BootstrapError, missing manifest directory is a no-op. Renamed test_list_phases_returns_all_five -> test_list_phases_returns_all_six in tools/tests/test_bootstrap_cluster.py. |
+| `clusters/apps/versions.lock.yaml` | WP06 T000: appended cross_cluster_dependencies block (kubernetes-external-name, kustomize, kubectl) and cross_check block (externalname_coredns compatible, kustomize_manifests v1beta1, nameservers_upstream 10.0.0.3 per FR-034). |
+| `docs/architecture.md` | WP06 T007: new architecture overview. Subsystem boundary table, cross-system contracts (SS1->SS2 via build/image-id.txt, SS2->SS3 via clusters/<name>/output.json + manifests/), and a Mermaid diagram of the cross-cluster DNS resolution flow (apps Pod -> apps CoreDNS -> PowerDNS 10.0.0.3 -> cicd VIP 10.0.0.30). |
+
+### Test results
+
+43/43 passing -- `cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP06 && python -m pytest tools/tests/ -q`
+
+### Validator
+
+0/0 checks passed -- `spec-bridge-skill-tool implement WP06 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo`
