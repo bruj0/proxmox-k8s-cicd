@@ -83,9 +83,9 @@ def _write_cluster(tmp_path: Path) -> Path:
     return cluster
 
 
-def test_list_phases_returns_all_four() -> None:
-    """Acceptance: phases enum is [talos, k3s, helm, kubeconfig]."""
-    assert list_phases() == ["talos", "k3s", "helm", "kubeconfig"]
+def test_list_phases_returns_all_five() -> None:
+    """Acceptance: phases enum is [talos, k3s, helm, kubeconfig, host_ports]."""
+    assert list_phases() == ["talos", "k3s", "helm", "kubeconfig", "host_ports"]
 
 
 def test_bootstrap_missing_output_json_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,15 +120,22 @@ def test_bootstrap_phase_filter_skips_later_phases(
 def test_bootstrap_full_happy_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Acceptance: running all four phases in order completes without raising.
+    """Acceptance: running all phases in order completes without raising.
 
     Exercises the canonical operator flow:
-      talos -> k3s -> helm -> kubeconfig
+      talos -> k3s -> helm -> kubeconfig (host_ports skipped because the
+      baseline file does not exist in the temp dir).
     Without this test, a structural bug (e.g. helm phase referencing a
     kubeconfig file that the kubeconfig phase hasn't written yet) could
     pass every other test and still break in production.
     """
     cluster = _write_cluster(tmp_path)
+
+    # Stub required secrets so _load_cluster_secrets() doesn't raise.
+    monkeypatch.setenv("PROXMOX_TOKEN_ID", "fake-id")
+    monkeypatch.setenv("PROXMOX_TOKEN_SECRET", "fake-secret")
+    monkeypatch.setenv("CF_API_TOKEN", "fake-cf")
+    monkeypatch.setenv("CF_ACCOUNT_ID", "fake-account")
 
     calls: list[tuple[str, ...]] = []
 
@@ -141,9 +148,12 @@ def test_bootstrap_full_happy_path(
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    # Skip the host_ports phase explicitly so the test does not need a
+    # baseline file. WP05 tests cover that phase separately.
     bootstrap(
         cluster_name="cicd",
         repo_root=cluster.parent.parent,
+        phases=("talos", "k3s", "helm", "kubeconfig"),
     )
     # Every phase must have been invoked exactly once on the first run.
     cmds = [" ".join(c) for c in calls]
