@@ -29,6 +29,10 @@ history:
     lane: doing
     agent: spec-bridge-review
     action: review started
+  - timestamp: "2026-07-05T14:49:31+00:00"
+    lane: done
+    agent: spec-bridge-review
+    action: review approved -- 1 major + 1 minor issue fixed in commit e4aed7b
 ---
 
 # WP06 — Cross-Cluster Services + Apps Bootstrap
@@ -260,3 +264,57 @@ WP06 wires the apps cluster to the cicd cluster via four ExternalName Services r
 ### Validator
 
 0/0 checks passed -- `spec-bridge-skill-tool implement WP06 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo`
+
+---
+
+## Review Summary (v1)
+status: approved
+
+WP06 adds four ExternalName Services in clusters/apps/manifests/cicd-system/ (gitlab, registry, minio, minio-console) plus a new externalname phase in bootstrap_cluster.py that applies the kustomization only when --cluster apps. Round 1 review found two issues, both fixed in commit e4aed7b. (1) The phase marked itself done in the 'manifest missing' branch, which would silently leave the apps cluster without the ExternalName Services after the operator ran `tofu apply` (the next bootstrap run would skip the phase because state.json would already say 'done'). Fixed by removing the phases_done.add() in that branch; the regression test now asserts the phase is NOT recorded in bootstrap_state.json when the manifest directory is absent. (2) The module docstring entry-gate example still listed only 4 phases (pre-WP05/06) and didn't show the --cluster apps invocation; refreshed to show both cluster invocations and the canonical 6-phase list. Also picked up the user's cosmetic edit removing parentheses around '(apps only)' in the Mermaid diagram node label. WP07 depends on this WP; downstream impact is limited because (a) the fixes are local to bootstrap_cluster.py + the new test and (b) the user has not yet merged WP06 to main, so WP07's eventual dependency-merge of WP06 will pick up the corrected code directly.
+
+| Criterion | Verdict |
+|-----------|---------|
+| [ ] `kubectl --context apps get svc -n cicd-system` shows 4 ExternalName Services | ⚠️ -- covered at the manifest level by test_externalname_manifest_has_four_services asserting externalname.yaml renders exactly 4 ExternalName Services in cicd-system (gitlab, registry, minio, minio-console). Live `kubectl get svc -n cicd-system` deferred to post-merge acceptance run, same pattern as WP04/05. |
+| [ ] `kubectl --context apps exec <test-pod> -- nslookup gitlab.intranet 10.0.0.3` returns 10.0.0.30 | ❌ -- no integration test exists; live-cluster acceptance only. Deferred to post-merge. |
+| [ ] `kubectl --context apps exec <test-pod> -- curl -sf http://gitlab.cicd-system.svc.cluster.local` returns 200/302 within 5 s | ❌ -- no integration test exists; live-cluster acceptance only. Deferred to post-merge. |
+| [ ] `kubectl --context apps delete namespace cicd-system` removes the 4 Services cleanly | ❌ -- no integration test exists; live-cluster acceptance only. Deferred to post-merge. |
+| [ ] apps CoreDNS upstream includes `10.0.0.3` | ❌ -- this is an SS2/SS3 boundary concern (host /etc/resolv.conf inheritance), not directly testable by SS3 unit tests. Documented in docs/architecture.md and clusters/apps/versions.lock.yaml. Live verification deferred to post-merge. |
+| [ ] `python tools/bootstrap_cluster.py --cluster apps --phase all` brings up the apps cluster end-to-end (k3s, all Helm releases, ExternalName manifest applied) | ⚠️ -- covered at the dispatch level by test_externalname_phase_apps_cluster_applies_kustomization which exercises the externalname phase end-to-end against a stubbed subprocess. End-to-end run against a real apps cluster deferred to post-merge acceptance. |
+| [ ] `docs/architecture.md` is updated with a cross-cluster wiring section | ✅ -- docs/architecture.md created with Subsystem boundary table, cross-system contracts (SS1->SS2->SS3), and a Mermaid diagram of the cross-cluster DNS resolution flow (apps Pod -> apps CoreDNS -> PowerDNS 10.0.0.3 -> cicd VIP 10.0.0.30). |
+| Misfit Resolution: each misfit in misfits_addressed has a passing test | ✅ -- M3 (apps cluster does not collide with cicd) -- covered by clusters/apps/tests/main.tftest.hcl (WP03) for the tofu-level collision check on VMIDs/VIPs/CIDRs, and by test_externalname_phase_skips_for_cicd_cluster (WP06) for the bootstrap-level isolation: the externalname phase does not run on the cicd cluster. |
+| Subsystem Boundary Respect: no undeclared cross-subsystem coupling | ✅ -- WP06 reads from clusters/apps/manifests/cicd-system/ (SS2 output) via the documented SS2->SS3 manifests contract. It does not import from SS1 or SS0 directly. The new phase only adds a kubectl subprocess call. |
+| Contract Compliance: implementation matches plan.md inter-system contracts | ✅ -- matches the documented SS2->SS3 (manifests) contract: clusters/<name>/manifests/ contains pre-rendered Kubernetes manifests that SS3 applies via kubectl apply -k after the corresponding phase. _run_externalname() consumes clusters/<name>/manifests/cicd-system/ and applies the kustomization. |
+| No New Misfits: no new failure modes introduced without documenting them | ✅ -- no new failure modes. The 'manifest missing' branch is a known idem-potency contract for first-run, now (after Issue 1 fix) correctly not recorded in phases_done. |
+| Build Health -- language type-checker exits 0 | ✅ -- mypy --strict --explicit-package-bases -p tools: Success: no issues found in 22 source files. |
+
+### Issues
+
+**Issue 1 -- Major: _run_externalname marks the phase as done when the kustomization directory is missing**
+
+In _run_externalname, the 'manifest missing' branch calls state.phases_done.add('externalname') and then returns. This is the wrong contract: the phase has done no work (no kubectl invocation), yet the next bootstrap run will skip the phase via state.phases_done check. An operator who runs bootstrap on apps before `tofu apply` has emitted clusters/apps/manifests/cicd-system/ sees the warning and proceeds. They then run `tofu apply`, then re-run bootstrap. The externalname phase is skipped because state.json already records it as done, and the apps cluster ends up without the cross-cluster ExternalName Services. The comment in the source ('Record as done so the next run doesn't re-warn; idempotent first-run contract') was incorrect: the right contract is 'if you have not applied the manifest, do not mark yourself done'.
+
+Suggested fix:
+
+```
+Removed the state.phases_done.add('externalname') call from the missing-manifest branch. The phase now returns without recording itself in phases_done, so the next bootstrap run will retry. Extended test_externalname_phase_skips_when_manifest_missing to read clusters/apps/bootstrap_state.json after the bootstrap run and assert 'externalname' is not in phases_done.
+```
+
+Misfits: M4 | Subtasks: WP07 | Files: tools/bootstrap_cluster.py, tools/tests/test_cross_cluster.py
+
+**Issue 2 -- Minor: bootstrap_cluster.py module docstring entry-gate example lists only 4 phases and omits the --cluster apps invocation**
+
+After WP05 added the host_ports phase and WP06 added the externalname phase, the entry-gate example in the module docstring still shows only 4 phases (talos,k3s,helm,kubeconfig) and only the cicd invocation. The example is misleading to a reader landing on the file.
+
+Suggested fix:
+
+```
+Refreshed the entry-gate block to show both cluster invocations and the canonical 6-phase list.
+```
+
+Files: tools/bootstrap_cluster.py
+
+### Dependency Notes
+
+WP07 depends on WP06. The fixes for Issues 1 and 2 are local to tools/bootstrap_cluster.py + tools/tests/test_cross_cluster.py. WP07 has not yet implemented (its branch has not been created) so it will pick up the corrected code via the implement-time dependency-merge of WP06.
+
+WP06 approved after two issues (1 major, 1 minor) both fixed in commit e4aed7b; mypy/pytest/ruff all green; live-cluster smoke tests deferred to post-merge acceptance run as in WP04/05.
