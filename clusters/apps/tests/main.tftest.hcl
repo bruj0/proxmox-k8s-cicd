@@ -3,12 +3,14 @@
 #
 # M3 (proven across instances): a second instantiation of the cluster module
 # uses non-overlapping VIP, VMIDs, IPs, and pod/svc CIDRs. This suite asserts:
-#   - apps uses VMIDs 210,211 (not 200,201 from cicd).
+#   - apps uses VMIDs 210..211 (not 200..201 from cicd).
 #   - apps uses VIP 10.0.0.40 (not 10.0.0.30 from cicd).
 #   - apps uses pod_cidr 10.44.0.0/16 and svc_cidr 10.45.0.0/16 (not cicd's
 #     10.42/10.43).
-#   - Setting vmid_start=200 for apps collides with cicd's range and the
-#     precondition vmid_overlap fires.
+#
+# Note: the negative case (apps.vmid_start=200 collides with cicd) is covered
+# at the module level by modules/proxmox-k3s-cluster/tests/main.tftest.hcl via
+# expect_failures on terraform_data.vmid_overlap.
 #
 # Run from inside clusters/apps:
 #   tofu init -backend=false && tofu test
@@ -115,45 +117,28 @@ run "apps_cluster_name_is_apps" {
 
 # ---------------------------------------------------------------------------
 # M3 overlap guard: cicd uses VMIDs 200..201; apps must use a disjoint range.
-# This test simulates cicd already provisioned on the host (vm_id=200,201 in
-# the live PVE) and asserts apps still resolves cleanly because apps uses
-# vmid_start=210 (4-gate buffered away from cicd).
+# This run simulates cicd already provisioned on the host (vm_ids 200,201 in
+# the live PVE) and asserts that apps still resolves cleanly because apps
+# uses vmid_start=210 -- a 4-gate buffer away from cicd.
 #
-# The negative case (apps.vmid_start=200 collides) is covered by the module's
-# own tests/main.tftest.hcl which exercises terraform_data.vmid_overlap with
-# expect_failures on a mocked proxmox_virtual_environment_vms.
+# Note: the cluster root does NOT have direct access to the module's
+# data.proxmox_virtual_environment_vms.existing, so we cannot use
+# override_data on it from this test scope. We rely on the module's own
+# tests/main.tftest.hcl for the negative case (apps.vmid_start=200 collides
+# with cicd -- covered there with expect_failures on terraform_data.vmid_overlap).
 # ---------------------------------------------------------------------------
 
 run "apps_vmid_range_is_disjoint_from_cicd" {
   command = plan
 
-  # Pretend cicd AND apps are already on the host. Override the module to
-  # produce nodes at VMIDs 210, 211 only (the canonical apps range), so we can
-  # assert disjointness purely via outputs.
-  override_module {
-    target = module.apps
-    outputs = {
-      cluster_name        = "apps"
-      vip                 = "10.0.0.40"
-      vnet_bridge         = "vnet0"
-      control_plane_count = 1
-      worker_count        = 1
-      talos_dir           = "clusters/apps/talos"
-      pod_cidr            = "10.44.0.0/16"
-      svc_cidr            = "10.45.0.0/16"
-      nodes = [
-        { role = "control_plane", name = "apps-cp-1", vmid = 210, ip = "10.0.1.0", mac = "", talos_hostname = "apps-cp-1" },
-        { role = "worker",        name = "apps-w-1",  vmid = 211, ip = "10.0.1.1", mac = "", talos_hostname = "apps-w-1" },
-      ]
-      helm_releases = ["cilium", "kube-vip", "traefik"]
-    }
-  }
-
   assert {
-    condition     = length([for n in module.apps.nodes : n if n.vmid == 210 || n.vmid == 211]) == 2
-    error_message = "apps must place both nodes at VMIDs 210..211."
+    # The cluster root hard-codes vmid_start=210; this assertion is the
+    # M3 invariant in production code.
+    condition     = length([for n in module.apps.nodes : n if n.vmid >= 210 && n.vmid <= 211]) == 2
+    error_message = "apps must place both nodes at VMIDs 210..211 (cicd is 200..201; M3 requires disjointness)."
   }
   assert {
+    # Hard negation: VMIDs must NOT include any value from cicd's range.
     condition     = !contains([for n in module.apps.nodes : n.vmid], 200) && !contains([for n in module.apps.nodes : n.vmid], 201)
     error_message = "M3 violated: apps has VMID in cicd's 200..201 range."
   }
