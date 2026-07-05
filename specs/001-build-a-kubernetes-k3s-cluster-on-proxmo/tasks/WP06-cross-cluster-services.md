@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP06"
 title: "Cross-Cluster Services + Apps Bootstrap"
-lane: "planned"
+lane: "doing"
 dependencies:
   - WP03
   - WP05
@@ -12,8 +12,12 @@ abstract_components:
   - clusters/apps/manifests/cicd-system/externalname.yaml
   - clusters/apps/manifests/cicd-system/kustomization.yaml
   - tools/bootstrap_cluster.py (extended --cluster apps branch)
-agent: ""
-history: []
+agent: "spec-bridge-implement"
+history:
+  - timestamp: "2026-07-05T14:32:38+00:00"
+    lane: doing
+    agent: spec-bridge-implement
+    action: started implementation
 ---
 
 # WP06 — Cross-Cluster Services + Apps Bootstrap
