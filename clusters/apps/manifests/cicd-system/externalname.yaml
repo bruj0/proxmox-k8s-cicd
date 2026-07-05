@@ -1,0 +1,59 @@
+# ExternalName Services in the apps cluster pointing at cicd cluster hostnames.
+# Resolution flow: apps CoreDNS -> ExternalName (gitlab.intranet) -> PowerDNS (10.0.0.3) -> cicd VIP 10.0.0.30.
+# These Services let workloads on the apps cluster reach the cicd cluster's
+# primary services (GitLab, registry, MinIO) by short cluster-local DNS name
+# without exposing the apps cluster to any new cluster-wide coupling.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab
+  namespace: cicd-system
+spec:
+  type: ExternalName
+  externalName: gitlab.intranet
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: ssh
+      port: 22
+      targetPort: 22
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: cicd-system
+spec:
+  type: ExternalName
+  externalName: registry.intranet
+  ports:
+    - name: https
+      port: 443
+      targetPort: 443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: cicd-system
+spec:
+  type: ExternalName
+  externalName: minio.intranet
+  ports:
+    - name: https
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  namespace: cicd-system
+spec:
+  type: ExternalName
+  externalName: minio-console.intranet
+  ports:
+    - name: https
+      port: 9001
+      targetPort: 9001

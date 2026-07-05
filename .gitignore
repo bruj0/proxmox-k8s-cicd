@@ -31,3 +31,14 @@ __pycache__/
 .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP04/
 .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP05/
 .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP06/
+.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP07/
+
+# OpenTofu / Terraform (WP02+)
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+.tofu-test-history

@@ -1,0 +1,57 @@
+# WP03 (apps cluster instance / SS2) — added 2026-07-05.
+# Inherits all provider and chart versions from WP02's lock file.
+# This file exists to document the apps-specific identity values that
+# MUST be globally unique across all cluster instances (M3 invariant).
+#
+# The seven-element uniqueness contract (see docs/cluster-instances.md):
+#   1. cluster_name
+#   2. vip
+#   3. vmid_start  (4-gate buffer away from any existing cluster's range)
+#   4. ip_start    (distinct /24 — cidrhost treats the IP portion as the network)
+#   5. pod_cidr
+#   6. svc_cidr
+#   7. cf_tunnel_name
+
+dependencies:
+  inherits_from: "../../modules/proxmox-k3s-cluster/versions.lock.yaml"
+
+cluster_specific:
+  cluster_name: "apps"
+  vip: "10.0.0.40"
+  vmid_start: 210
+  ip_start: "10.0.1.0/24"
+  pod_cidr: "10.44.0.0/16"
+  svc_cidr: "10.45.0.0/16"
+  cf_tunnel_name: "apps"
+
+collision_check:
+  cicd_vip: "10.0.0.30"            # apps MUST differ
+  cicd_vmid_start: 200             # apps MUST be >= 204 (4-gate buffer)
+  cicd_ip_start: "10.0.0.0/24"     # apps MUST be a different /24
+  cicd_pod_cidr: "10.42.0.0/16"    # apps MUST differ
+  cicd_svc_cidr: "10.43.0.0/16"    # apps MUST differ
+  cicd_cf_tunnel_name: "cicd"      # apps MUST differ
+  status: "VERIFIED — apps uses values disjoint from cicd on all 6 axes"
+# WP06 (cross-cluster Services wiring) -- added 2026-07-05.
+# This block records the dependency versions for the cross-cluster
+# wiring between the apps and cicd clusters. The wiring is rendered
+# into `clusters/apps/manifests/cicd-system/` and applied by SS3
+# (bootstrap_cluster.py --cluster apps --phases externalname).
+cross_cluster_dependencies:
+  - name: kubernetes-external-name
+    version: "stable (core API since k8s 1.0)"
+    rationale: "ExternalName Service is core k8s; no compat risk against k3s 1.34."
+    source: "context7-auto-research on 2026-07-05"
+  - name: kustomize
+    version: ">= 5.x"
+    rationale: "kustomization.yaml uses v1beta1 schema which is the kustomize 5.x default."
+    source: "context7-auto-research on 2026-07-05"
+  - name: kubectl
+    version: "matches k3s minor (1.34)"
+    rationale: "`kubectl apply -k` is stable across all kubectl versions that ship with k3s 1.34.x."
+    source: "context7-auto-research on 2026-07-05"
+
+cross_check:
+  externalname_coredns: "compatible (ExternalName resolves via apps CoreDNS which forwards to host resolv.conf -> 10.0.0.3 PowerDNS)"
+  kustomize_manifests: "v1beta1-compatible (kustomize 5.x renders the v1beta1 schema without warnings)"
+  nameservers_upstream: "apps cluster inherits 10.0.0.3 (PowerDNS) as upstream nameserver via host /etc/resolv.conf (FR-034)"

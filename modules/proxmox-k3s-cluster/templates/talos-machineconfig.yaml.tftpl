@@ -1,0 +1,52 @@
+###############################################################################
+# Talos machineconfig template.
+#
+# One config per VM. SS3 (bootstrap_cluster.py) reads the rendered file and
+# applies it via `talosctl apply-config --insecure --nodes <ip>`.
+#
+# This template is intentionally minimal — Cilium (WP04) and the remaining
+# Helm releases (WP05) will patch it via overlay manifests at apply time.
+# What we ship here is the bare-cluster bootstrap config.
+###############################################################################
+version: "v1alpha1"
+debug: false
+persist: true
+reboot: false
+
+cluster:
+  name: "${cluster_name}"
+  controlPlane:
+    endpoint: "https://${vip}:6443"
+
+machine:
+  type: ${ role == "control_plane" ? "controlplane" : "worker" }
+  token: "${cluster_name}-bootstrap-token-CHANGE-ME"
+  ca:
+    crt: ""
+    key: ""
+  certSANs:
+    - "${vip}"
+  kubelet:
+    image: ghcr.io/siderolabs/kubelet:v1.34.1
+    extraArgs:
+      node-ip: "${ip}"
+  network:
+    hostname: "${hostname}"
+    interfaces:
+      - interface: eth0
+        addresses:
+          - "${ip}/24"
+        route:
+          - gateway: 10.0.0.1
+            network: 0.0.0.0/0
+    nameservers:
+      - 10.0.0.1
+    extraHostEntries:
+      - ip: "${vip}"
+        hostnames:
+          - "${cluster_name}-vip"
+          - "${hostname}"
+
+# Talos version pinned per versions.lock.yaml.
+# v1.10.0 is known-good with the BigBertha kernel (7.0.6-2-pve).
+talosVersion: "${talos_version}"
