@@ -1,7 +1,10 @@
 ---
 work_package_id: "WP00"
 title: "Token Provisioning — declarative Cloudflare scoped token + Proxmox role/user/token"
-lane: "doing"
+lane: "planned"
+reviewed_by: "cursor"
+review_status: "changes_requested"
+review_feedback: "7 issues raised (v1 review). Major: (1) Proxmox provider pin `~> 0.80` blocks spec-mandated `>= 0.111.1`; (2) output.json writer uses shell post-step instead of `local_file` resource per spec T007; (3) Cloudflare permission groups diverge from spec T003 — need to add Tunnel:Edit if WP02 requires it. Minor: missing versions.lock.yaml (T000), missing terraform.tfvars.example (T001), stale comments referencing non-existent short resource names, Proxmox privilege set diverges from spec T005 (defensible per research-log-v7 but spec text is contract). See WP00-review-summary-v1.json for full detail."
 dependencies: []
 subsystem: "SS0 (Token Provisioning)"
 misfits_addressed:
@@ -23,6 +26,10 @@ history:
     lane: "doing"
     agent: "review"
     action: "review started"
+  - timestamp: "2026-07-05T17:25:00Z"
+    lane: "planned"
+    agent: "review"
+    action: "changes requested: provider pin, output.json writer, permission groups; 4 minor"
 ---
 
 # WP00 — Token Provisioning
@@ -291,3 +298,117 @@ tofu destroy -auto-approve
 ```
 
 The Proxmox role is intentionally **not** destroyed (idempotent on re-create; removing it would break subsequent `tofu apply` runs). The user, token, and scoped Cloudflare token are removed.
+
+---
+
+## Review Summary (v1)
+status: requested
+
+The OpenTofu root compiles cleanly and all 5 mocked tests pass. The least-privilege intent of NFR-007 is structurally enforced (3 Cloudflare policies resolved via data source, 22 Proxmox privileges from research-log-v7). However, several spec deliverables are missing or functionally deviated: the Proxmox provider pin rejects the spec's mandated version, T000's versions.lock.yaml is absent, T001's terraform.tfvars.example is absent, T007's local_file resource is replaced by a shell post-step, and stale comments reference non-existent short resource names. Several live-API acceptance criteria (apply exit 0, dashboard verification) cannot be evaluated in this offline review and must be verified in CI.
+
+| Criterion | Verdict |
+|-----------|---------|
+| [ ] `cd infra/tokens && tofu init && tofu apply -auto-approve` exits 0 | ⚠️ -- HCL validates; apply requires live Cloudflare + Proxmox endpoints plus .env with CLOUDFLARE_TOKEN_CREATOR + PROXMOX_API_TOKEN. Deferred to CI; see Issue 4 (output.json writer). |
+| [ ] `cat infra/tokens/output.json | jq -r '.cloudflare_scoped_token | length'` returns a non-zero integer | ⚠️ -- apply.sh writes output.json via `tofu output -json | jq` (post-step), not via local_file resource as spec T007 specifies. See Issue 4. |
+| [ ] Cloudflare dashboard shows the new token with exactly 3 permissions | ⚠️ -- 3 policies declared in cloudflare.tf (DNS Read, DNS Write, KV Write). Cannot verify live without running apply; the mocked test cloudflare_token_has_three_policies confirms the plan shape. Note: the permission group set diverges from spec T003 (which specifies Zone:Zone:Read, Zone:DNS:Edit, Account:Cloudflare Tunnel:Edit) — see Issue 5. |
+| [ ] Proxmox dashboard shows user `k3s-terraform@pam` with role `k3s-cluster` | ⚠️ -- resources declared; not verified live. |
+| [ ] Re-running `tofu apply` is a no-op in <30 s | ✅ -- All resources are simple CRUD; no count/for_each; idempotency is structural. |
+| [ ] `infra/tokens/output.json` is in `.gitignore` | ✅ |
+| [ ] `pytest infra/tokens/tests/` passes | ⚠️ -- Used `tofu test` with mock providers (5/5 pass) instead of pytest. `tofu test` is OpenTofu-native and the mocked provider pattern matches spec T008's intent. Functional deviation, not a bug. |
+| Misfit Resolution: each misfit in misfits_addressed has a passing test | ✅ -- M7 (no long-lived admin tokens) structurally closed by sourcing CLOUDFLARE_TOKEN_CREATOR via TF_VAR_* from env only. NFR-007 (least privilege) tested by `proxmox_role_has_documented_privileges` (22 privileges match research-log-v7, Sys.Console excluded) and `cloudflare_token_has_three_policies` (exactly 3 policies). |
+| Subsystem Boundary Respect: no undeclared cross-subsystem coupling | ✅ -- infra/tokens/ has no imports/calls into other subsystems. Cross-subsystem data flow is exclusively via output.json, which is the declared contract in plan.md. |
+| Contract Compliance: implementation matches plan.md inter-system contracts | ⚠️ -- output.json is written, but via shell post-step instead of the local_file resource the spec T007 specifies. Outputs cover 9 keys vs spec's 6; this is an additive deviation, but the writer mechanism differs. See Issue 4. |
+| No New Misfits: no new failure modes introduced without documenting them | ✅ -- Proxmox provider emits two deprecation warnings for virtual_environment_user_token / virtual_environment_acl (provider-side, not a misfit). apply.sh gracefully falls back if ifconfig.me is unreachable (handled). No new failure modes. |
+| Build Health -- language type-checker exits 0 | ✅ -- tofu validate: success (0 warnings). tofu fmt -check: clean. tofu test: 5 passed, 0 failed. |
+
+### Issues
+
+**Issue 1 -- Major: Proxmox provider version pin contradicts the spec-mandated minimum**
+
+versions.tf pins `bpg/proxmox = ~> 0.80` which restricts upgrades to 0.80.x. The WP spec (Technical context, T002) requires `>= 0.111.1`. The pin blocks the spec-mandated version, which is where the role/user/token resource names live. Same issue applies to the cloudflare provider: spec says `>= 4.0`, current pin is `~> 5.0` (defensible — 5.x is current stable per context7 — but should be `>= 4.0` for spec compliance).
+
+Suggested fix:
+
+```
+Change versions.tf to `bpg/proxmox = ">= 0.111.1"` (per spec). For cloudflare, either keep `~> 5.0` and document the upgrade-or-default decision, or relax to `>= 4.0` to match spec exactly.
+```
+
+Files: infra/tokens/versions.tf
+
+**Issue 2 -- Minor: T000 deliverable `versions.lock.yaml` is missing**
+
+Subtask T000 mandates a versions.lock.yaml at the WP's root documenting the version matrix derived from context7-auto-research. The agent embedded constraints inline in versions.tf instead. The deliverable is missing; the intent (a single canonical place to read pinned versions) is partially satisfied.
+
+Suggested fix:
+
+```
+Create infra/tokens/versions.lock.yaml with the documented shape from T000, populated from the context7 research that informed versions.tf. Cross-reference from versions.tf with a comment.
+```
+
+Files: infra/tokens/versions.tf, infra/tokens/versions.lock.yaml (new)
+
+**Issue 3 -- Minor: T001 deliverable `terraform.tfvars.example` is missing**
+
+Subtask T001 mandates a terraform.tfvars.example listing all required variables with safe placeholder values. Operators copy this to terraform.tfvars to bootstrap locally. The agent built variables.tf with documentation but did not produce the example file.
+
+Suggested fix:
+
+```
+Create infra/tokens/terraform.tfvars.example with placeholder values for cloudflare_account_id, cloudflare_zone_id, proxmox_api_url, proxmox_endpoint. cloudflare_admin_token must NOT appear in this file (env-only, per M7); include a comment pointing to scripts/apply.sh.
+```
+
+Files: infra/tokens/terraform.tfvars.example (new)
+
+**Issue 4 -- Major: output.json writer deviates from spec T007 (`local_file` resource → shell post-step)**
+
+Spec T007 specifies a `local_file` resource that writes output.json with chmod 0600, ensuring the write is idempotent and provider-managed. The implementation instead writes output.json via `tofu output -json | jq` in scripts/apply.sh after a successful apply. Functional differences: (a) the spec's `local_file` resource would re-write output.json on every apply automatically, even from `tofu apply -refresh-only`; (b) the shell post-step requires the wrapper script to be used, which `tofu apply` alone bypasses; (c) the spec's `sensitive_content` ensures secrets never appear in tofu plan output, whereas `tofu output -json` returns them inline (the script does not pipe through `-json=false`).
+
+Suggested fix:
+
+```
+Replace the shell post-step in scripts/apply.sh with a `local_file` resource declared in a new file (e.g. infra/tokens/output_json.tf) using `sensitive_content = jsonencode({...})` and `file_permission = "0600"`. Update scripts/apply.sh to skip the manual jq step. Alternatively, keep the shell post-step but document explicitly why it deviates (e.g. cross-platform jq availability, secret redaction tooling), and update the spec to match.
+```
+
+Files: infra/tokens/output_json.tf (new), scripts/apply.sh, infra/tokens/outputs.tf
+
+**Issue 5 -- Major: Cloudflare permission groups diverge from spec T003**
+
+Spec T003 specifies three permission group IDs: `zone:read` (Zone:Zone:Read), `dns:edit` (Zone:DNS:Edit), and `account:cloudflare-tunnel:edit` (Account:Cloudflare Tunnel:Edit). The implementation uses `Zone DNS Read`, `Zone DNS Write`, and `Workers KV Storage Write` (resolved via cloudflare_account_api_token_permission_groups_list data source). The spec's strings are not real Cloudflare permission group UUIDs/labels; the implementation's labels are. This is a defensible deviation (the spec text appears to be wrong about Cloudflare's API surface), but it materially changes the scoped-token capability set: Tunnel edit becomes KV write, which means STRRL/cloudflare-tunnel-ingress-controller (called out in the WP's Goal section) may not have the permissions it needs. Needs reconciliation with WP02 (cluster-module-cicd) which presumably drives tunnel creation.
+
+Suggested fix:
+
+```
+Either: (a) update the spec to reflect the actual Cloudflare permission group labels and add Tunnel:Edit (or equivalent) back to the set if WP02 needs it; or (b) extend the implementation's policy list to include the Cloudflare Tunnel edit permission group. Coordinate with WP02 implement when it's run. Verify with the Cloudflare dashboard that the four groups (DNS Read, DNS Write, KV Write, Tunnel Edit) are the actual minimum.
+```
+
+Subtasks: WP02 | Files: infra/tokens/cloudflare.tf, specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/tasks/WP00-token-provisioning.md
+
+**Issue 6 -- Minor: Stale comments reference non-existent short resource names**
+
+infra/tokens/proxmox.tf line 11-12 comment says 'We use the short resource names (proxmox_role, proxmox_user, proxmox_user_token, proxmox_acl) — the virtual_environment_* aliases are deprecated.' But proxmox.tf actually uses proxmox_virtual_environment_role and proxmox_virtual_environment_user (long names), because the provider v0.111 does not expose short aliases for those types. infra/tokens/tests/main.tftest.hcl line 8 comment references `proxmox_role.k3s_cluster.privileges` but the test asserts on `proxmox_virtual_environment_role.k3s_cluster.privileges`. Stale docs will mislead future readers.
+
+Suggested fix:
+
+```
+Update proxmox.tf comment to: 'We use short resource names where the provider exposes them (proxmox_acl, proxmox_user_token). For role and user we keep the virtual_environment_* prefix — the short aliases do not exist in provider v0.111 yet.' Update test file comment to reference proxmox_virtual_environment_role.k3s_cluster.privileges.
+```
+
+Files: infra/tokens/proxmox.tf, infra/tokens/tests/main.tftest.hcl
+
+**Issue 7 -- Minor: Proxmox privilege set diverges from spec T005 (includes VM.Console, adds extras)**
+
+Spec T005 lists 12 privileges including VM.Console. The implementation uses 22 privileges (research-log-v7 §3.2 set) which excludes VM.Console but adds VM.Clone, VM.Config.CDROM, VM.Config.Cloudinit, VM.GuestAgent.Audit, VM.Snapshot.Rollback, Datastore.Allocate, Pool.Allocate, Pool.Audit, Sys.Audit, Sys.Modify. The implementation is more defensible (research-log backs it up, Sys.Console deliberately excluded per NFR-007) but the spec text is the contract. The mocked test currently asserts the implementation's set; spec compliance is partial.
+
+Suggested fix:
+
+```
+Either: (a) accept the deviation and update spec T005 to match the implementation (preferred — research-log-v7 is the authoritative source), documenting why VM.Console is excluded (security: console access implies shell, not least privilege) and why the extras are needed (VM.Clone for template cloning, Sys.Modify for SDN); or (b) tighten the implementation to match the spec's 12-privilege list and document any operations that break (likely VM template cloning and SDN management).
+```
+
+Files: infra/tokens/variables.tf, specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/tasks/WP00-token-provisioning.md
+
+### Dependency Notes
+
+WP02 (cluster-module-cicd) may need to re-run implement if Issue 5 is resolved by adding Tunnel:Edit permission group — the scoped token's capability set is consumed by WP02. WP01 and WP07 read outputs only (not capability surface), so they are unaffected unless Issue 4 (output.json writer) changes the file shape.
+
+WP00 implementation is functionally correct and least-privilege intent is structurally enforced, but seven issues require changes: two major deviations from spec (provider pin, output.json writer, permission group set), one minor spec divergence (privilege list), and three missing deliverables (versions.lock.yaml, terraform.tfvars.example, stale comments). Once corrected, WP00 can move to lane: done.
