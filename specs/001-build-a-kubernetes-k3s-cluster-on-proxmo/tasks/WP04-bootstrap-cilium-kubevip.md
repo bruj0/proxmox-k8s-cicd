@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP04"
 title: "Bootstrap Script + First Two Helm Releases (Cilium + kube-vip)"
-lane: "doing"
+lane: "for_review"
 dependencies:
   - WP02
 subsystem: "SS3 (Bootstrap Orchestration + Agent Skill)"
@@ -23,6 +23,10 @@ history:
     agent: "spec-bridge-implement"
     at: "2026-07-05T15:35:00Z"
     commit: "implement-WP04"
+  - lane: "for_review"
+    agent: "spec-bridge-implement"
+    at: "2026-07-05T15:40:00Z"
+    commit: "c13e192"
 ---
 
 # WP04 — Bootstrap Script + First Two Helm Releases
