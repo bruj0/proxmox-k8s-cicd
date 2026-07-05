@@ -24,6 +24,7 @@ abstract_components:
 - clusters/cicd/terraform.tfvars.example
 - clusters/cicd/output.json (gitignored)
 agent: implement
+reviewed_by: spec-bridge-review
 tdd_red_clean: true
 build_validated: true
 history:
@@ -31,6 +32,10 @@ history:
   lane: doing
   agent: implement
   action: started implementation
+- timestamp: '2026-07-05T22:50:00Z'
+  lane: doing
+  agent: spec-bridge-review
+  action: review started
 ---
 
 # WP02 — Cluster Module + First Instance (cicd)
