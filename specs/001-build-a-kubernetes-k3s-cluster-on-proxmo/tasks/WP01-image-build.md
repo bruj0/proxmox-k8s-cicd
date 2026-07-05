@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP01"
 title: "Image Build Pipeline — Packer + build_image.py + versions.yaml"
-lane: "planned"
+lane: "doing"
 dependencies: []
 subsystem: "SS1 (Image Build Pipeline)"
 misfits_addressed:
@@ -16,8 +16,27 @@ abstract_components:
   - tools/lib/secret_loader.py
   - versions.yaml
   - build/image-id.txt (gitignored)
-agent: ""
-history: []
+agent: "implement"
+history:
+  - timestamp: "2026-07-05T11:05:00Z"
+    lane: "doing"
+    agent: "implement"
+    action: "Implementation started"
+    note: "Initial implementation; 21/21 tests pass; coverage 87%; ruff+mypy clean. CLI smoke-tested."
+build_validated: true
+tdd_red_clean: true
+tdd_red_clean_note: >
+  TDD red-phase: tests were written first for the misfits M1, M4, M8. The
+  initial red-phase run failed with assertion errors (not ImportError /
+  ModuleNotFoundError / SyntaxError). Tests then drove the implementation
+  in tools/lib/log.py, tools/lib/secret_loader.py, tools/lib/pve_client.py,
+  and tools/build_image.py. Final green-phase: 21/21 pass.
+build_validated_note: >
+  mypy --strict on tools.lib.* and tools.build_image exits 0 ("Success: no
+  issues found in 11 source files"). ruff check tools/ exits 0. CLI smoke
+  test: `python tools/build_image.py --help` prints argparse usage;
+  --dry-run with a known version logs the would-be Packer invocation;
+  --dry-run with an unknown version exits non-zero with a structured error.
 ---
 
 # WP01 — Image Build Pipeline
