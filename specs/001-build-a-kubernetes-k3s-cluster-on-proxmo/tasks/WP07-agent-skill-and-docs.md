@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP07"
 title: "Agent Skill + Runbooks + Final Verification"
-lane: "doing"
+lane: "done"
 dependencies:
   - WP06
 subsystem: "SS3 (Agent Skill)"
@@ -19,6 +19,7 @@ tdd_red_clean: true
 build_validated: true
 agent: "spec-bridge-implement"
 reviewed_by: "spec-bridge-review"
+review_status: "approved"
 history:
   - timestamp: "2026-07-05T14:52:55+00:00"
     lane: doing
@@ -32,6 +33,10 @@ history:
     lane: doing
     agent: spec-bridge-review
     action: review started
+  - timestamp: "2026-07-05T15:06:01+00:00"
+    lane: done
+    agent: spec-bridge-review
+    action: review approved -- 1 critical + 3 minor issues fixed in commits abb72e2 + 0bcd95f
 ---
 
 # WP07 — Agent Skill + Runbooks + Final Verification
@@ -256,3 +261,82 @@ WP07 authors the Agent Skill that drives the entire proxmox-k8s-cicd pipeline, t
 ### Validator
 
 0/0 checks passed -- `spec-bridge-skill-tool implement WP07 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo`
+
+---
+
+## Review Summary (v1)
+status: approved
+
+WP07 authors the Agent Skill that drives the entire proxmox-k8s-cicd pipeline, three new runbooks (cloudflare-fallback, scale-workers, decommission-cluster), a verification matrix, and the agentskills.io version lock file. Round 1 review found 4 issues, all fixed in commit 0bcd95f (with the critical amend captured in commit abb72e2). (1) Critical: the implement-time commit missed .agents/skills/proxmox-k3s-pipeline/SKILL.md and versions.lock.yaml because the git add command listed docs/ and tools/tests/ paths but did not include .agents/. Without these files, the primary deliverable of WP07 would not have made it onto the branch. Caught and fixed via --amend before this review completed; verified by `git log --stat -1` showing both files tracked. (2) SKILL.md body said 'five numbered phases' but Phase 4 listed six sub-phases. Refreshed the lead paragraph to distinguish 5 top-level phases from Phase 4's 6 sub-phases. (3) SKILL.md glossary listed 4 terms while CONTEXT.md defines 5 (Agent Skill was missing). Added the 5th term and tightened the Pipeline/Phase definitions. (4) docs/verification.md tofu-tests line claimed '12/12 + 2/2 in CI' which only covers module + cicd. Corrected to the full picture: 12 module + 2 cicd + 5 apps + 6 tokens = 25 passed / 0 failed (verified by running tofu test in each module directory). mypy --strict: 0 issues across 23 source files. pytest 51 passed. ruff clean. WP07 is the final WP; no downstream WPs depend on it. Live-cluster verifications (SC-001..SC-003, SC-005/006, NFR-014) deferred to post-merge acceptance run as in WP04/05/06.
+
+| Criterion | Verdict |
+|-----------|---------|
+| [ ] `.agents/skills/proxmox-k3s-pipeline/SKILL.md` exists, has YAML frontmatter with `name: proxmox-k3s-pipeline` and a non-empty `description` | ✅ -- covered by test_skill_md_exists + test_skill_md_frontmatter_has_name_and_description. Both pass. SKILL.md was missing from the implement-time commit but was added via --amend during this review. |
+| [ ] SKILL.md mentions every external library (bpg/proxmox, hashicorp/proxmox, STRRL controller, helm, talosctl, kubernetes) with version pin and rationale | ✅ -- covered by test_skill_md_mentions_every_external_library_with_version asserting 9 library+version pairs and >= 5 occurrences of the word 'rationale' in the Step 0 table. |
+| [ ] SKILL.md Step 1 instructs the agent to load context7-auto-research before invoking any external library | ✅ -- covered by test_skill_md_step_1_instructs_context7_gate. Note: the gate is in Step 0, not Step 1 (skill body is numbered Step 0..Step 5; Step 0 is the gate). |
+| [ ] All three runbooks exist and document the procedures in copy-pasteable form | ✅ -- covered by test_runbooks_exist_and_have_copy_paste_blocks asserting all 4 runbooks (cloudflare-fallback, scale-workers, decommission-cluster, rotate-tokens) have a ```bash fenced code block. |
+| [ ] `docs/architecture.md` exists with links to all four planning artefacts | ✅ -- covered by test_architecture_md_links_all_planning_artefacts asserting spec.md, plan.md, decomposition.md, research.md are all linked. |
+| [ ] An agent that loads the skill can drive the whole pipeline end-to-end | ⚠️ -- the skill body contains the full 5-phase sequence with explicit CLI entry points per phase and explicit success criteria. No automated test for this end-to-end behaviour; manual agent-driven verification deferred to post-merge acceptance run. |
+| [ ] SC-001 through SC-006 all verified (or their verification procedure documented if PVE is unavailable) | ⚠️ -- docs/verification.md documents each SC with its verification command, expected result, and pass/deferred status. 1 of 6 (SC-004) covered by host_ports unit tests; the other 5 require live PVE and are explicitly deferred. |
+| [ ] NFR-013, NFR-014, NFR-010, NFR-011, NFR-012 all verified | ⚠️ -- NFR-010/011 (test side)/012/013 pass via the agent-skill tests + cluster-module tests. NFR-014 deferred to live cluster. docs/verification.md NFR-013 description claims 'Cluster module renders 3 control-plane (2 vCPU + 4 GiB each) + 1 worker (4 vCPU + 8 GiB) = 10 vCPU + 20 GiB' -- verified that 10 <= 16 and 20 <= 24 (NFR-013 budget). No automated budget assertion exists; the WP07 module test passes today but a future change that bumps workers.cpu could silently violate NFR-013. |
+| Misfit Resolution: each misfit in misfits_addressed has a passing test | ✅ -- M7 (codified via skill) -- SKILL.md Step 0 enforces context7-auto-research gate before any external library invocation; test_skill_md_step_1_instructs_context7_gate asserts this. SC-001..SC-006 -- verification matrix documents each with command + expected + status (test-covered or deferred). |
+| Subsystem Boundary Respect: no undeclared cross-subsystem coupling | ✅ -- WP07 introduces no new code coupling. SKILL.md is documentation only. Runbooks document operator procedures against existing CLIs (tofu, kubectl, nft, pvesh). No imports added to tools/* beyond the test file (test_agent_skill.py) which only reads files. |
+| Contract Compliance: implementation matches plan.md inter-system contracts | ✅ -- The Skill is documentation that codifies the SS1->SS2->SS3 contract chain from plan.md. The verification matrix references the existing SS1/SS2/SS3 contracts. No contract changes were needed in this WP. |
+| No New Misfits: no new failure modes introduced without documenting them | ✅ -- the cloudflare-fallback runbook intentionally violates the M2 misfit (adds host ports in emergency); this is documented in the runbook itself ('this runbook intentionally violates M2 until the baseline is re-captured'). No other new misfits. |
+| Build Health -- language type-checker exits 0 | ✅ -- mypy --strict --explicit-package-bases -p tools: Success: no issues found in 23 source files. |
+
+### Issues
+
+**Issue 1 -- Critical: Implement-time commit missed .agents/skills/proxmox-k3s-pipeline/SKILL.md and versions.lock.yaml**
+
+The git add command at implement-time listed docs/architecture.md, docs/runbooks/, docs/verification.md, and tools/tests/test_agent_skill.py but did not include .agents/skills/proxmox-k3s-pipeline/. The result was that the primary deliverable of WP07 (the Agent Skill itself, plus its version lock file) was untracked on the branch. Without these files, an agent could not load the skill, the WP's NFR-010/NFR-011/NFR-012 acceptance criteria would fail in production, and the entire spec 001 contract ('the agent that loads the skill drives the pipeline') would not be deliverable. Caught at the start of this review when `git ls-files .agents/` returned empty for the worktree.
+
+Suggested fix:
+
+```
+Amended the implement-time commit (now abb72e2) to include both .agents/skills/proxmox-k3s-pipeline/SKILL.md and versions.lock.yaml. Verified by `git log --stat -1` showing both files tracked in the commit. Also verified by `cat .agents/skills/proxmox-k3s-pipeline/SKILL.md` reading the actual file content on the branch.
+```
+
+Misfits: M7 | Files: .agents/skills/proxmox-k3s-pipeline/SKILL.md, .agents/skills/proxmox-k3s-pipeline/versions.lock.yaml
+
+**Issue 2 -- Minor: SKILL.md body says 'five numbered phases' but Phase 4 lists six sub-phases**
+
+The lead paragraph said 'The pipeline drives five numbered phases' but Step 4 then enumerates six ordered sub-phases (talos, k3s, helm, kubeconfig, host_ports, externalname). Internally inconsistent. The pipeline actually has 5 top-level phases (build image, provision cluster, capture baseline, bootstrap, final verification) and Phase 4 (bootstrap) further decomposes into the 6 sub-phases.
+
+Suggested fix:
+
+```
+Refreshed the lead paragraph to distinguish the 5 top-level phases from Phase 4's 6 sub-phases.
+```
+
+Files: .agents/skills/proxmox-k3s-pipeline/SKILL.md
+
+**Issue 3 -- Minor: SKILL.md glossary listed 4 terms while CONTEXT.md defines 5**
+
+The SKILL.md '## Glossary (canonical vocabulary)' section listed 4 terms (Pipeline, Phase, Runbook, Operator) while .agents/skills/proxmox-k3s-pipeline/CONTEXT.md defines 5 (the additional term is Agent Skill itself). The 5th term was implicit in the document but not enumerated. Additionally, the Pipeline definition was loose ('the five-phase end-to-end sequence' was wrong post-Issue 2).
+
+Suggested fix:
+
+```
+Added the 5th term (Agent Skill) to the glossary block; refreshed the Pipeline definition to 'the five-top-level-phase end-to-end sequence (build image -> provision cluster -> capture baseline -> bootstrap -> final verification)'; refreshed the Phase definition to acknowledge Phase 4's sub-phase decomposition.
+```
+
+Files: .agents/skills/proxmox-k3s-pipeline/SKILL.md
+
+**Issue 4 -- Minor: docs/verification.md tofu-tests line undercounts (12/12 + 2/2) the actual 25 tofu tests passing**
+
+The 'Cross-cutting assertions' section claimed 'tofu tests: `tofu test` passes for the cluster module and the apps cluster instance (12/12 + 2/2 in CI)'. This number is incomplete: it omits clusters/apps (5 tests) and infra/tokens (6 tests). Actual total: 12 (cluster module) + 2 (cicd instance) + 5 (apps instance) + 6 (tokens) = 25 passed / 0 failed. Verified by running tofu init + tofu test in each of the four module directories during this review.
+
+Suggested fix:
+
+```
+Corrected the line to '`tofu test` passes for the four tofu modules (12 cluster-module + 2 cicd-instance + 5 apps-instance + 6 tokens = 25 passed / 0 failed)'.
+```
+
+Files: docs/verification.md
+
+### Dependency Notes
+
+WP07 is the final WP; no downstream WPs depend on it. The fixes for Issues 1-4 are local to the .agents/skills/proxmox-k3s-pipeline/SKILL.md and docs/verification.md files on the WP07 branch.
+
+WP07 approved after 4 issues (1 critical, 3 minor) all fixed in commit 0bcd95f (with the critical amend captured in commit abb72e2); mypy/pytest/ruff all green; tofu tests 25 passed / 0 failed across the 4 modules; live-cluster smoke tests deferred to post-merge acceptance run as in WP04/05/06.
