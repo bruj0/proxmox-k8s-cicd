@@ -15,6 +15,7 @@ abstract_components:
   - docs/runbooks/decommission-cluster.md
   - docs/runbooks/rotate-tokens.md
   - docs/architecture.md
+tdd_red_clean: true
 agent: "spec-bridge-implement"
 history:
   - timestamp: "2026-07-05T14:52:55+00:00"
