@@ -1,6 +1,6 @@
 """SS3 entrypoint: bootstrap a cluster end-to-end.
 
-Phases (5):
+Phases (6):
   1. talos       — apply-config to every node, wait for healthy, bootstrap k3s
   2. k3s         — verify apiserver /healthz
   3. helm        — install the first two (Cilium + kube-vip, WP04) and
@@ -10,6 +10,10 @@ Phases (5):
   4. kubeconfig  — pull admin kubeconfig, merge into ~/.kube/config
   5. host_ports  — verify the PVE nft prerouting chain has no new DNAT
                    rules beyond the captured baseline (M2 misfit)
+  6. externalname — apps-cluster only: apply the cross-cluster
+                   ExternalName Services kustomization that exposes
+                   cicd services (gitlab, registry, minio,
+                   minio-console) to workloads on apps (WP06)
 
 Entry gate:
   python -m tools.bootstrap_cluster --cluster cicd [--phases talos,k3s,helm,kubeconfig,host_ports]
@@ -56,7 +60,14 @@ from lib.talos_client import ClusterTopology, TalosClient  # type: ignore[import
 _LOG = StructuredLogger("bootstrap_cluster")  # noqa: E402
 
 
-PHASES: tuple[str, ...] = ("talos", "k3s", "helm", "kubeconfig", "host_ports")
+PHASES: tuple[str, ...] = (
+    "talos",
+    "k3s",
+    "helm",
+    "kubeconfig",
+    "host_ports",
+    "externalname",
+)
 
 
 def list_phases() -> list[str]:
@@ -294,6 +305,69 @@ def _run_host_ports(state: State, cluster_dir: Path) -> None:
     state.phases_done.add("host_ports")
 
 
+def _run_externalname(
+    state: State, cluster_dir: Path, topo: ClusterTopology
+) -> None:
+    """WP06: apply cross-cluster ExternalName Services to the apps cluster.
+
+    No-op when called on the cicd cluster (the cicd cluster does not own
+    the cross-cluster wiring; applying apps manifests onto cicd would
+    leak the apps cluster's namespace layout onto cicd).
+
+    No-op when the kustomization manifest is missing yet (e.g. first-run
+    before `tofu apply` has emitted clusters/apps/manifests/). The
+    state.json skip logic means a subsequent bootstrap run will retry
+    this phase once the manifest appears.
+    """
+    if topo.name != "apps":
+        _LOG.info(
+            "externalname.skip",
+            cluster=state.cluster,
+            reason="only the apps cluster owns the cross-cluster wiring",
+        )
+        state.phases_done.add("externalname")
+        return
+
+    kubeconfig = cluster_dir / "kubeconfig"
+    if not kubeconfig.exists():
+        raise BootstrapError(
+            "externalname",
+            {"reason": "kubeconfig missing; run the kubeconfig phase first"},
+        )
+    kustomization_dir = cluster_dir / "manifests" / "cicd-system"
+    if not kustomization_dir.exists():
+        _LOG.warn(
+            "externalname.noapply",
+            message=(
+                "no kustomization under clusters/apps/manifests/cicd-system; "
+                "rerun bootstrap after `tofu apply` lands the manifest"
+            ),
+        )
+        # Record as done so the next run doesn't re-warn; idempotent first-run
+        # contract.
+        state.phases_done.add("externalname")
+        return
+
+    try:
+        subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "apply",
+                "-k",
+                str(kustomization_dir),
+            ],
+            check=True,
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise BootstrapError(
+            "externalname",
+            {"reason": "kubectl apply -k failed", "detail": str(exc)},
+        ) from exc
+    state.phases_done.add("externalname")
+
+
 def _load_cluster_secrets() -> dict[str, str]:
     """Read runtime secrets from env via SecretLoader.
 
@@ -355,6 +429,8 @@ def bootstrap(
             _run_kubeconfig(state, cluster_dir, topo)
         elif phase == "host_ports":
             _run_host_ports(state, cluster_dir)
+        elif phase == "externalname":
+            _run_externalname(state, cluster_dir, topo)
         state.save()
 
     _LOG.info("bootstrap.done", cluster=cluster_name)
