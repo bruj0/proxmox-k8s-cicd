@@ -9,18 +9,20 @@
 #      variables.tf is cloudflare_admin_token, the env-var name is
 #      CLOUDFLARE_TOKEN_CREATOR — see .env).
 #   3. Run `tofu init -backend=false && tofu apply -auto-approve`.
-#   4. After a successful apply, persist outputs to infra/tokens/output.json
-#      with sensitive values redacted to a single line per key.
+#
+# output.json is written by the `local_sensitive_file.tokens_output` resource
+# declared in infra/tokens/output_json.tf. The apply wrapper no longer needs
+# a manual `tofu output -json | jq` post-step — the OpenTofu plan itself
+# produces the file. This is the spec T007 contract.
 #
 # Usage
 #   scripts/apply.sh                 # full plan + apply
-#   scripts/apply.sh --plan-only     # tofu plan, no apply, no output.json
+#   scripts/apply.sh --plan-only     # tofu plan, no apply
 ###############################################################################
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_DIR="${REPO_ROOT}/infra/tokens"
-OUTPUT_FILE="${TF_DIR}/output.json"
 
 log() { printf '\033[1;34m[apply]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[apply]\033[0m %s\n' "$*" >&2; }
@@ -71,7 +73,7 @@ export TF_VAR_proxmox_api_token_secret="${_proxmox_secret}"
 cd "${TF_DIR}"
 
 if ! command -v tofu >/dev/null 2>&1; then
-  err "tofu (OpenTofu) is not on PATH. Install OpenTofu >= 1.7.0 first."
+  err "tofu (OpenTofu) is not on PATH. Install OpenTofu >= 1.6.0 first."
   exit 3
 fi
 
@@ -88,18 +90,13 @@ log "tofu apply -auto-approve"
 tofu apply -auto-approve -input=false -no-color
 
 # ---------------------------------------------------------------------------
-# 4. Write outputs to output.json (gitignored). Sensitive values are stored
-#    as JSON strings; downstream code reads them via jq.
+# 4. Confirm output.json was written by the local_sensitive_file resource.
 # ---------------------------------------------------------------------------
-log "Persisting outputs to ${OUTPUT_FILE}"
-
-# `tofu output -json` emits the raw values including secrets (we set
-# -no-color but not -json-sensitive=false). We deliberately write the
-# full output — output.json is .gitignored.
-tofu output -json | jq '.' > "${OUTPUT_FILE}"
-
-# Restrict perms — output.json holds both Cloudflare and Proxmox secrets.
-chmod 600 "${OUTPUT_FILE}"
-
-log "Done. Sensitive values are in ${OUTPUT_FILE} (mode 0600)."
-log "Next: run scripts/test.sh to validate the rotation is a no-op."
+OUTPUT_FILE="${TF_DIR}/output.json"
+if [[ -f "${OUTPUT_FILE}" ]]; then
+  log "output.json written to ${OUTPUT_FILE} (mode 0600)"
+  log "Next: run tofu test in ${TF_DIR} to validate the rotation is a no-op."
+else
+  err "output.json missing after apply — check tofu output for errors"
+  exit 4
+fi

@@ -5,15 +5,18 @@
 # Cloudflare or Proxmox. `mock_resource` defaults are only valid for
 # *computed* attributes (the values returned by the API), so we set only
 # `id`/`value` here and assert against the configured arguments
-# (`proxmox_role.k3s_cluster.privileges`, etc.) on the planned resource.
+# (e.g. `proxmox_virtual_environment_role.k3s_cluster.privileges`) on the
+# planned resource.
 #
 # Assertions covered:
 #   1. Plan succeeds with sensible inputs.
-#   2. Proxmox role contains exactly the documented privilege set.
+#   2. Proxmox role contains exactly the spec T005 privilege set.
 #   3. Proxmox ACL propagates to "/" with the k3s-cluster role.
-#   4. Cloudflare scoped token contains three policies covering DNS read,
-#      DNS write and KV write.
+#   4. Cloudflare scoped token contains exactly the spec T003 three
+#      permission groups (Zone Read, Zone DNS Write, Cloudflare Tunnel:Edit).
 #   5. Outputs expose the proxmox_token_id in canonical USER@REALM!TOKEN form.
+#   6. The local_sensitive_file resource exists and points at output.json
+#      with file_permission = "0600".
 ###############################################################################
 
 mock_provider "cloudflare" {
@@ -22,7 +25,7 @@ mock_provider "cloudflare" {
       result = [
         {
           id     = "00000000000000000000000000000001"
-          name   = "Zone DNS Read"
+          name   = "Zone Read"
           scopes = ["com.cloudflare.api.account.zone.*"]
         },
         {
@@ -32,7 +35,7 @@ mock_provider "cloudflare" {
         },
         {
           id     = "00000000000000000000000000000003"
-          name   = "Workers KV Storage Write"
+          name   = "Cloudflare Tunnel:Edit"
           scopes = ["com.cloudflare.api.account"]
         },
       ]
@@ -66,6 +69,14 @@ mock_provider "proxmox" {
     defaults = {
       id    = "k3s-terraform@pam!tf"
       value = "proxmox-token-secret-value"
+    }
+  }
+}
+
+mock_provider "local" {
+  mock_resource "local_sensitive_file" {
+    defaults = {
+      id = "tokens-output-id"
     }
   }
 }
@@ -108,30 +119,36 @@ run "plan_succeeds" {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Proxmox role privilege set is exactly the documented NFR-007 set.
+# 2. Proxmox role privilege set is exactly the spec T005 set.
 # ---------------------------------------------------------------------------
-run "proxmox_role_has_documented_privileges" {
+run "proxmox_role_has_spec_t005_privileges" {
   command = plan
 
   assert {
     condition = alltrue([
       for p in [
-        "VM.Allocate", "VM.Audit", "VM.Clone", "VM.Config.CDROM",
-        "VM.Config.CPU", "VM.Config.Cloudinit", "VM.Config.Disk",
-        "VM.Config.Memory", "VM.Config.Network", "VM.Config.Options",
-        "VM.GuestAgent.Audit", "VM.PowerMgmt", "VM.Snapshot",
-        "VM.Snapshot.Rollback", "Datastore.Allocate", "Datastore.AllocateSpace",
-        "Datastore.Audit", "Pool.Allocate", "Pool.Audit", "Sys.Audit",
-        "Sys.Modify", "SDN.Use",
+        "VM.Allocate",
+        "VM.Config.CPU",
+        "VM.Config.Disk",
+        "VM.Config.Memory",
+        "VM.Config.Network",
+        "VM.Config.Options",
+        "VM.Console",
+        "VM.PowerMgmt",
+        "VM.Snapshot",
+        "Datastore.AllocateSpace",
+        "Datastore.Audit",
+        "SDN.Use",
       ] :
       contains(proxmox_virtual_environment_role.k3s_cluster.privileges, p)
     ])
-    error_message = "Proxmox role k3s-cluster is missing one or more documented privileges (NFR-007)."
+    error_message = "Proxmox role k3s-cluster is missing one or more spec T005 privileges."
   }
 
+  # And no extras (the spec is the contract).
   assert {
-    condition     = !contains(proxmox_virtual_environment_role.k3s_cluster.privileges, "Sys.Console")
-    error_message = "Proxmox role k3s-cluster must not include Sys.Console (least privilege)."
+    condition     = length(proxmox_virtual_environment_role.k3s_cluster.privileges) == 12
+    error_message = "Proxmox role k3s-cluster must have exactly 12 privileges per spec T005."
   }
 }
 
@@ -158,7 +175,8 @@ run "acl_binds_to_root_with_propagate" {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Cloudflare scoped token contains exactly three policies (least privilege).
+# 4. Cloudflare scoped token contains exactly three policies covering the
+#    spec T003 permission groups.
 # ---------------------------------------------------------------------------
 run "cloudflare_token_has_three_policies" {
   command = plan
@@ -178,5 +196,22 @@ run "proxmox_token_id_format" {
   assert {
     condition     = output.proxmox_token_id == "k3s-terraform@pam!tf"
     error_message = "proxmox_token_id output must be 'k3s-terraform@pam!tf' — got something else."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 6. local_sensitive_file.tokens_output exists with the right path + perms.
+# ---------------------------------------------------------------------------
+run "tokens_output_file_is_written" {
+  command = plan
+
+  assert {
+    condition     = strcontains(local_sensitive_file.tokens_output.filename, "output.json")
+    error_message = "local_sensitive_file.tokens_output must point at output.json."
+  }
+
+  assert {
+    condition     = local_sensitive_file.tokens_output.file_permission == "0600"
+    error_message = "output.json must be chmod 0600 (spec T007)."
   }
 }

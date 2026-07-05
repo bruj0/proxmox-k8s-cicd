@@ -65,36 +65,7 @@ variable "proxmox_token_name" {
 }
 
 variable "proxmox_role_id" {
-  description = "Proxmox role identifier granting least-privilege cluster provisioning permissions."
+  description = "Proxmox role identifier granting least-privilege cluster provisioning permissions. Defaults to 'k3s-cluster' per spec T005."
   type        = string
   default     = "k3s-cluster"
-}
-
-variable "proxmox_role_privileges" {
-  description = "Least-privilege privilege set for the k3s-cluster role. Sourced from research-log-v7 to satisfy NFR-007."
-  type        = set(string)
-  default = [
-    "VM.Allocate",
-    "VM.Audit",
-    "VM.Clone",
-    "VM.Config.CDROM",
-    "VM.Config.CPU",
-    "VM.Config.Cloudinit",
-    "VM.Config.Disk",
-    "VM.Config.Memory",
-    "VM.Config.Network",
-    "VM.Config.Options",
-    "VM.GuestAgent.Audit",
-    "VM.PowerMgmt",
-    "VM.Snapshot",
-    "VM.Snapshot.Rollback",
-    "Datastore.Allocate",
-    "Datastore.AllocateSpace",
-    "Datastore.Audit",
-    "Pool.Allocate",
-    "Pool.Audit",
-    "Sys.Audit",
-    "Sys.Modify",
-    "SDN.Use",
-  ]
 }
