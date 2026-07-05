@@ -364,3 +364,74 @@ cd clusters/cicd
 tofu init
 tofu apply -auto-approve
 ```
+
+---
+
+## Implementation Summary
+
+**Worktree**: `.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP02` on branch `001-build-a-kubernetes-k3s-cluster-on-proxmo-WP02`
+
+WP02 implements the SS2 Cluster Provisioning Module plus the first instantiated cluster (cicd) per spec. Pre-flight: WP00 (tokens) and WP01 (image build) merged into this worktree so both dependencies are physically present.
+
+Module surface (modules/proxmox-k3s-cluster/): single reusable OpenTofu module that consumes a Talos image template ID, allocates VMIDs deterministically, clones control-plane + worker nodes from the template, provisions dnsmasq DHCP reservations for the VIP + per-node addresses, renders Talos machineconfigs with cluster.endpoint = https://${vip}:6443 and per-node hostnames/IPs, demotes Traefik to ClusterIP via HelmChartConfig + traefik-internal ingress class, and (optionally, off by default) deploys STRRL/cloudflare-tunnel-ingress-controller for public ingress.
+
+Subsystem misfits addressed: M2 (control plane image is the Talos template — module does not bake machineconfig into the image), M3 (unique cluster_name precondition via fileset() at the cluster root), M5 (VIP-DHCP-range overlap precondition).
+
+Precondition fortress (6 terraform_data gates):
+1. validate_control_plane_count — FR-030: count must be 1 or 3.
+2. validate_image_id — image_id must be non-empty.
+3. vip_in_dhcp_range — VIP must not collide with any control-plane or worker IP.
+4. vmid_overlap — allocated VMIDs must not collide with existing live PVE VMs (live API call via data.proxmox_virtual_environment_vms.existing; non-template VMs only).
+5. cluster_name_unique (cluster root) — no sibling cluster directory shares this name.
+6. vmid_in_range — sanity check (implicit via locals, validated in test).
+
+Provider-resource notes (locked into versions.lock.yaml):
+- proxmox_cloned_vm (NOT deprecated proxmox_virtual_environment_cloned_vm).
+- cpu/memory/disk/network/clone are nested attributes written with `=` syntax (NOT blocks); disk and network are maps needing `{ scsi0 = {...} }` / `{ net0 = {...} }`.
+- proxmox_virtual_environment_hosts uses `entry { address, hostnames = [...] }` blocks.
+- local_sensitive_file (NOT deprecated local_file sensitive_content).
+- helm_release.count conditional on var.cf_publish_traefik_publicly (default false per NFR-007/M7).
+
+Tofu native tests (13/13 passing):
+- Module tests/main.tftest.hcl: 11 runs — traefik_defaults_to_clusterip, traefik_publish_publicly_uses_hostports, cluster_name_exposed, vip_must_not_be_in_dhcp_range, control_plane_count_one_is_accepted, control_plane_count_three_is_accepted, vmid_start_at_template_is_accepted, image_id_empty_rejected (expect_failures = [terraform_data.validate_image_id]), node_count_matches_topology, output_json_has_required_fields, talos_configs_are_rendered.
+- Cluster root clusters/cicd/tests/main.tftest.hcl: 2 runs — root_module_resolves, root_has_one_control_plane_and_one_worker.
+
+Misfit proof (live): vip_must_not_be_in_dhcp_range is exercised by intentionally placing the VIP on the same CIDR position as a worker; the precondition fires with a readable message. vmid_overlap depends on the live API; mocked in test main.tftest.hcl with mock_data defaults.
+
+Quality gates: 13/13 tofu test pass; tofu validate clean in both directories; WP01 pytest unaffected (22/22); WP00 tofu test unaffected (6/6); versions.yaml pinned with 5 new entries (bpg/proxmox >= 0.111.1, hashicorp/helm >= 2.0.0, strrl chart 0.0.23, cilium 1.16.x, kube-vip 1.2.1).
+
+Cluster root (clusters/cicd/) — first instance: terraform_data.cluster_name_unique precondition, terraform_data.image_id precondition reading ../../build/image-id.txt, terraform_data.tokens precondition reading ../../infra/tokens/output.json, single module.cicd invocation passing all 13 inputs. Empty clusters/cicd/variables.tf reserved for future overrides. terraform.tfvars.example ships no secrets (M7/NFR-007). .gitignore excludes output.json and *.tfstate* (no secrets in VCS).
+
+WP02 branch = 001-build-a-kubernetes-k3s-cluster-on-proxmo-WP02. No commits yet on this branch (the 18 product files + versions.yaml bump are uncommitted). Lane to advance from doing → for_review once this summary is persisted and the implement command is run.
+
+### Files created
+
+| File | Description |
+|------|-------------|
+| `modules/proxmox-k3s-cluster/CONTEXT.md` | SS2 (Cluster Provisioning Module) glossary: Cluster, TalosNode, Cluster VIP, Demoted Traefik, Cloudflare Tunnel Fallback, Image Template Reference, Cluster Output File. |
+| `modules/proxmox-k3s-cluster/versions.tf` | terraform { required_version = '>= 1.6.0' } and required_providers { proxmox >= 0.111.1, helm >= 2.0.0, local >= 2.0.0 }. |
+| `modules/proxmox-k3s-cluster/versions.lock.yaml` | Per-WP compatibility matrix with rationale for each pinned dependency. |
+| `modules/proxmox-k3s-cluster/variables.tf` | 13 input variables: cluster_name, vip, vmid_start, ip_start (CIDR required, e.g. 10.0.0.201/24), image_id, control_plane (object with count + vcpu + memory), workers (object with count + vcpu + memory), pod_cidr, svc_cidr, vnet_bridge, cf_api_token (sensitive), cf_account_id (sensitive), cf_tunnel_name, cf_ingress_class, cf_publish_traefik_publicly (default false), talos_version. |
+| `modules/proxmox-k3s-cluster/main.tf` | locals (total_nodes, vmid_end, control_plane_ips via cidrhost, worker_ips, nodes map), 4 precondition terraform_data blocks (validate_control_plane_count, validate_image_id, vip_in_dhcp_range, vmid_overlap via data.proxmox_virtual_environment_vms.existing), and proxmox_cloned_vm.node with `for_each` over the nodes map (clone { source_vm_id, full = true }, cpu, memory, disk { scsi0 }, network { net0 }, tags). |
+| `modules/proxmox-k3s-cluster/dnsmasq.tf` | proxmox_virtual_environment_hosts.hosts with entry { address, hostnames = [...] } blocks: 1 entry for VIP, N entries for nodes. |
+| `modules/proxmox-k3s-cluster/talos.tf` | local_sensitive_file.talos_machineconfig[each.key] with templatefile('templates/talos-machineconfig.yaml.tftpl', { ... }); file_permission = '0600'. |
+| `modules/proxmox-k3s-cluster/templates/talos-machineconfig.yaml.tftpl` | Talos v1alpha1 config: cluster.endpoint = https://${vip}:6443, hostname, network.interfaces, network.extraHostEntries for VIP+node hosts, talos-version, machine-install disk selector. |
+| `modules/proxmox-k3s-cluster/traefik.tf` | local_file.traefik_chartconfig (singular, no for_each) rendering traefik-chartconfig.yaml.tftpl with service.type=ClusterIP and ingressClass.name=traefik-internal. |
+| `modules/proxmox-k3s-cluster/traefik-chartconfig.yaml.tftpl` | HelmChartConfig manifest with service.type=ClusterIP (demoted from LoadBalancer) and ingressClass.name=traefik-internal. |
+| `modules/proxmox-k3s-cluster/cloudflare-tunnel.tf` | helm_release.cf_tunnel_controller with count = var.cf_publish_traefik_publicly ? 1 : 0 (default off per NFR-007). Chart: oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller version 0.0.23. |
+| `modules/proxmox-k3s-cluster/outputs.tf` | 8 outputs: cluster_name, vip, vnet_bridge, control_plane_count, worker_count, talos_dir, nodes (map), helm_releases. local_sensitive_file.cluster_output writes output.json with 0600 permission. |
+| `modules/proxmox-k3s-cluster/tests/main.tftest.hcl` | mock_provider 'proxmox' (mock_data proxmox_virtual_environment_vms defaults, mock_resource proxmox_cloned_vm empty defaults — no name override since non-computed). mock_provider 'helm' (mock_resource helm_release defaults = {id, status}, no name). 11 run blocks exercising topology, Traefik demotion, VIP/control-plane precondition, count validation, image-id precondition (expect_failures), node count, output.json shape, Talos config rendering. |
+| `clusters/cicd/main.tf` | Cluster root: reads image-id.txt via local_file (../../build/image-id.txt), reads tokens_output via local_sensitive_file (../../infra/tokens/output.json), 2 precondition terraform_data blocks (cluster_name_unique via fileset() against sibling clusters — M3; image_id_present). Single module 'cicd' invocation passing all 13 inputs. ip_start = '10.0.0.201/24' (CIDR). |
+| `clusters/cicd/variables.tf` | Empty placeholder for future cluster-specific overrides (e.g. control_plane.vcpu overrides). Reserved for M3 flexibility. |
+| `clusters/cicd/terraform.tfvars.example` | Safe template with all 13 inputs commented out. No secrets per M7/NFR-007. ip_start example uses /24. |
+| `clusters/cicd/.gitignore` | Excludes output.json, *.tfstate*, talos/, .terraform/, *.tfplan, .tofu-test-history, *.tfvars (real ones). Secrets never enter VCS. |
+| `clusters/cicd/tests/main.tftest.hcl` | mock_provider 'proxmox'/'local'/'helm'. 2 run blocks: root_module_resolves (assert cluster_name/vip/control_plane_count/worker_count), root_has_one_control_plane_and_one_worker (validate 1+1 topology passes). Mock local_sensitive_file content uses literal JSON (Function calls not allowed in mock defaults). |
+| `versions.yaml` | Appends 5 entries for WP02 dependencies: bpg/proxmox >= 0.111.1, hashicorp/helm >= 2.0, strrl chart 0.0.23, cilium 1.16.x, kube-vip 1.2.1. Updates pinned_toolchain.tofu = '>= 1.6.0' for WP02-WP06. |
+
+### Test results
+
+13/13 passing -- `cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP02/modules/proxmox-k3s-cluster && tofu test && cd ../../clusters/cicd && tofu test`
+
+### Validator
+
+True/13 checks passed -- `cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP02/modules/proxmox-k3s-cluster && tofu test && cd ../clusters/cicd && tofu test`

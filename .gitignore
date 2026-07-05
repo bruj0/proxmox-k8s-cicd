@@ -26,3 +26,12 @@ __pycache__/
 
 # Coverage
 .coverage
+# OpenTofu / Terraform (WP02+)
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+.tofu-test-history
