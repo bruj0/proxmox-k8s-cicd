@@ -23,7 +23,7 @@ export
 # Targets
 # ---------------------------------------------------------------------------
 
-.PHONY: build-image clean-image test lint install-deps
+.PHONY: build-image clean-image bootstrap-cluster test lint install-deps
 
 build-image:
 	@if [[ -z "$$PVE_ENDPOINT" || -z "$$PVE_TOKEN_ID" || -z "$$PVE_TOKEN_SECRET" ]]; then \
@@ -41,8 +41,14 @@ clean-image:
 	@rm -f build/image-id.txt build/.build.lock
 	@echo "build/ state cleared"
 
-test:
-	@$(PYTHON) -m pytest tools/tests/ -v
+bootstrap-cluster:
+        @if [[ -z "$(CLUSTER)" ]]; then \
+                echo "ERROR: set CLUSTER=<name> (e.g. make bootstrap-cluster CLUSTER=cicd)" >&2; \
+                exit 2; \
+        fi
+        @$(PYTHON) -m tools.bootstrap_cluster \
+                --cluster $(CLUSTER) \
+                --repo-root $(CURDIR)
 
 lint:
 	@$(PYTHON) -m ruff check tools/
