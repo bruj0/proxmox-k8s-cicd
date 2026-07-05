@@ -39,3 +39,43 @@ hashicorp_proxmox_packer_plugin:
 pinned_toolchain:
   python: ">= 3.11"
   tofu: ">= 1.6.0"   # for WP02-WP06
+
+# WP02 (Cluster Provisioning Module / SS2) — added 2026-07-05.
+# Mirrors modules/proxmox-k3s-cluster/versions.lock.yaml.
+bpg_proxmox_provider:
+  version: ">= 0.111.1"
+  rationale: >
+    Spec T001-mandated minimum. The v0.111.1 release adds the
+    operating_system.type attribute and fixes network_device.vlan_id
+    validation. proxmox_cloned_vm resource is the modern flavour.
+  source: "context7-auto-research on 2026-07-05"
+
+hashicorp_helm_provider:
+  version: ">= 2.0.0"
+  rationale: >
+    Required for the helm_release.manifest attribute (drift detection).
+    STRRL/cloudflare-tunnel-ingress-controller chart exposes a manifest
+    field.
+  source: "context7-auto-research on 2026-07-05"
+
+strrl_cloudflare_tunnel_ingress_controller_chart:
+  version: "0.0.23"
+  rationale: >
+    Spec-mandated. Installed by helm_release.cf_tunnel_controller when
+    var.cf_publish_traefik_publicly=true (off by default per NFR-007).
+  source: "context7-auto-research on 2026-07-05"
+
+cilium_chart:
+  version: "1.16.x"
+  rationale: >
+    Matches versions.yaml['talos']['v1.10.0']['cilium_max']. WP04 will
+    install Cilium; the Talos machineconfig rendered here must be
+    compatible.
+  source: "context7-auto-research on 2026-07-05"
+
+kube_vip_chart:
+  version: "1.2.1"
+  rationale: >
+    Spec T003-mandated kube-vip version. Talos machineconfig references
+    kube-vip's static pod manifest shape that 1.2.1 emits.
+  source: "context7-auto-research on 2026-07-05"
