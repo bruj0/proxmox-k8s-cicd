@@ -16,7 +16,10 @@ Phases (6):
                    minio-console) to workloads on apps (WP06)
 
 Entry gate:
-  python -m tools.bootstrap_cluster --cluster cicd [--phases talos,k3s,helm,kubeconfig,host_ports]
+  python -m tools.bootstrap_cluster --cluster cicd \
+    [--phases talos,k3s,helm,kubeconfig,host_ports]
+  python -m tools.bootstrap_cluster --cluster apps \
+    [--phases talos,k3s,helm,kubeconfig,host_ports,externalname]
 
 Design choices:
   - Any non-zero subprocess exit raises BootstrapError. We do NOT silently
@@ -343,9 +346,10 @@ def _run_externalname(
                 "rerun bootstrap after `tofu apply` lands the manifest"
             ),
         )
-        # Record as done so the next run doesn't re-warn; idempotent first-run
-        # contract.
-        state.phases_done.add("externalname")
+        # Do NOT mark the phase as done: we have not applied the manifest,
+        # so the next bootstrap run must retry. Recording 'done' here
+        # would silently leave the apps cluster without the ExternalName
+        # Services after the operator runs `tofu apply`.
         return
 
     try:

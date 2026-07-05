@@ -292,3 +292,11 @@ def test_externalname_phase_skips_when_manifest_missing(
     )
     # The phase completed without invoking kubectl.
     assert not any(c[:1] == ["kubectl"] for c in invoked)
+    # The phase must NOT have marked itself done: the manifest is missing,
+    # so the operator's next bootstrap run after `tofu apply` lands the
+    # manifest must retry the apply. Recording 'done' here would silently
+    # leave the apps cluster without the ExternalName Services.
+    state_file = tmp_path / "clusters" / "apps" / "bootstrap_state.json"
+    if state_file.exists():
+        data = json.loads(state_file.read_text())
+        assert "externalname" not in data.get("phases_done", [])

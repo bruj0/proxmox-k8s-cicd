@@ -29,7 +29,7 @@ flowchart TB
     HelmRemaining[Helm: proxmox-ccm, proxmox-csi, cloudflare-tunnel, cert-manager]
     HostPorts[host_ports verifier]
     Kubeconfig[kubeconfig merge to ~/.kube/config]
-    ExternalName[ExternalName Services (apps only)]
+    ExternalName[ExternalName Services apps only]
   end
 
   Packer --> Template
