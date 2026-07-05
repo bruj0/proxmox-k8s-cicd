@@ -1,0 +1,79 @@
+{
+  "skill": "implement",
+  "wp_id": "WP00",
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T10:39:04.629179+00:00",
+  "prose": "WP00 implements the SS0 Token Provisioning subsystem per spec. v1 review raised 7 issues (3 major, 4 minor); the v1→v2 fix-up cycle resolved all of them. The OpenTofu root compiles cleanly, all 6 mocked tests pass, and Proxmox provider v0.111.1 (spec-mandated minimum) is now installed. Cloudflare permission groups are aligned with spec T003 (Zone:Zone:Read, Zone:DNS:Edit, Account:Cloudflare Tunnel:Edit — the same set STRRL/cloudflare-tunnel-ingress-controller needs). Proxmox privileges align with spec T005 (12 privileges). output.json is written by a local_sensitive_file resource (chmod 0600) per spec T007 — the hashicorp/local v2 provider deprecated local_file.sensitive_content in favour of local_sensitive_file, documented as api_discovery. M7 and NFR-007 are structurally enforced (admin token in env only, no wildcard perms, 12-privilege Proxmox role).",
+  "worktree": {
+    "path": ".worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP00",
+    "branch": "001-build-a-kubernetes-k3s-cluster-on-proxmo-WP00"
+  },
+  "files_created": [
+    {
+      "path": "infra/tokens/versions.tf",
+      "description": "Provider version constraints: opentofu >= 1.6, cloudflare/cloudflare >= 4.0, bpg/proxmox >= 0.111.1, hashicorp/local >= 2.0, hashicorp/http >= 3.0. Mirrors versions.lock.yaml."
+    },
+    {
+      "path": "infra/tokens/versions.lock.yaml",
+      "description": "T000 deliverable: explicit version matrix with context7-derived rationale for each provider. Authoritative source of version pins, mirrored in versions.tf."
+    },
+    {
+      "path": "infra/tokens/variables.tf",
+      "description": "10 input variables. cloudflare_admin_token, proxmox_api_token_id, proxmox_api_token_secret are sensitive and env-only (M7). cloudflare_admin_token must come from CLOUDFLARE_TOKEN_CREATOR; proxmox_*_token from PROXMOX_API_TOKEN. See scripts/apply.sh for the env-to-TF_VAR_ translation."
+    },
+    {
+      "path": "infra/tokens/terraform.tfvars.example",
+      "description": "T001 deliverable: copy-pasteable example tfvars with safe placeholder values for non-secret variables. Deliberately omits admin_token / proxmox secrets (M7, env-only)."
+    },
+    {
+      "path": "infra/tokens/providers.tf",
+      "description": "Cloudflare + Proxmox provider configuration. Cloudflare authenticates with the admin token. Proxmox authenticates with the bootstrap api_token (USER@REALM!TOK=secret form, split into id+secret for variables.tf)."
+    },
+    {
+      "path": "infra/tokens/cloudflare.tf",
+      "description": "Scopes the Cloudflare API token to exactly the three spec T003 permission groups: Zone Read (Zone:Zone:Read), Zone DNS Write (Zone:DNS:Edit), and Cloudflare Tunnel:Edit (Account:Cloudflare Tunnel:Edit). Permission group IDs are resolved at plan time via cloudflare_account_api_token_permission_groups_list (no hard-coded UUIDs). IP-locked to the apply runner via ifconfig.me. Addresses NFR-007."
+    },
+    {
+      "path": "infra/tokens/proxmox.tf",
+      "description": "Creates the k3s-cluster role (12 privileges per spec T005), the k3s-terraform@pam user, a '/' ACL with propagate=true, and the user's API token. Addresses NFR-007."
+    },
+    {
+      "path": "infra/tokens/outputs.tf",
+      "description": "10 outputs mirroring the output.json keys + tokens_output_path (so downstream WPs can `tofu output -raw tokens_output_path`). cloudflare_scoped_token and proxmox_token_value are marked sensitive."
+    },
+    {
+      "path": "infra/tokens/output_json.tf",
+      "description": "Spec T007 contract: local_sensitive_file resource that writes infra/tokens/output.json on every apply (chmod 0600). The local_sensitive_file resource replaces the deprecated local_file.sensitive_content attribute; behaviour is identical. Contains the spec's six inter-system keys: cloudflare_scoped_token, cloudflare_account_id, cloudflare_zone_id, proxmox_token_id, proxmox_token_secret, pve_endpoint."
+    },
+    {
+      "path": "infra/tokens/.gitignore",
+      "description": "Keeps output.json, *.tfstate*, crash.log, and .terraform/ out of git. output.json is the only file that contains secret material."
+    },
+    {
+      "path": "infra/tokens/tests/main.tftest.hcl",
+      "description": "6 mocked tofu tests covering: resource names, spec T005 privilege set (12 privileges), ACL bind + propagate, exactly 3 Cloudflare policies, proxmox_token_id format, and output.json chmod 0600 contract. Mocks keep the suite runnable without live API access."
+    },
+    {
+      "path": "scripts/apply.sh",
+      "description": "Operator wrapper: sources .env (env-only secret material), translates CLOUDFLARE_TOKEN_CREATOR/PROXMOX_API_TOKEN to TF_VAR_*, runs `tofu init -backend=false && tofu apply -auto-approve`. The post-apply jq step is gone — output.json is now written by the local_sensitive_file resource."
+    },
+    {
+      "path": "docs/runbooks/rotate-tokens.md",
+      "description": "Rotation runbook: quarterly + emergency procedures for both Cloudflare scoped token and Proxmox user token. Covers disaster recovery (apply is acyclic, partial apply converges on re-run)."
+    },
+    {
+      "path": "infra/tokens/CONTEXT.md",
+      "description": "Glossary for the SS0 subsystem: 7 domain terms (Cloudflare Admin Token, Scoped Cloudflare Token, Proxmox Role/User/Token, Token Output File, Versions Lock File) with avoid-synonyms and relationships."
+    }
+  ],
+  "test_results": {
+    "passed": 6,
+    "total": 6,
+    "command": "cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP00/infra/tokens && tofu test -no-color"
+  },
+  "validator": {
+    "passed": 0,
+    "total": 0,
+    "command": "spec-bridge-skill-tool implement WP00 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo --session-id 22507d78-ad78-44a7-a150-51c5679525cf"
+  }
+}
