@@ -341,7 +341,7 @@ The Proxmox role is intentionally **not** destroyed (idempotent on re-create; re
 ---
 
 ## Review Summary (v1)
-status: requested
+status: implemented
 
 The OpenTofu root compiles cleanly and all 5 mocked tests pass. The least-privilege intent of NFR-007 is structurally enforced (3 Cloudflare policies resolved via data source, 22 Proxmox privileges from research-log-v7). However, several spec deliverables are missing or functionally deviated: the Proxmox provider pin rejects the spec's mandated version, T000's versions.lock.yaml is absent, T001's terraform.tfvars.example is absent, T007's local_file resource is replaced by a shell post-step, and stale comments reference non-existent short resource names. Several live-API acceptance criteria (apply exit 0, dashboard verification) cannot be evaluated in this offline review and must be verified in CI.
 

@@ -1,7 +1,7 @@
 {
   "skill": "review",
   "version": 1,
-  "status": "requested",
+  "status": "implemented",
   "wp_id": "WP00",
   "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
   "timestamp": "2026-07-05T10:31:05.990763+00:00",
