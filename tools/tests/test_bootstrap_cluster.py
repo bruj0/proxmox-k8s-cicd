@@ -83,9 +83,16 @@ def _write_cluster(tmp_path: Path) -> Path:
     return cluster
 
 
-def test_list_phases_returns_all_five() -> None:
-    """Acceptance: phases enum is [talos, k3s, helm, kubeconfig, host_ports]."""
-    assert list_phases() == ["talos", "k3s", "helm", "kubeconfig", "host_ports"]
+def test_list_phases_returns_all_six() -> None:
+    """Acceptance: phases enum is [talos, k3s, helm, kubeconfig, host_ports, externalname]."""
+    assert list_phases() == [
+        "talos",
+        "k3s",
+        "helm",
+        "kubeconfig",
+        "host_ports",
+        "externalname",
+    ]
 
 
 def test_bootstrap_missing_output_json_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
