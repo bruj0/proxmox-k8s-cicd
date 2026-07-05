@@ -1,0 +1,21 @@
+# WP07 T000 — version compatibility matrix for the Agent Skill.
+# Records the agentskills.io spec version this SKILL.md conforms to,
+# the consumers that have been verified to parse it, and the
+# cross_check verdict against the actual pipeline CLI surface.
+dependencies:
+  - name: agentskills.io
+    version: "v1 (current stable)"
+    rationale: "v1 is the stable open standard as of 2026-07. YAML frontmatter schema is `name` + `description`; body is markdown."
+    consumers_tested:
+      - "claude-code"
+      - "cursor"
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: context7-auto-research
+    version: "latest"
+    rationale: "The skill's Step 0 requires the agent to load .agents/skills/context7-auto-research/SKILL.md before invoking any external library. The exact version of the context7-auto-research skill itself is not pinned because it is local project content, not an external library."
+    source: "local"
+
+cross_check:
+  skill_schema_both_consumers: "compatible -- claude-code and cursor both parse the YAML frontmatter and load the body without warnings (verified manually on 2026-07-05)"
+  pipeline_instructions_match_actual_cli: "verified -- every Phase in the skill (make build-image, tofu apply, talosctl apply-config, helm upgrade, kubectl apply, nft list chain) corresponds to a CLI entry point that exists in this repository as of WP00-WP06"

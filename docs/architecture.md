@@ -4,8 +4,10 @@ End-to-end architecture for the proxmox-k8s-cicd pipeline. Cross-links:
 
 - Feature spec: [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/spec.md`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/spec.md)
 - Plan: [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/plan.md`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/plan.md)
+- Misfit decomposition: [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/decomposition.md`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/decomposition.md)
 - Research log: [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md)
 - Cluster instances: [`docs/cluster-instances.md`](cluster-instances.md)
+- Verification matrix: [`docs/verification.md`](verification.md)
 
 ## Subsystems
 
