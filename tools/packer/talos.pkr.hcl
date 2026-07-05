@@ -1,0 +1,147 @@
+###############################################################################
+# Packer template for baking Talos Linux into a Proxmox template (SS1).
+#
+# Builder: hashicorp/proxmox v1.2.3+ proxmox-iso. We boot the Talos ISO,
+# wait for the boot loader to time out (Talos is installer-mode by default —
+# it boots, prints the dashboard, and waits for an operator), then halt the
+# VM and convert it to a Proxmox template.
+#
+# For FIRST-TIME builds (no template exists yet) the operator must:
+#   1. Upload the Talos ISO to bigbertha's local storage (e.g. via
+#      `scp` or the PVE UI).
+#   2. Pre-create a base Talos VM named `talos-base` at VMID 999, configured
+#      with 2GB RAM, 10GB disk, and the Talos ISO attached.
+# Subsequent builds can clone that base VM and only need to refresh the
+# Talos image (boot_command exits the dashboard loop with `reboot`).
+#
+# Cross-reference: this template is invoked by tools/build_image.py which
+# passes the four PVE vars via -var flags. The VMID here is fixed at 900
+# per WP spec (TEMPLATE_VMID constant in build_image.py).
+###############################################################################
+
+packer {
+  required_plugins {
+    proxmox = {
+      version = ">= 1.2.3"
+      source  = "github.com/hashicorp/proxmox"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Variables — passed by `tools/build_image.py` via -var flags.
+# ---------------------------------------------------------------------------
+
+variable "talos_version" {
+  type        = string
+  description = "Talos Linux release tag (e.g. v1.10.0). Validated against versions.yaml by the wrapper."
+}
+
+variable "pve_endpoint" {
+  type        = string
+  description = "Proxmox VE API URL (e.g. https://bigbertha:8006/api2/json)."
+}
+
+variable "pve_node" {
+  type        = string
+  description = "Proxmox node name (default: bigbertha)."
+  default     = "bigbertha"
+}
+
+variable "pve_token_id" {
+  type        = string
+  description = "Proxmox API token id (USER@REALM!TOK)."
+  sensitive   = true
+}
+
+variable "pve_token_secret" {
+  type        = string
+  description = "Proxmox API token secret. Never logged."
+  sensitive   = true
+}
+
+# ---------------------------------------------------------------------------
+# Source: clone-from-base-VM. The base VM (VMID 999) is set up once by the
+# operator and pinned to the Talos ISO. We boot it, halt, and convert to
+# template.
+# ---------------------------------------------------------------------------
+
+source "proxmox-clone" "talos" {
+  proxmox_url              = var.pve_endpoint
+  username                 = var.pve_token_id
+  token                    = "${var.pve_token_id}=${var.pve_token_secret}"
+  node                     = var.pve_node
+  vm_id                    = "900"
+  vm_name                  = "talos-template"
+  vm_template_name         = "talos-${var.talos_version}"
+  template_description     = "Talos ${var.talos_version} template, baked ${formatdate(\"YYYY-MM-DD\", timestamp())}"
+  insecure_skip_tls_verify = true
+
+  # Clone from a base Talos VM named talos-base (operator-created once).
+  clone_from_vm_id = "999"
+
+  # Talos headless: no SSH needed after build (cluster uses talosctl over API).
+  # We keep ssh_username/password in case the operator enables `talosctl
+  # gen config` debug mode.
+  ssh_username     = "talos"
+  ssh_password     = "talos"
+  ssh_wait_timeout = "0s"
+
+  # VM sizing: matches what WP02 expects for controlplane nodes.
+  cores  = 4
+  memory = 4096
+
+  # EFI boot — Talos Linux only boots UEFI on modern PVE.
+  bios    = "ovmf"
+  machine = "q35"
+  efi_config {
+    efi_storage_pool  = "local-lvm"
+    efi_type          = "4m"
+    pre_enrolled_keys = true
+  }
+
+  scsi_controller = "virtio-scsi-single"
+
+  disks {
+    type             = "scsi"
+    storage_pool     = "local-lvm"
+    disk_size        = "20G"
+    format           = "raw"
+    io_thread        = true
+    discard          = true
+    ssd              = true
+  }
+
+  network_adapters {
+    model    = "virtio"
+    bridge   = "vmbr0"
+    firewall = true
+  }
+
+  qemu_agent = true
+  os         = "l26"
+
+  # If the Talos base VM was set up with the ISO attached, Packer simply
+  # needs to halt it after boot. We do this via the shell provisioner below.
+  boot_wait = "30s"
+}
+
+# ---------------------------------------------------------------------------
+# Build: halt the VM (Talos is already installed) and convert to template.
+# ---------------------------------------------------------------------------
+
+build {
+  name    = "talos-${var.talos_version}"
+  sources = ["source.proxmox-clone.talos"]
+
+  # Give the VM ~30 seconds to reach its bootloader / dashboard, then power
+  # off. The next `clone` will copy the halted state to a fresh template.
+  provisioner "shell" {
+    inline = [
+      "sleep 30",
+      "sudo poweroff",
+    ]
+    # Ignore nonzero exit from poweroff (the SSH connection drops mid-shutdown).
+    expect_disconnect = true
+  }
+}
