@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP05"
 title: "Remaining Helm Releases + kubeconfig Merge"
-lane: "doing"
+lane: "for_review"
 dependencies:
   - WP04
 subsystem: "SS3 (Bootstrap Orchestration + Agent Skill)"
@@ -13,11 +13,17 @@ abstract_components:
   - tools/bootstrap_cluster.py (extended)
   - clusters/cicd/manifests/ (any pre-rendered Helm values)
 agent: "spec-bridge-implement"
+build_validated: true
+tdd_red_clean: true
 history:
   - timestamp: "2026-07-06T02:50:00+00:00"
     lane: doing
     agent: spec-bridge-implement
     action: started implementation
+  - timestamp: "2026-07-06T03:30:00+00:00"
+    lane: for_review
+    agent: spec-bridge-implement
+    action: implementation complete -- ready for review
 ---
 
 # WP05 — Remaining Helm Releases + kubeconfig Merge
@@ -259,3 +265,27 @@ python tools/bootstrap_cluster.py --cluster cicd --phase all
 ```bash
 python tools/bootstrap_cluster.py --cluster cicd --phase all
 ```
+
+---
+
+## Implementation Summary
+
+**Worktree**: `.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP05` on branch `001-build-a-kubernetes-k3s-cluster-on-proxmo-WP05`
+
+WP05 extends SS3 (tools/bootstrap_cluster.py) to install the four remaining Helm releases after cilium + kube-vip: sergelogvinov/proxmox-cloud-controller-manager v0.14.0 (providerID + region/zone labels), sergelogvinov/proxmox-csi-plugin chart 0.5.9 (StorageClass proxmox-lvm-thin on lvm-thin pool data1), cert-manager v1.16.1 (in-cluster CA only -- installCRDs=true, NO ACME solvers per NFR-007), and oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller v0.0.23 (IngressClass cloudflare-tunnel). Demoted Traefik is installed via the Talos HelmChartConfig mechanism (rendered by WP02 into clusters/<name>/manifests/traefik-helmchartconfig.yaml); SS3 applies that file via kubectl. A new host_ports phase verifies M2 (no new DNAT rules added by Helm charts) by diffing the live PVE nft prerouting chain against clusters/<name>/host_ports_baseline.txt; new DNAT rules surface as HostPortsAddedError. The bootstrap_cluster <-> host_ports cycle is broken via an on_ssh_failure callback so lib/host_ports.py stays independent of bootstrap_cluster.py.
+
+### Files created
+
+| File | Description |
+|------|-------------|
+| `scripts/capture_host_ports_baseline.sh` | Captures the initial PVE nft prerouting chain to clusters/<name>/host_ports_baseline.txt once at WP00 setup. Invoked via ssh -p 6022 to the PVE operator host. Verifies the snapshot contains 'chain prerouting' before accepting. |
+| `tools/lib/host_ports.py` | verify_no_new_dnat_rules(): SSH-based nft check. Detects new dnat-to clauses and raises HostPortsAddedError. Optional on_ssh_failure callable decouples it from bootstrap_cluster's BootstrapError type -- a unit-testable seam. |
+| `tools/tests/test_remaining_releases.py` | Seven pytest cases for the WP05 surface: four lock-chart coverage, no-ACME-on-cert-manager, proxmox-ccm carries credentials+region/zone, proxmox-csi declares proxmox-lvm-thin default, host_ports verifier passes on unchanged prerouting, host_ports raises on new DNAT, host_ports surfaces ssh failure via callback. |
+
+### Test results
+
+35/35 passing -- `cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP05 && python -m pytest tools/tests/ -q`
+
+### Validator
+
+0/0 checks passed -- `spec-bridge-skill-tool implement WP05 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo --session-id 77e7bf8a-d756-4b82-bf8b-b98ec095d0b5`
