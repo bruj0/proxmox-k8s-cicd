@@ -32,6 +32,11 @@ mock_provider "proxmox" {
       ]
     }
   }
+  mock_resource "proxmox_cloned_vm" {
+    defaults = {
+      id = 9001
+    }
+  }
   mock_resource "proxmox_virtual_environment_cloned_vm" {
     defaults = {}
   }
@@ -132,14 +137,32 @@ run "cluster_name_exposed" {
 # M5 — VIP must NOT overlap the per-node IP range (DHCP safety).
 # ---------------------------------------------------------------------------
 
-run "vip_must_not_be_in_dhcp_range" {
+# Negative test for M5: cidrhost("10.0.0.201/24", 0) = "10.0.0.0" (the IP
+# portion is the NETWORK and cidrhost indexes hosts), so the first cp IP is
+# always "10.0.0.0" with these defaults. vip = "10.0.0.0" collides and the
+# precondition must fire.
+run "vip_overlap_with_dhcp_range_is_rejected" {
   command = plan
-  # 10.0.0.30 is the VIP, 10.0.0.201 is the first node IP. With ip_start=10.0.0.201/24
-  # and total_nodes=2, the per-node IPs are 10.0.0.201 and 10.0.0.202. VIP 10.0.0.30
-  # is outside that range. This is the safe default.
+  variables {
+    vip = "10.0.0.0"
+  }
+  expect_failures = [
+    terraform_data.vip_in_dhcp_range,
+  ]
+}
+
+# Positive counterpart: with default variables vip=10.0.0.30 is disjoint from
+# the per-node range "10.0.0.0","10.0.0.1".
+run "vip_in_safe_range_is_accepted" {
+  command = plan
   assert {
     condition     = output.vip == "10.0.0.30"
     error_message = "vip must round-trip via output."
+  }
+  assert {
+    # Sanity: confirm the precondition's input set is what we expect.
+    condition     = length(terraform_data.vip_in_dhcp_range.input.control_plane_ip) == 1
+    error_message = "control_plane_ip set size must equal control_plane.count."
   }
 }
 

@@ -75,6 +75,23 @@ resource "terraform_data" "cluster_name_unique" {
 }
 
 # ---------------------------------------------------------------------------
+# SS1 contract enforcement: build/image-id.txt must be non-empty (M3 + FR-002).
+# ---------------------------------------------------------------------------
+
+resource "terraform_data" "image_id_present" {
+  input = {
+    image_id = data.local_file.image_id.content
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(trimspace(data.local_file.image_id.content)) > 0
+      error_message = "build/image-id.txt is empty or missing; run tools/build_image.py first to bake the Talos template."
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Module invocation.
 # ---------------------------------------------------------------------------
 
@@ -111,5 +128,6 @@ module "cicd" {
 
   depends_on = [
     terraform_data.cluster_name_unique,
+    terraform_data.image_id_present,
   ]
 }

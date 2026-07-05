@@ -9,7 +9,7 @@
   "worktree": {
     "path": ".worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP02",
     "branch": "001-build-a-kubernetes-k3s-cluster-on-proxmo-WP02",
-    "commit": "pending"
+    "commit": "92185a18d83f9d3a2811b1ebc83f6faa12f601f5"
   },
   "files_created": [
     {

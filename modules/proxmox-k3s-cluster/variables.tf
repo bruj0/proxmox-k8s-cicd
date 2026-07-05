@@ -24,7 +24,13 @@ variable "vmid_start" {
 
 variable "ip_start" {
   type        = string
-  description = "First IP in CIDR notation (e.g. 10.0.0.201/24). Per-node IPs are cidrhost(ip_start, 0), cidrhost(ip_start, 1), etc."
+  description = <<-EOT
+    CIDR network in which per-node IPs are placed (e.g. 10.0.0.0/24).
+    cidrhost(var.ip_start, i) returns the i-th host in that network (index 0 is the
+    network address). The IP portion of the CIDR is treated as the NETWORK, not as
+    a starting host -- so 10.0.0.201/24 yields hosts 10.0.0.0, 10.0.0.1, ... (NOT
+    10.0.0.201). The /24 mask is REQUIRED.
+  EOT
 }
 
 variable "image_id" {
