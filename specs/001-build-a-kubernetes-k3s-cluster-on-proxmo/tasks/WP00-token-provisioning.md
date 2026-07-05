@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP00"
 title: "Token Provisioning — declarative Cloudflare scoped token + Proxmox role/user/token"
-lane: "planned"
+lane: "review"
 dependencies: []
 subsystem: "SS0 (Token Provisioning)"
 misfits_addressed:

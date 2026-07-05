@@ -1,0 +1,13 @@
+# State files — contain secrets.
+*.tfstate
+*.tfstate.*
+*.tfstate.json
+crash.log
+*.tfplan
+
+# The sensitive-output contract for downstream WPs. Written by scripts/apply.sh.
+output.json
+
+# Provider plugins / lockfile (lockfile is committed; plugins are not)
+.terraform/
+.terraform.lock.hcl
