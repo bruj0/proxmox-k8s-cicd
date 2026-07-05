@@ -1,14 +1,18 @@
 """SS3 entrypoint: bootstrap a cluster end-to-end.
 
-Phases:
+Phases (5):
   1. talos       — apply-config to every node, wait for healthy, bootstrap k3s
-  2. k3s         — placeholder (k3s starts inside Talos static pods; phase is
-                   kept for symmetry / future health checks)
-  3. helm        — install the first two Helm releases (Cilium + kube-vip)
+  2. k3s         — verify apiserver /healthz
+  3. helm        — install the first two (Cilium + kube-vip, WP04) and
+                   remaining four (proxmox-ccm, proxmox-csi,
+                   cloudflare-tunnel, cert-manager, WP05) Helm releases;
+                   apply the rendered Traefik HelmChartConfig if present
   4. kubeconfig  — pull admin kubeconfig, merge into ~/.kube/config
+  5. host_ports  — verify the PVE nft prerouting chain has no new DNAT
+                   rules beyond the captured baseline (M2 misfit)
 
 Entry gate:
-  python -m tools.bootstrap_cluster --cluster cicd [--phases talos,k3s,helm,kubeconfig]
+  python -m tools.bootstrap_cluster --cluster cicd [--phases talos,k3s,helm,kubeconfig,host_ports]
 
 Design choices:
   - Any non-zero subprocess exit raises BootstrapError. We do NOT silently
@@ -18,8 +22,8 @@ Design choices:
   - All StructuredLogger calls route through log.scrub() so token-bearing
     stdout never reaches disk; M7 misfit.
   - Per-cluster cluster_dir / state.json records which phases have
-    succeeded; re-running with --phases talos,k3s skips the helm and
-    kubeconfig phases even if helm/kubeconfig were never reached.
+    succeeded; re-running with --phases talos,k3s skips the helm,
+    kubeconfig and host_ports phases even if they were never reached.
 """
 from __future__ import annotations
 
@@ -34,15 +38,25 @@ from typing import Iterable, Sequence
 # tools/ is the project root for sys.path purposes during tests.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib.helm_client import HelmClient, first_two_releases  # noqa: E402
-from lib.kubeconfig_merger import merge as merge_kubeconfig  # noqa: E402
-from lib.log import StructuredLogger  # noqa: E402
-from lib.talos_client import ClusterTopology, TalosClient  # noqa: E402
+# Use non-relative imports so the file works both as `python tools/bootstrap_cluster.py`
+# and as `from tools import bootstrap_cluster` (tests + harness). The lib/*
+# package lives next to bootstrap_cluster.py and is added to sys.path above.
+from lib.helm_client import (  # type: ignore[import-not-found]  # noqa: E402
+    HelmClient,
+    apply_manifest,
+    first_two_releases,
+    remaining_releases,
+)
+from lib.host_ports import verify_no_new_dnat_rules  # type: ignore[import-not-found]  # noqa: E402
+from lib.kubeconfig_merger import merge as merge_kubeconfig  # type: ignore[import-not-found]  # noqa: E402
+from lib.log import StructuredLogger  # type: ignore[import-not-found]  # noqa: E402
+from lib.secret_loader import SecretLoader  # type: ignore[import-not-found]  # noqa: E402
+from lib.talos_client import ClusterTopology, TalosClient  # type: ignore[import-not-found]  # noqa: E402
 
-_LOG = StructuredLogger("bootstrap_cluster")
+_LOG = StructuredLogger("bootstrap_cluster")  # noqa: E402
 
 
-PHASES: tuple[str, ...] = ("talos", "k3s", "helm", "kubeconfig")
+PHASES: tuple[str, ...] = ("talos", "k3s", "helm", "kubeconfig", "host_ports")
 
 
 def list_phases() -> list[str]:
@@ -198,14 +212,38 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
         except (subprocess.CalledProcessError, OSError) as exc:
             raise BootstrapError("helm", {"reason": str(exc)}) from exc
     client = HelmClient(kubeconfig)
-    cluster_dict = {
+    cluster_dict: dict[str, object] = {
         "name": topo.name,
         "vip": topo.vip,
         "pod_cidr": topo.pod_cidr,
         "svc_cidr": topo.svc_cidr,
     }
+    secrets = _load_cluster_secrets()
     try:
+        # First two: cilium + kube-vip (WP04).
         client.install_or_upgrade(first_two_releases(cluster_dict))
+        # Remaining four (WP05): proxmox-ccm, proxmox-csi, cloudflare-tunnel,
+        # cert-manager.
+        remaining, traefik_apply = remaining_releases(cluster_dict, secrets)
+        client.install_or_upgrade(remaining)
+        # Traefik is installed via the Talos HelmChartConfig mechanism (the
+        # SS2 module rendered the YAML into clusters/<name>/manifests/ at
+        # apply time). SS3's job is to apply that file. If it does not
+        # exist yet (first WP05 run before tofu apply re-renders), warn.
+        if traefik_apply is not None:
+            try:
+                apply_manifest(traefik_apply, kubeconfig)
+            except subprocess.CalledProcessError as exc:
+                raise BootstrapError("helm", {"reason": str(exc)}) from exc
+        else:
+            _LOG.warn(
+                "helm.traefik_noapply",
+                message=(
+                    "no HelmChartConfig manifest found under "
+                    f"{cluster_dir}/manifests; expect kube-system/Traefik to "
+                    "use its bundled defaults."
+                ),
+            )
     except subprocess.CalledProcessError as exc:
         raise BootstrapError("helm", {"reason": str(exc)}) from exc
     state.phases_done.add("helm")
@@ -221,6 +259,66 @@ def _run_kubeconfig(state: State, cluster_dir: Path, topo: ClusterTopology) -> N
     except (subprocess.CalledProcessError, OSError) as exc:
         raise BootstrapError("kubeconfig", {"reason": str(exc)}) from exc
     state.phases_done.add("kubeconfig")
+
+
+def _run_host_ports(state: State, cluster_dir: Path) -> None:
+    """WP05: M2 verification -- assert no new DNAT rules were added by Helm.
+
+    Reads the captured baseline at `<cluster_dir>/host_ports_baseline.txt`
+    (produced by scripts/capture_host_ports_baseline.sh once at WP00 setup),
+    dumps the live PVE prerouting chain via ssh, and fails on diff.
+    """
+
+    def _on_ssh_failure(
+        phase: str, ssh_target: str, exc: Exception
+    ) -> None:
+        raise BootstrapError(
+            phase,
+            {
+                "reason": "ssh to PVE failed",
+                "ssh_target": ssh_target,
+                "detail": str(exc),
+            },
+        ) from exc
+
+    baseline = cluster_dir / "host_ports_baseline.txt"
+    try:
+        verify_no_new_dnat_rules(
+            baseline, on_ssh_failure=_on_ssh_failure
+        )
+    except FileNotFoundError as exc:
+        raise BootstrapError(
+            "host_ports",
+            {"reason": "baseline file missing", "path": str(baseline)},
+        ) from exc
+    state.phases_done.add("host_ports")
+
+
+def _load_cluster_secrets() -> dict[str, str]:
+    """Read runtime secrets from env via SecretLoader.
+
+    Returns:
+        Mapping with keys: proxmox_token_id, proxmox_token_secret,
+        cf_api_token, cf_account_id, cf_tunnel_name. None of these is
+        ever logged.
+    """
+    import os
+    secrets = SecretLoader(logger=StructuredLogger("bootstrap_cluster.secrets"))
+    required = secrets.get_many(
+        [
+            "PROXMOX_TOKEN_ID",
+            "PROXMOX_TOKEN_SECRET",
+            "CF_API_TOKEN",
+            "CF_ACCOUNT_ID",
+        ]
+    )
+    out: dict[str, str] = {
+        k.lower(): v for k, v in required.items()
+    }
+    # CF_TUNNEL_NAME is optional; fall back to empty so the helm_client
+    # uses its default.
+    out["cf_tunnel_name"] = os.environ.get("CF_TUNNEL_NAME", "")
+    return out
 
 
 def bootstrap(
@@ -255,6 +353,8 @@ def bootstrap(
             _run_helm(state, cluster_dir, topo)
         elif phase == "kubeconfig":
             _run_kubeconfig(state, cluster_dir, topo)
+        elif phase == "host_ports":
+            _run_host_ports(state, cluster_dir)
         state.save()
 
     _LOG.info("bootstrap.done", cluster=cluster_name)
