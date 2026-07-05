@@ -1,0 +1,126 @@
+{
+  "skill": "review",
+  "version": 1,
+  "status": "approved",
+  "wp_id": "WP05",
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T14:26:21.628626+00:00",
+  "previous_version": null,
+  "prose": "WP05 adds the four remaining Helm releases (proxmox-cloud-controller-manager, proxmox-csi-plugin, cloudflare-tunnel-ingress-controller, cert-manager), kubectl-applies the Traefik HelmChartConfig rendered by WP02, and adds the host_ports verification phase that SSHes to the PVE host and asserts no new DNAT rules have been added. Round 1 review caught three issues, all fixed in commit 5b36377. (1) _diff_dnat_lines short-circuited on `baseline_has any dnat line`, masking any new rule once the baseline already contained one -- replaced with a proper line-set diff and a regression test exercising that exact case. (2) The module-level _LOG assignment in helm_client.py was duplicated on consecutive lines (external-editor artefact); deduped. (3) tools/bootstrap_cluster.py module docstring still described 4 phases; refreshed to 5 and updated the helm phase description to mention the four remaining releases + Traefik HelmChartConfig. mypy --strict --explicit-package-bases -p tools: 0 issues across 21 source files; pytest 36 passed (35 prior + 1 new regression test); ruff clean. Live-cluster smoke tests (helm list, topology labels, PVC bind, nft diff, ingress resolution, context merge) remain deferred to the post-merge acceptance run, same as WP04.",
+  "reviewer": "spec-bridge-review",
+  "criteria": [
+    {
+      "name": "[ ] `helm list -A` shows all 6 releases `deployed` (cilium, kube-vip, proxmox-cloud-controller-manager, proxmox-csi-plugin, traefik, cloudflare-tunnel-ingress-controller, cert-manager)",
+      "verdict": "partial",
+      "note": "covered at the helm-invocation level by test_bootstrap_full_happy_path (asserts all 6 charts go through `helm upgrade --install`) and test_remaining_releases_includes_all_five_locked_charts (asserts chart set). Live `helm list -A` verification deferred to post-merge acceptance run."
+    },
+    {
+      "name": "[ ] `kubectl --context cicd get nodes` shows topology labels (`topology.kubernetes.io/region=bigbertha`, `topology.kubernetes.io/zone=BigBertha`)",
+      "verdict": "partial",
+      "note": "covered at the values level by test_proxmox_ccm_values_include_proxmox_credentials asserting region/zone come from cluster.pve_node. Live `kubectl get nodes --show-labels` deferred to post-merge."
+    },
+    {
+      "name": "[ ] A 1-replica Deployment with a PVC succeeds end-to-end (PVC binds, Pod Ready)",
+      "verdict": "fail",
+      "note": "no integration test exists; live-cluster acceptance only. Deferred to post-merge."
+    },
+    {
+      "name": "[ ] `ssh root@10.0.0.1 -p 6022 'nft list chain ip nat prerouting'` shows **zero** new DNAT rules compared to the pre-WP05 baseline (verify-no-host-ports step passes)",
+      "verdict": "partial",
+      "note": "covered by three unit tests including the new regression test_verify_no_new_dnat_rules_raises_when_baseline_already_has_dnat (asserts a second DNAT added on top of an existing baseline DNAT surfaces as HostPortsAddedError). Live PVE ssh + nft list deferred to post-merge."
+    },
+    {
+      "name": "[ ] An Ingress of class `cloudflare-tunnel` resolves via Cloudflare within 60 s (smoke test)",
+      "verdict": "fail",
+      "note": "no integration test exists; live-cluster acceptance only. Deferred to post-merge."
+    },
+    {
+      "name": "[ ] cert-manager is installed with only the in-cluster CA ClusterIssuer; no ACME solvers configured for the public path",
+      "verdict": "pass",
+      "note": "test_cert_manager_release_has_no_acme_solvers asserts no value key contains 'acme' or 'letsencrypt'; only `installCRDs=true` is rendered. NFR-007 enforced."
+    },
+    {
+      "name": "[ ] `~/.kube/config` contains a `cicd` context pointing at `https://10.0.0.30:6443`",
+      "verdict": "partial",
+      "note": "kubeconfig_merger is exercised by WP04's bootstrap_full_happy_path; the merge logic was already approved in WP04 round 1. Live `kubectl config get-contexts cicd` deferred to post-merge."
+    },
+    {
+      "name": "[ ] Re-running `bootstrap_cluster.py --cluster cicd --phase all` is a no-op in <60 s",
+      "verdict": "pass",
+      "note": "state.json skip logic is unchanged from WP04; covered by test_bootstrap_full_happy_path. The new host_ports phase also writes to phases_done on success."
+    },
+    {
+      "name": "[ ] All tests pass",
+      "verdict": "pass",
+      "note": "36 passed (was 35 + 1 new regression test)."
+    },
+    {
+      "name": "Misfit Resolution: each misfit in misfits_addressed has a passing test",
+      "verdict": "pass",
+      "note": "M2 (no new host ports) -- three unit tests including the new regression. M7 (secret redaction) -- unchanged from WP04 round 1. No other misfits addressed in this WP."
+    },
+    {
+      "name": "Subsystem Boundary Respect: no undeclared cross-subsystem coupling",
+      "verdict": "pass",
+      "note": "SS3 consumes SS2's output.json via ClusterTopology.from_output_json and reads pre-rendered Traefik HelmChartConfig from clusters/<name>/manifests/. SS0 secrets via SecretLoader. No direct SS1 coupling added."
+    },
+    {
+      "name": "Contract Compliance: implementation matches plan.md inter-system contracts",
+      "verdict": "pass",
+      "note": "remaining_releases chart set + version pinning matches versions.lock.yaml additional_dependencies. proxmox-csi values.storageclass.name == proxmox-lvm-thin and storageclass.default == 'true' match the contract. cert-manager installCRDs=true matches."
+    },
+    {
+      "name": "No New Misfits: no new failure modes introduced without documenting them",
+      "verdict": "pass",
+      "note": "no new failure modes. host_ports adds a known ssh failure path documented via the on_ssh_failure callback."
+    },
+    {
+      "name": "Build Health -- language type-checker exits 0",
+      "verdict": "pass",
+      "note": "mypy --strict --explicit-package-bases -p tools: Success: no issues found in 21 source files."
+    }
+  ],
+  "issues": [
+    {
+      "id": "Issue 1",
+      "severity": "major",
+      "title": "_diff_dnat_lines short-circuited when baseline already had a DNAT rule",
+      "description": "The original implementation computed `baseline_has = any(dnat line in baseline)` and only flagged new DNAT rules when `not baseline_has`. This silently masked any DNAT added on top of an existing baseline DNAT -- exactly the case the WP00 baseline script will produce for production clusters where the operator already exposes ssh (port 22) via a DNAT rule. The verifier would have passed on a misconfigured cluster that introduced a new host port (e.g. 443).",
+      "fix": "Replaced with a proper line-set diff: collect baseline DNAT lines (stripped) into a set and report any current DNAT line not in that set. Added a regression test test_verify_no_new_dnat_rules_raises_when_baseline_already_has_dnat that asserts a baseline containing `tcp dport 22 dnat to 10.0.0.1:22` plus a current state adding `tcp dport 443 dnat to 10.0.0.20:6443` surfaces HostPortsAddedError.",
+      "misfits": [
+        "M2"
+      ],
+      "subtasks": [],
+      "affected_files": [
+        "tools/lib/host_ports.py",
+        "tools/tests/test_remaining_releases.py"
+      ]
+    },
+    {
+      "id": "Issue 2",
+      "severity": "minor",
+      "title": "Duplicate _LOG module-level assignment in tools/lib/helm_client.py",
+      "description": "An external editor left `_LOG = StructuredLogger(\"helm_client\")` on both line 32 and line 34. Python silently re-binds the second to the first so runtime is unaffected, and mypy/pytest do not flag it. Cosmetic.",
+      "fix": "Removed the duplicate; kept the binding immediately under the import.",
+      "misfits": [],
+      "subtasks": [],
+      "affected_files": [
+        "tools/lib/helm_client.py"
+      ]
+    },
+    {
+      "id": "Issue 3",
+      "severity": "minor",
+      "title": "tools/bootstrap_cluster.py module docstring still describes 4 phases",
+      "description": "After WP05 added the host_ports phase and the remaining four Helm releases, the module docstring at the top of bootstrap_cluster.py still listed only the original four phases and described helm as 'install the first two Helm releases'. Misleading to a reader landing on this file.",
+      "fix": "Refreshed the docstring to list all 5 phases and to describe the helm phase as installing the first two + remaining four + applying the Traefik HelmChartConfig.",
+      "misfits": [],
+      "subtasks": [],
+      "affected_files": [
+        "tools/bootstrap_cluster.py"
+      ]
+    }
+  ],
+  "dependency_notes": "",
+  "closing": "WP05 approved after three issues (1 major, 2 minor) all fixed in commit 5b36377; mypy/pytest/ruff all green; live-cluster smoke tests deferred to post-merge acceptance run as in WP04."
+}
