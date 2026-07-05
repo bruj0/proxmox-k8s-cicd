@@ -14,3 +14,7 @@ terraform.tfstate.*
 crash.log
 *.tfplan.json
 .talos/
+
+# Per-VM Talos machineconfig files (bootstrap tokens).
+talos/
+talos/*.yaml
