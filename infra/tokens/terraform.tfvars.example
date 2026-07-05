@@ -1,0 +1,33 @@
+###############################################################################
+# Example tfvars — copy to terraform.tfvars and fill in real values.
+#
+# IMPORTANT: cloudflare_admin_token and proxmox_api_token_secret are NOT listed
+# here. They MUST come from environment variables (CLOUDFLARE_TOKEN_CREATOR
+# and PROXMOX_API_TOKEN respectively) so they never touch this file or
+# version control. See scripts/apply.sh for the env-to-TF_VAR_ translation
+# and infra/tokens/CONTEXT.md for the rationale (M7, NFR-007).
+###############################################################################
+
+# Cloudflare account ID under which the scoped token is issued. Find it in the
+# Cloudflare dashboard right sidebar.
+cloudflare_account_id = "00000000000000000000000000000000"
+
+# Cloudflare zone ID for the cluster's public DNS zone. Find it on the zone
+# overview page in the Cloudflare dashboard.
+cloudflare_zone_id = "00000000000000000000000000000000"
+
+# Optional: lock the scoped token to a specific CIDR (e.g. your CI runner).
+# When null (default), scripts/apply.sh auto-detects the runner's public IP.
+# cloudflare_runner_cidr = "203.0.113.5/32"
+
+# Base URL of the Proxmox VE API endpoint. The provider uses this for the
+# initial bootstrap; the user it creates authenticates with the token.
+proxmox_api_url = "https://pve.example.com:8006/api2/json"
+
+# Human-friendly endpoint label stored in output.json (does not affect auth).
+proxmox_endpoint = "https://pve.example.com:8006/api2/json"
+
+# Optional overrides for the user / role / token names. Defaults shown.
+# proxmox_user_id     = "k3s-terraform@pam"
+# proxmox_token_name  = "tf"
+# proxmox_role_id     = "k3s-cluster"

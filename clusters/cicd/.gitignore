@@ -1,0 +1,20 @@
+# Cluster root artifacts that must never be committed.
+#
+# output.json contains node IPs and the cluster identity; talos/*.yaml contains
+# machineconfig with bootstrap tokens. terraform.tfvars may carry future
+# non-secret overrides.
+output.json
+output.json.tmp
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+terraform.tfstate
+terraform.tfstate.*
+*.tfplan
+crash.log
+*.tfplan.json
+.talos/
+
+# Per-VM Talos machineconfig files (bootstrap tokens).
+talos/
+talos/*.yaml
