@@ -1,2 +1,5 @@
 vendored/
 .env
+
+# Local skills (kept on disk, not tracked in git)
+.agents/skills/spec-bridge-*
