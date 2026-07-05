@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP06"
 title: "Cross-Cluster Services + Apps Bootstrap"
-lane: "for_review"
+lane: "doing"
 dependencies:
   - WP03
   - WP05
@@ -15,6 +15,7 @@ abstract_components:
 tdd_red_clean: true
 build_validated: true
 agent: "spec-bridge-implement"
+reviewed_by: "spec-bridge-review"
 history:
   - timestamp: "2026-07-05T14:32:38+00:00"
     lane: doing
@@ -24,6 +25,10 @@ history:
     lane: for_review
     agent: spec-bridge-implement
     action: implementation complete -- ready for review
+  - timestamp: "2026-07-05T14:45:26+00:00"
+    lane: doing
+    agent: spec-bridge-review
+    action: review started
 ---
 
 # WP06 — Cross-Cluster Services + Apps Bootstrap
