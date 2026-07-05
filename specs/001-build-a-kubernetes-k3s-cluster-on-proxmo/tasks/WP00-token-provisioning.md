@@ -17,6 +17,23 @@ abstract_components:
   - infra/tokens/terraform.tfvars.example
   - infra/tokens/output.json (gitignored)
 agent: "implement"
+build_validated: true
+api_discovery:
+  - component: "infra/tokens/output_json.tf"
+    discovered_during: "WP00 v1 review (Issue 4)"
+    finding: >
+      Spec T007 specifies `local_file` with `sensitive_content = "0600"` for
+      the output.json writer. The hashicorp/local v2 provider deprecated the
+      `sensitive_content` attribute on `local_file` in favour of the dedicated
+      `local_sensitive_file` resource. Behaviour is identical (sensitive
+      content written to a file with file_permission = "0600"); only the
+      resource type changed. No new WP needed — this is a single-line
+      resource swap.
+    resolution: >
+      Use `local_sensitive_file.tokens_output` instead of `local_file
+      .tokens_output`. The spec T007 contract (chmod 0600, sensitive
+      content, no plain-text secrets in plan output) is preserved.
+    plan_md_referenced: true
 history:
   - timestamp: "2026-07-05T15:50:00Z"
     lane: "doing"
