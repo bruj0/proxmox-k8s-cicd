@@ -12,6 +12,7 @@ abstract_components:
   - clusters/apps/manifests/cicd-system/externalname.yaml
   - clusters/apps/manifests/cicd-system/kustomization.yaml
   - tools/bootstrap_cluster.py (extended --cluster apps branch)
+tdd_red_clean: true
 agent: "spec-bridge-implement"
 history:
   - timestamp: "2026-07-05T14:32:38+00:00"
