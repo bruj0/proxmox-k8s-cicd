@@ -19,6 +19,10 @@ history:
     lane: "doing"
     agent: "implement"
     action: "started implementation"
+  - timestamp: "2026-07-05T17:10:00Z"
+    lane: "doing"
+    agent: "review"
+    action: "review started"
 ---
 
 # WP00 — Token Provisioning
