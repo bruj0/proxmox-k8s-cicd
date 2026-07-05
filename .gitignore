@@ -5,3 +5,4 @@ vendored/
 .agents/skills/spec-bridge-*
 .worktrees/
 .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP00/
+.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP01/
