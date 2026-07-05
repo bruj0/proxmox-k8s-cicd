@@ -53,5 +53,6 @@ gates:
 - **ruff**: `ruff check tools/` reports zero violations.
 - **pytest**: `pytest tools/tests/` reports 51 passed (43 baseline
   WP00-WP06 + 8 WP07 acceptance tests).
-- **tofu tests**: `tofu test` passes for the cluster module and the
-  apps cluster instance (12/12 + 2/2 in CI).
+- **tofu tests**: `tofu test` passes for the four tofu modules
+  (12 cluster-module + 2 cicd-instance + 5 apps-instance + 6 tokens
+  = 25 passed / 0 failed).

@@ -7,8 +7,10 @@ description: Bring up two k3s clusters (cicd + apps) on a single Proxmox host us
 
 End-to-end pipeline for provisioning two Talos/k3s clusters on a single
 Proxmox host (BigBertha, 10.0.0.1). The pipeline drives five numbered
-phases; each phase has a single CLI entry point and explicit success
-criteria that the agent MUST assert before proceeding.
+top-level phases; the bootstrap phase (Phase 4) further decomposes
+into six ordered sub-phases (talos, k3s, helm, kubeconfig, host_ports,
+externalname). Each (sub-)phase has a single CLI entry point and
+explicit success criteria that the agent MUST assert before proceeding.
 
 ## When to load this skill
 
@@ -18,13 +20,19 @@ decommission the k3s clusters provisioned by spec 001.
 ## Glossary (canonical vocabulary)
 
 The bounded context for this skill is in
-[CONTEXT.md](./CONTEXT.md). The four canonical terms are:
+[CONTEXT.md](./CONTEXT.md). The five canonical terms are:
 
-- **Pipeline**: the five-phase end-to-end sequence.
-- **Phase**: one numbered stage of the pipeline.
-- **Runbook**: a single-phase copy-pasteable procedure under
-  `docs/runbooks/`. Runbooks do not require an Agent.
+- **Agent Skill**: this document (the agentskills.io SKILL.md artifact
+  loaded by Claude Code, Cursor, etc.).
 - **Operator**: the human or AI agent that invokes the skill.
+- **Pipeline**: the five-top-level-phase end-to-end sequence (build
+  image -> provision cluster -> capture baseline -> bootstrap -> final
+  verification).
+- **Phase**: one numbered top-level stage of the pipeline. Phase 4
+  (bootstrap) further decomposes into six sub-phases.
+- **Runbook**: a single-concern copy-pasteable procedure under
+  `docs/runbooks/`. Runbooks do not require an Agent; the operator
+  follows them directly.
 
 ## Step 0 — Load the context7-auto-research gate (MANDATORY)
 
