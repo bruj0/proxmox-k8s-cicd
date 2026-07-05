@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP07"
 title: "Agent Skill + Runbooks + Final Verification"
-lane: "planned"
+lane: "doing"
 dependencies:
   - WP06
 subsystem: "SS3 (Agent Skill)"
@@ -15,8 +15,12 @@ abstract_components:
   - docs/runbooks/decommission-cluster.md
   - docs/runbooks/rotate-tokens.md
   - docs/architecture.md
-agent: ""
-history: []
+agent: "spec-bridge-implement"
+history:
+  - timestamp: "2026-07-05T14:52:55+00:00"
+    lane: doing
+    agent: spec-bridge-implement
+    action: started implementation
 ---
 
 # WP07 — Agent Skill + Runbooks + Final Verification
