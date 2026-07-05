@@ -1,0 +1,98 @@
+{
+  "skill": "implement",
+  "wp_id": "WP01",
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T11:03:04.593195+00:00",
+  "session_id": "7c2273a1-9fca-4e84-9d72-666f590b2607",
+  "agent": "spec-bridge-implement",
+  "prose": "WP01 implements the SS1 Image Build Pipeline per spec. Three misfits from the decomposition review are structurally addressed:\n\n  M1 (Packer race) -- build/.build.lock serialises concurrent invocations via an exclusive fcntl flock. A second invocation while the first holds the lock exits non-zero (exit 10) with a structured error and never invokes Packer. Lock is released in a try/finally so SIGTERM/Ctrl-C does not leak it.\n\n  M8 (compatibility) -- _check_version() reads versions.yaml and validates --talos-version before any PVE API call. An unknown version exits non-zero (exit 2) with a structured error naming the known set.\n\n  M4 (silent failure, partial) -- Every event emits one structured JSON line to the audit log (default build/build.log). On Packer failure the half-baked VM is destroyed via PveClient.destroy_vm (best-effort) and the run exits non-zero (exit 3). Secrets are never logged: StructuredLogger._scrub() drops any dict key whose name matches secret|token|password|ssh_key|sshkey (case-insensitive).\n\nIdempotency: after a successful build, build/image-id.txt is written. Re-invocation with the same --talos-version short-circuits before lock acquisition. Dry-run (--dry-run) prints the would-be Packer invocation without spawning Packer.\n\nPacker template (tools/packer/talos.pkr.hcl) clones base VM 999 and bakes Talos v1.10.0 into template VMID 900 (EFI boot, virtio-scsi-single, qemu_agent). Build provisioner is `sleep 30 && sudo poweroff`. All versions come from versions.yaml resolved via -var-file.\n\nQuality gates: 21/21 pytest tests pass; coverage 87%; ruff check clean; mypy --strict on tools.lib.* + tools.build_image clean (Success: no issues found in 11 source files). CLI smoke-tested: --help prints argparse usage; --dry-run with a known version logs the would-be Packer invocation; --dry-run with an unknown version exits non-zero with a structured error.",
+  "worktree": {
+    "path": ".worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP01",
+    "branch": "001-build-a-kubernetes-k3s-cluster-on-proxmo-WP01",
+    "commit": "7c403d9"
+  },
+  "files_created": [
+    {
+      "path": "tools/build_image.py",
+      "description": "CLI entry point. argparse parses --talos-version/--pve-*/--build-dir/--versions-yaml/--audit-log/--verbose/--dry-run. BuildImage dataclass wraps run(), version validation, build/.build.lock, idempotency via image-id.txt, dry-run, _run_packer with PACKER_TIMEOUT_SECONDS=600, cleanup-destroy-half-baked-VM on _PackerFailed. Exit codes: 2 (version abort), 3 (packer failed), 10 (lock held). sys.path shim allows direct `python tools/build_image.py` invocation."
+    },
+    {
+      "path": "tools/lib/log.py",
+      "description": "StructuredLogger dataclass with info/error/warn. JSON-line audit log (one dict per line). _scrub() drops keys whose name contains secret|token|password|ssh_key|sshkey (case-insensitive). 8-hex-char trace_id per instance. Thread-safe with _lock. Console output is single-line (no dict dumps)."
+    },
+    {
+      "path": "tools/lib/secret_loader.py",
+      "description": "SecretLoader dataclass wrapping os.environ. get(name) raises if absent; get_many(names) raises if any missing. Logs only key names (never values)."
+    },
+    {
+      "path": "tools/lib/pve_client.py",
+      "description": "PveClient wrapping qm list/stop/destroy. Best-effort destroy swallows non-zero exit. find_template_vmid(name) parses `qm list` output via regex to map name -> VMID."
+    },
+    {
+      "path": "tools/packer/talos.pkr.hcl",
+      "description": "Packer template. proxmox-clone builder from base VM 999, target template VMID 900, EFI boot, scsi_controller virtio-scsi-single, qemu_agent true. Build provisioner: `sleep 30 && sudo poweroff`. All Packer + plugin + Talos versions are sourced from variables resolved from versions.yaml via -var-file at invocation."
+    },
+    {
+      "path": "tools/CONTEXT.md",
+      "description": "SS1 (Image Build Pipeline) glossary: Image Template, Build Lock, Packer Timeout, Versions Matrix, Audit Log Entry, Half-Baked VM, Talos Version."
+    },
+    {
+      "path": "tools/__init__.py",
+      "description": "Package marker (comment only)."
+    },
+    {
+      "path": "tools/lib/__init__.py",
+      "description": "Package marker (comment only)."
+    },
+    {
+      "path": "tools/tests/conftest.py",
+      "description": "Inserts repo root into sys.path so `from tools.lib...` imports resolve under pytest."
+    },
+    {
+      "path": "tools/tests/test_log.py",
+      "description": "4 tests: JSON-per-line audit, key redaction (keys dropped not masked), nested dict redaction, trace_id per instance."
+    },
+    {
+      "path": "tools/tests/test_secret_loader.py",
+      "description": "5 tests: env round-trip, missing-key raises, no value leak to log, batch get_many, batch raises on first missing."
+    },
+    {
+      "path": "tools/tests/test_pve_client.py",
+      "description": "4 tests: qm destroy invocation, best-effort destroy continues on non-zero exit, find_template_vmid parses qm list, returns None when absent."
+    },
+    {
+      "path": "tools/tests/test_build_image.py",
+      "description": "8 tests: unknown talos version exits 2 + no Packer invoked; known version proceeds; idempotent skip when image-id.txt exists; Packer failure triggers cleanup + no image-id.txt + non-zero exit; secrets never logged on failure; lock blocks concurrent run; lock acquired/released within a single run; --dry-run does not invoke Packer."
+    },
+    {
+      "path": "versions.yaml",
+      "description": "Master version matrix. talos.v1.10.0 = {kernel: ..., k3s: ..., cilium: ...}. packer pin. hashicorp/proxmox plugin pin. pinned_toolchain section. Authoritative source for _check_version() validation."
+    },
+    {
+      "path": "Makefile",
+      "description": "Targets: build-image (runs tools/build_image.py), clean-image (rm -rf build/), test (pytest tools/tests/), lint (ruff + mypy), install-deps (pip install --user pytest pytest-cov mypy ruff types-PyYAML). build-image requires PVE_ENDPOINT/PVE_TOKEN_ID/PVE_TOKEN_SECRET env vars."
+    },
+    {
+      "path": "mypy.ini",
+      "description": "Selective strict mypy: tools.lib.* and tools.build_image are --strict; tools.tests.* is ignore_errors."
+    },
+    {
+      "path": ".gitignore",
+      "description": "Adds build/, *.tfstate*, __pycache__/, .pytest_cache/, .mypy_cache/, .ruff_cache/, .vscode/, .idea/, .coverage."
+    }
+  ],
+  "test_results": {
+    "passed": 21,
+    "total": 21,
+    "command": "cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP01 && python -m pytest tools/tests/ --cov=tools --cov-report=term -q",
+    "coverage": "87%"
+  },
+  "validator": {
+    "passed": true,
+    "total": 21,
+    "command": "cd /home/bruj0/projects/proxmox-k8s-cicd && spec-bridge-skill-tool implement WP01 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo",
+    "details": "21/21 tests pass; ruff check tools/ clean; mypy tools/ clean (Success: no issues found in 11 source files)"
+  },
+  "tdd_red_clean": true,
+  "build_validated": true
+}

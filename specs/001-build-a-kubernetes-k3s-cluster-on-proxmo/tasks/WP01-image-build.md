@@ -1,28 +1,48 @@
 ---
 work_package_id: "WP01"
 title: "Image Build Pipeline — Packer + build_image.py + versions.yaml"
-lane: "doing"
+lane: for_review
 dependencies: []
 subsystem: "SS1 (Image Build Pipeline)"
 misfits_addressed:
-  - M1
-  - M8
-  - M4 (partial)
+- M1
+- M8
+- M4 (partial)
 abstract_components:
-  - tools/build_image.py
-  - tools/packer/talos.pkr.hcl
-  - tools/lib/pve_client.py
-  - tools/lib/log.py
-  - tools/lib/secret_loader.py
-  - versions.yaml
-  - build/image-id.txt (gitignored)
+- tools/build_image.py
+- tools/packer/talos.pkr.hcl
+- tools/lib/pve_client.py
+- tools/lib/log.py
+- tools/lib/secret_loader.py
+- versions.yaml
+- build/image-id.txt (gitignored)
 agent: "implement"
 history:
-  - timestamp: "2026-07-05T19:00:00Z"
-    lane: "doing"
-    agent: "implement"
-    action: "started implementation"
+- timestamp: "2026-07-05T19:00:00Z"
+  lane: "doing"
+  agent: "implement"
+  action: "started implementation"
+- timestamp: '2026-07-05T19:10:00Z'
+  lane: for_review
+  agent: implement
+  action: implementation complete; ready for review
+  note: 21/21 tests pass; coverage 87%; ruff+mypy clean. CLI smoke-tested. 
+    Summary at 
+    specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/tasks/WP01-implement-summary.json
+tdd_red_clean: true
+tdd_red_clean_note: 'TDD red-phase: tests were written first for the misfits M1, M4,
+  M8. Initial red-phase run failed with assertion errors (not ImportError / ModuleNotFoundError
+  / SyntaxError). Tests then drove the implementation in tools/lib/log.py, tools/lib/secret_loader.py,
+  tools/lib/pve_client.py, and tools/build_image.py. Final green-phase: 21/21 pass.'
+build_validated: true
+build_validated_note: 'mypy --strict on tools.lib.* and tools.build_image exits 0
+  ("Success: no issues found in 11 source files"). ruff check tools/ exits 0. CLI
+  smoke test: `python tools/build_image.py --help` prints argparse usage; --dry-run
+  with a known version logs the would-be Packer invocation; --dry-run with an unknown
+  version exits non-zero with a structured error.'
 ---
+
+
 
 # WP01 — Image Build Pipeline
 
@@ -310,3 +330,53 @@ export PVE_TOKEN_SECRET='<scoped-token>'
 export TALOS_VERSION=v1.10.0
 make build-image
 ```
+
+---
+
+## Implementation Summary
+
+**Worktree**: `.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP01` on branch `001-build-a-kubernetes-k3s-cluster-on-proxmo-WP01`
+
+WP01 implements the SS1 Image Build Pipeline per spec. Three misfits from the decomposition review are structurally addressed:
+
+  M1 (Packer race) -- build/.build.lock serialises concurrent invocations via an exclusive fcntl flock. A second invocation while the first holds the lock exits non-zero (exit 10) with a structured error and never invokes Packer. Lock is released in a try/finally so SIGTERM/Ctrl-C does not leak it.
+
+  M8 (compatibility) -- _check_version() reads versions.yaml and validates --talos-version before any PVE API call. An unknown version exits non-zero (exit 2) with a structured error naming the known set.
+
+  M4 (silent failure, partial) -- Every event emits one structured JSON line to the audit log (default build/build.log). On Packer failure the half-baked VM is destroyed via PveClient.destroy_vm (best-effort) and the run exits non-zero (exit 3). Secrets are never logged: StructuredLogger._scrub() drops any dict key whose name matches secret|token|password|ssh_key|sshkey (case-insensitive).
+
+Idempotency: after a successful build, build/image-id.txt is written. Re-invocation with the same --talos-version short-circuits before lock acquisition. Dry-run (--dry-run) prints the would-be Packer invocation without spawning Packer.
+
+Packer template (tools/packer/talos.pkr.hcl) clones base VM 999 and bakes Talos v1.10.0 into template VMID 900 (EFI boot, virtio-scsi-single, qemu_agent). Build provisioner is `sleep 30 && sudo poweroff`. All versions come from versions.yaml resolved via -var-file.
+
+Quality gates: 21/21 pytest tests pass; coverage 87%; ruff check clean; mypy --strict on tools.lib.* + tools.build_image clean (Success: no issues found in 11 source files). CLI smoke-tested: --help prints argparse usage; --dry-run with a known version logs the would-be Packer invocation; --dry-run with an unknown version exits non-zero with a structured error.
+
+### Files created
+
+| File | Description |
+|------|-------------|
+| `tools/build_image.py` | CLI entry point. argparse parses --talos-version/--pve-*/--build-dir/--versions-yaml/--audit-log/--verbose/--dry-run. BuildImage dataclass wraps run(), version validation, build/.build.lock, idempotency via image-id.txt, dry-run, _run_packer with PACKER_TIMEOUT_SECONDS=600, cleanup-destroy-half-baked-VM on _PackerFailed. Exit codes: 2 (version abort), 3 (packer failed), 10 (lock held). sys.path shim allows direct `python tools/build_image.py` invocation. |
+| `tools/lib/log.py` | StructuredLogger dataclass with info/error/warn. JSON-line audit log (one dict per line). _scrub() drops keys whose name contains secret|token|password|ssh_key|sshkey (case-insensitive). 8-hex-char trace_id per instance. Thread-safe with _lock. Console output is single-line (no dict dumps). |
+| `tools/lib/secret_loader.py` | SecretLoader dataclass wrapping os.environ. get(name) raises if absent; get_many(names) raises if any missing. Logs only key names (never values). |
+| `tools/lib/pve_client.py` | PveClient wrapping qm list/stop/destroy. Best-effort destroy swallows non-zero exit. find_template_vmid(name) parses `qm list` output via regex to map name -> VMID. |
+| `tools/packer/talos.pkr.hcl` | Packer template. proxmox-clone builder from base VM 999, target template VMID 900, EFI boot, scsi_controller virtio-scsi-single, qemu_agent true. Build provisioner: `sleep 30 && sudo poweroff`. All Packer + plugin + Talos versions are sourced from variables resolved from versions.yaml via -var-file at invocation. |
+| `tools/CONTEXT.md` | SS1 (Image Build Pipeline) glossary: Image Template, Build Lock, Packer Timeout, Versions Matrix, Audit Log Entry, Half-Baked VM, Talos Version. |
+| `tools/__init__.py` | Package marker (comment only). |
+| `tools/lib/__init__.py` | Package marker (comment only). |
+| `tools/tests/conftest.py` | Inserts repo root into sys.path so `from tools.lib...` imports resolve under pytest. |
+| `tools/tests/test_log.py` | 4 tests: JSON-per-line audit, key redaction (keys dropped not masked), nested dict redaction, trace_id per instance. |
+| `tools/tests/test_secret_loader.py` | 5 tests: env round-trip, missing-key raises, no value leak to log, batch get_many, batch raises on first missing. |
+| `tools/tests/test_pve_client.py` | 4 tests: qm destroy invocation, best-effort destroy continues on non-zero exit, find_template_vmid parses qm list, returns None when absent. |
+| `tools/tests/test_build_image.py` | 8 tests: unknown talos version exits 2 + no Packer invoked; known version proceeds; idempotent skip when image-id.txt exists; Packer failure triggers cleanup + no image-id.txt + non-zero exit; secrets never logged on failure; lock blocks concurrent run; lock acquired/released within a single run; --dry-run does not invoke Packer. |
+| `versions.yaml` | Master version matrix. talos.v1.10.0 = {kernel: ..., k3s: ..., cilium: ...}. packer pin. hashicorp/proxmox plugin pin. pinned_toolchain section. Authoritative source for _check_version() validation. |
+| `Makefile` | Targets: build-image (runs tools/build_image.py), clean-image (rm -rf build/), test (pytest tools/tests/), lint (ruff + mypy), install-deps (pip install --user pytest pytest-cov mypy ruff types-PyYAML). build-image requires PVE_ENDPOINT/PVE_TOKEN_ID/PVE_TOKEN_SECRET env vars. |
+| `mypy.ini` | Selective strict mypy: tools.lib.* and tools.build_image are --strict; tools.tests.* is ignore_errors. |
+| `.gitignore` | Adds build/, *.tfstate*, __pycache__/, .pytest_cache/, .mypy_cache/, .ruff_cache/, .vscode/, .idea/, .coverage. |
+
+### Test results
+
+21/21 passing -- `cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP01 && python -m pytest tools/tests/ --cov=tools --cov-report=term -q`
+
+### Validator
+
+True/21 checks passed -- `cd /home/bruj0/projects/proxmox-k8s-cicd && spec-bridge-skill-tool implement WP01 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo`
