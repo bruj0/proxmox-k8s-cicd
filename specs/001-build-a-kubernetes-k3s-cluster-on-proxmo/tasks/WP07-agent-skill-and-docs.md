@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP07"
 title: "Agent Skill + Runbooks + Final Verification"
-lane: "for_review"
+lane: "doing"
 dependencies:
   - WP06
 subsystem: "SS3 (Agent Skill)"
@@ -18,6 +18,7 @@ abstract_components:
 tdd_red_clean: true
 build_validated: true
 agent: "spec-bridge-implement"
+reviewed_by: "spec-bridge-review"
 history:
   - timestamp: "2026-07-05T14:52:55+00:00"
     lane: doing
@@ -27,6 +28,10 @@ history:
     lane: for_review
     agent: spec-bridge-implement
     action: implementation complete -- ready for review
+  - timestamp: "2026-07-05T15:00:40+00:00"
+    lane: doing
+    agent: spec-bridge-review
+    action: review started
 ---
 
 # WP07 — Agent Skill + Runbooks + Final Verification
