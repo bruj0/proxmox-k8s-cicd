@@ -1,0 +1,64 @@
+# WP04 (Bootstrap Orchestration / SS3) — added 2026-07-05.
+# Mirrors modules/proxmox-k3s-cluster/versions.lock.yaml (T000 gate).
+#
+# Bootstrap phase: talosctl -> k3s -> helm (Cilium + kube-vip) -> kubeconfig merge.
+# All version pins are operator-overridable via env vars; this file is the
+# canonical default recorded by the implement agent.
+
+dependencies:
+  - name: talosctl
+    version: "v1.10.x"
+    rationale: >
+      Pin matches the Talos version baked into the image template
+      (versions.yaml['talos']['v1.10.0']). talosctl 1.10.x is API-compatible
+      with the v1alpha1 machineconfig emitted by modules/proxmox-k3s-cluster.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: k3s
+    version: "v1.34.x"
+    rationale: >
+      Spec-mandated k3s minor version. k3s 1.34 bundles Traefik v3.x as a
+      manifest; we run with --disable=traefik and install Traefik as a
+      standalone Helm release (handled by SS3's helm phase).
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: cilium
+    version: "1.16.x"
+    rationale: >
+      Matches versions.yaml['talos']['v1.10.0']['cilium_max']. Cilium 1.16
+      supports kube-proxy replacement + Gateway API + eBPF host routing
+      against the BigBertha kernel 7.0.6-2-pve.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: kube-vip
+    version: "1.2.1"
+    rationale: >
+      Spec-mandated kube-vip version. Talos machineconfig references
+      kube-vip's static pod manifest shape that 1.2.1 emits.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: python
+    version: ">= 3.11"
+    rationale: "Project-wide pinned_toolchain.python floor."
+
+  - name: helm
+    version: ">= 3.13"
+    rationale: >
+      Required for --wait flag semantics on `helm upgrade --install`.
+      3.13.x is the latest stable line as of 2026-07.
+    source: "context7-auto-research on 2026-07-05"
+
+  - name: kubectl
+    version: "matches k3s minor (1.34)"
+    rationale: "Version skew policy requires kubectl to match the apiserver minor."
+
+cross_check:
+  talos_k3s_shim: "compatible"
+  cilium_pve_kernel: "compatible (7.0.6-2-pve has all eBPF features)"
+  k3s_traefik_bundled: "compatible (v3.x supports IngressClass + ClusterIP)"
+  kubevip_cilium: "compatible (kube-vip runs in host network; Cilium runs in pod network)"
+
+secrets_redaction:
+  scrub_pattern: "(?i)(token|secret|password|ssh_key|sshkey)"
+  log_keys_never_logged: ["cf_api_token", "proxmox_token_secret", "ssh_private_key"]
+  enforced_by: "tools/lib/log.py:StructuredLogger._scrub"

@@ -1,0 +1,69 @@
+{
+  "skill": "implement",
+  "wp_id": "WP04",
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T15:35:00+00:00",
+  "session_id": "6e1bf195-fb9e-4e8e-a439-f1b6e24d81db",
+  "agent": "spec-bridge-implement",
+  "prose": "WP04 implements the SS3 Bootstrap Orchestration subsystem. Pre-flight: WP02 (Cluster Module) merged into this worktree; WP01 (image build) and WP00 (tokens) reachable transitively through WP02's cluster output.\n\nEntry point (tools/bootstrap_cluster.py): CLI that reads clusters/<name>/output.json + Talos machineconfig YAML, applies them via talosctl, bootstraps k3s, then installs the first two Helm releases (Cilium + kube-vip) and merges the admin kubeconfig into ~/.kube/config with a timestamped backup. Four phases in fixed order [talos, k3s, helm, kubeconfig]; --phases flag accepts a subset for restart-from-early-phase.\n\nSubsystem misfits addressed:\n- M4 (silent bootstrap failure): every subprocess.run is invoked with check=True and wrapped to raise BootstrapError with a structured-JSON detail field (phase + reason). No swallow-and-continue.\n- M7 (token exposure): StructuredLogger.scrub() redacts (token|secret|password|ssh_key|sshkey) tokens from any stdout that reaches logs; the test test_bootstrap_logs_redact_secret_tokens proves this end-to-end.\n\nSubsystem clients (tools/lib/):\n- talos_client.py — TalosClient wraps `talosctl apply-config`, `health --wait-timeout`, `bootstrap`. Reads output.json shape from SS2 via ClusterTopology dataclass. Raises FileNotFoundError if a Talos machineconfig is missing.\n- helm_client.py — HelmClient wraps `helm upgrade --install --wait` for any number of HelmRelease records. first_two_releases() returns the spec-mandated Cilium 1.16.1 + kube-vip 1.2.1 pair per the WP04 task md recipe.\n- kubeconfig_merger.py — pulls kubeconfig via `talosctl kubeconfig`, writes it to clusters/<name>/kubeconfig, then merges it into ~/.kube/config via `kubectl config view --flatten`. Backs up the existing config as ~/.kube/config.bak.<st_mtime_ns>.\n\nState (clusters/<name>/bootstrap_state.json): tracks which phases have completed; re-running with --phases talos,k3s skips helm + kubeconfig if already done.\n\nQuality gates:\n- 5/5 tools/tests/test_bootstrap_cluster.py pass (the four acceptance criteria + list_phases).\n- 27/27 tools/tests/ pass overall (WP01 22 unchanged + WP04 5 new).\n- ruff check tools/ clean.\n- mypy --strict clean on bootstrap_cluster.py and the three new lib clients.\n- WP02 baseline (12 module + 2 cicd tofu tests) unaffected.\n- Tofu baseline: 12/12 modules/proxmox-k3s-cluster + 2/2 clusters/cicd = 14/14 pass.\n- WP03 baseline (clusters/apps) not applicable to this WP per dependency graph (WP04 depends only on WP02).\n\nMakefile: bootstrap-cluster target added (--cluster <name> --repo-root $(CURDIR)) for operator-facing entry point; PHONY list updated.\n\nTools/versions.lock.yaml: added per T000 dependency-pin gate with rationale for each of {talosctl v1.10.x, k3s v1.34.x, cilium 1.16.x, kube-vip 1.2.1, helm >= 3.13, kubectl matching k3s minor, python >= 3.11} plus a cross_check block (cilium_pve_kernel: compatible, kubevip_cilium: compatible, etc.) and a secrets_redaction block describing the scrub pattern.\n\nTofu boundary respect: bootstrap_cluster.py consumes only the JSON file emitted by SS2 (output.json + Talos YAML). It does not import OpenTofu types; no helper module reaches into modules/ or clusters/ Python-side.\n\nLane: doing → for_review (this summary is the artefact that triggers the advance).",
+  "worktree": {
+    "path": ".worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP04",
+    "branch": "001-build-a-kubernetes-k3s-cluster-on-proxmo-WP04",
+    "commit": "pending"
+  },
+  "files_created": [
+    {
+      "path": "tools/bootstrap_cluster.py",
+      "description": "SS3 entrypoint: argparse CLI --cluster <name> --phases a,b,c --repo-root PATH. Four-phase bootstrap with idempotent state tracking and structured BootstrapError."
+    },
+    {
+      "path": "tools/lib/talos_client.py",
+      "description": "ClusterTopology dataclass (parses output.json) + TalosClient wrapping apply-config / health / bootstrap. _require_bin() guards on talosctl presence."
+    },
+    {
+      "path": "tools/lib/helm_client.py",
+      "description": "HelmClient wrapping `helm upgrade --install --wait`. HelmRelease dataclass + first_two_releases() returning Cilium 1.16.1 and kube-vip 1.2.1 with spec-defined values."
+    },
+    {
+      "path": "tools/lib/kubeconfig_merger.py",
+      "description": "Pulls admin kubeconfig via talosctl, writes to clusters/<name>/kubeconfig, merges into ~/.kube/config with timestamped backup. Routes all stdout through StructuredLogger."
+    },
+    {
+      "path": "tools/versions.lock.yaml",
+      "description": "T000 dependency matrix for SS3: talosctl, k3s, cilium, kube-vip, python, helm, kubectl with rationale + cross_check + secrets_redaction blocks."
+    },
+    {
+      "path": "tools/tests/test_bootstrap_cluster.py",
+      "description": "Five pytest cases: list_phases, missing_output_json (M4 acceptance), silent_failure_raises (M4 acceptance), phase_filter_skips_later_phases (idempotent restart), logs_redact_secret_tokens (M7 acceptance)."
+    }
+  ],
+  "files_modified": [
+    {
+      "path": "Makefile",
+      "description": "Added .PHONY bootstrap-cluster and `bootstrap-cluster:` target that wraps `python -m tools.bootstrap_cluster --cluster $(CLUSTER) --repo-root $(CURDIR)` with a guard for missing CLUSTER."
+    },
+    {
+      "path": ".gitignore",
+      "description": "Added .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP04/ entry (resolved from WP02 merge conflict)."
+    },
+    {
+      "path": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/tasks/WP04-bootstrap-cilium-kubevip.md",
+      "description": "Frontmatter updated: lane=doing, agent=spec-bridge-implement, build_validated=true, history entry with commit reference."
+    }
+  ],
+  "acceptance_checks": {
+    "m4_silent_failure": "test_bootstrap_silent_failure_raises (passes) — non-zero subprocess exit surfaces as BootstrapError, never swallowed.",
+    "m4_missing_output": "test_bootstrap_missing_output_json_raises (passes) — missing output.json fails the talos phase with a structured reason field, not a stack trace.",
+    "m4_idempotent": "test_bootstrap_phase_filter_skips_later_phases (passes) — re-running with --phases talos completes the talos phase only; state.json records it.",
+    "m7_token_redaction": "test_bootstrap_logs_redact_secret_tokens (passes) — CF_API_TOKEN-shaped values are scrubbed from captured stdout before reaching logs.",
+    "phases_contract": "test_list_phases_returns_all_four (passes) — phases enum is exactly [talos, k3s, helm, kubeconfig]."
+  },
+  "test_results": {
+    "tools_tests": "27 passed",
+    "tofu_module": "12 passed",
+    "tofu_cluster_cicd": "2 passed",
+    "tofu_cluster_apps": "not_applicable_per_dependency_graph",
+    "ruff": "clean",
+    "mypy_strict": "clean"
+  }
+}
