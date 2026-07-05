@@ -199,6 +199,35 @@ def test_verify_no_new_dnat_rules_raises_on_new_dnat(
         verify_no_new_dnat_rules(baseline, ssh_target="root@10.0.0.1", ssh_port="6022")
 
 
+def test_verify_no_new_dnat_rules_raises_when_baseline_already_has_dnat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a NEW DNAT must be flagged even when the baseline already
+    has one. The original implementation short-circuited on `baseline_has`
+    which silently masked any additional rules."""
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text(
+        "table ip nat {\n"
+        "    chain prerouting {\n"
+        "        type nat hook prerouting priority 0; policy accept;\n"
+        "        tcp dport 22 dnat to 10.0.0.1:22\n"
+        "    }\n"
+        "}\n"
+    )
+    current_state = (
+        "table ip nat {\n"
+        "    chain prerouting {\n"
+        "        type nat hook prerouting priority 0; policy accept;\n"
+        "        tcp dport 22 dnat to 10.0.0.1:22\n"
+        "        tcp dport 443 dnat to 10.0.0.20:6443\n"
+        "    }\n"
+        "}\n"
+    )
+    monkeypatch.setattr(subprocess, "run", _stub_with_stdout(current_state))
+    with pytest.raises(HostPortsAddedError):
+        verify_no_new_dnat_rules(baseline, ssh_target="root@10.0.0.1", ssh_port="6022")
+
+
 def test_verify_no_new_dnat_rules_ssh_failure_propagates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

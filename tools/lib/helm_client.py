@@ -31,8 +31,6 @@ from .log import StructuredLogger
 
 _LOG = StructuredLogger("helm_client")
 
-_LOG = StructuredLogger("helm_client")
-
 
 def _require_bin(name: str) -> str:
     path = shutil.which(name)

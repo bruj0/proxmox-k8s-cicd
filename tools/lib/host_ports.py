@@ -72,13 +72,21 @@ def _read_current(ssh_target: str, ssh_port: str) -> list[str]:
 
 
 def _diff_dnat_lines(baseline: Sequence[str], current: Sequence[str]) -> list[str]:
-    """Return current lines that contain a dnat clause but the baseline lacks."""
-    baseline_has = any(_DNAT_LINE.search(line) for line in baseline)
+    """Return current DNAT lines that do not appear (verbatim) in the baseline.
+
+    We compare line-by-line (after .strip()) so that an *additional* DNAT
+    rule shows up even when the baseline already has some. White-space
+    differences are tolerated.
+
+    Note: we don't try to detect deletions (DNAT rules that were removed)
+    -- M2 is about new host ports, not about churning existing ones.
+    """
+    baseline_set = {line.strip() for line in baseline if _DNAT_LINE.search(line)}
     new: list[str] = []
     for line in current:
-        if _DNAT_LINE.search(line):
-            if not baseline_has:
-                new.append(line.strip())
+        stripped = line.strip()
+        if _DNAT_LINE.search(stripped) and stripped not in baseline_set:
+            new.append(stripped)
     return new
 
 

@@ -1,14 +1,18 @@
 """SS3 entrypoint: bootstrap a cluster end-to-end.
 
-Phases:
+Phases (5):
   1. talos       — apply-config to every node, wait for healthy, bootstrap k3s
-  2. k3s         — placeholder (k3s starts inside Talos static pods; phase is
-                   kept for symmetry / future health checks)
-  3. helm        — install the first two Helm releases (Cilium + kube-vip)
+  2. k3s         — verify apiserver /healthz
+  3. helm        — install the first two (Cilium + kube-vip, WP04) and
+                   remaining four (proxmox-ccm, proxmox-csi,
+                   cloudflare-tunnel, cert-manager, WP05) Helm releases;
+                   apply the rendered Traefik HelmChartConfig if present
   4. kubeconfig  — pull admin kubeconfig, merge into ~/.kube/config
+  5. host_ports  — verify the PVE nft prerouting chain has no new DNAT
+                   rules beyond the captured baseline (M2 misfit)
 
 Entry gate:
-  python -m tools.bootstrap_cluster --cluster cicd [--phases talos,k3s,helm,kubeconfig]
+  python -m tools.bootstrap_cluster --cluster cicd [--phases talos,k3s,helm,kubeconfig,host_ports]
 
 Design choices:
   - Any non-zero subprocess exit raises BootstrapError. We do NOT silently
@@ -18,8 +22,8 @@ Design choices:
   - All StructuredLogger calls route through log.scrub() so token-bearing
     stdout never reaches disk; M7 misfit.
   - Per-cluster cluster_dir / state.json records which phases have
-    succeeded; re-running with --phases talos,k3s skips the helm and
-    kubeconfig phases even if helm/kubeconfig were never reached.
+    succeeded; re-running with --phases talos,k3s skips the helm,
+    kubeconfig and host_ports phases even if they were never reached.
 """
 from __future__ import annotations
 
