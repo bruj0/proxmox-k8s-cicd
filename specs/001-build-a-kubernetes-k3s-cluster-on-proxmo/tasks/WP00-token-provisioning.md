@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP00"
 title: "Token Provisioning — declarative Cloudflare scoped token + Proxmox role/user/token"
-lane: "for_review"
+lane: "doing"
 reviewed_by: "cursor"
 review_status: "changes_requested"
 review_feedback: "7 issues raised (v1 review). Major: (1) Proxmox provider pin `~> 0.80` blocks spec-mandated `>= 0.111.1`; (2) output.json writer uses shell post-step instead of `local_file` resource per spec T007; (3) Cloudflare permission groups diverge from spec T003 — need to add Tunnel:Edit if WP02 requires it. Minor: missing versions.lock.yaml (T000), missing terraform.tfvars.example (T001), stale comments referencing non-existent short resource names, Proxmox privilege set diverges from spec T005 (defensible per research-log-v7 but spec text is contract). See WP00-review-summary-v1.json for full detail."
@@ -69,6 +69,10 @@ history:
     lane: "for_review"
     agent: "implement"
     action: "v1 review issues addressed; ready for re-review"
+  - timestamp: "2026-07-05T18:30:00Z"
+    lane: "doing"
+    agent: "review"
+    action: "review v2 started"
 ---
 
 # WP00 — Token Provisioning
