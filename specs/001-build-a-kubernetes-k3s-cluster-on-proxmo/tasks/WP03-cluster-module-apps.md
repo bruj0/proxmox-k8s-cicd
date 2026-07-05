@@ -15,6 +15,7 @@ abstract_components:
   - docs/cluster-instances.md
 agent: spec-bridge-implement
 tdd_red_clean: true
+build_validated: true
 history:
   - timestamp: "2026-07-05T23:45:00+00:00"
     lane: doing
