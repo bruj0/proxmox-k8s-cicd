@@ -30,6 +30,10 @@ history:
     lane: doing
     agent: spec-bridge-review
     action: review started
+  - timestamp: "2026-07-05T14:29:50+00:00"
+    lane: done
+    agent: spec-bridge-review
+    action: review approved -- 1 major + 2 minor issues fixed in commit 5b36377
 ---
 
 # WP05 — Remaining Helm Releases + kubeconfig Merge
@@ -359,7 +363,3 @@ Refreshed the docstring to list all 5 phases and to describe the helm phase as i
 Files: tools/bootstrap_cluster.py
 
 WP05 approved after three issues (1 major, 2 minor) all fixed in commit 5b36377; mypy/pytest/ruff all green; live-cluster smoke tests deferred to post-merge acceptance run as in WP04.
-  - timestamp: "2026-07-05T14:28:01+00:00"
-    lane: done
-    agent: spec-bridge-review
-    action: review approved -- 1 major + 2 minor issues fixed in commit 5b36377
