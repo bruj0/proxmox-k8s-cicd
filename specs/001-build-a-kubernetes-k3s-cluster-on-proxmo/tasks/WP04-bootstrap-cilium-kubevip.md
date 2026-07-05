@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP04"
 title: "Bootstrap Script + First Two Helm Releases (Cilium + kube-vip)"
-lane: "doing"
+lane: "done"
 dependencies:
   - WP02
 subsystem: "SS3 (Bootstrap Orchestration + Agent Skill)"
@@ -18,6 +18,7 @@ abstract_components:
   - tools/tests/test_bootstrap_cluster.py
 agent: "spec-bridge-implement"
 build_validated: true
+review_status: "approved"
 reviewed_by: "spec-bridge-review"
 history:
   - lane: "doing"
@@ -32,6 +33,10 @@ history:
     agent: "spec-bridge-review"
     at: "2026-07-05T15:45:00Z"
     action: "review started"
+  - lane: "done"
+    agent: "spec-bridge-review"
+    at: "2026-07-05T16:00:00Z"
+    action: "review approved (round 1)"
 ---
 
 # WP04 — Bootstrap Script + First Two Helm Releases
