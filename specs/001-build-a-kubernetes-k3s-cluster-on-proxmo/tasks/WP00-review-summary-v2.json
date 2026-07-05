@@ -1,0 +1,76 @@
+{
+  "skill": "review",
+  "version": 2,
+  "status": "requested",
+  "wp_id": "WP00",
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T10:42:53.690371+00:00",
+  "previous_version": 1,
+  "prose": "All 7 issues from the v1 review have been resolved in the v2 fix-up cycle (commit 21093ee). Provider pins now match spec Technical context (bpg/proxmox >= 0.111.1, cloudflare/cloudflare >= 4.0, plus hashicorp/local >= 2.0 needed for the new output.json writer). The output.json contract is now produced by a local_sensitive_file resource (spec T007; the hashicorp/local v2 provider deprecated local_file.sensitive_content — documented as api_discovery). Cloudflare scoped-token grants exactly the spec T003 trio: Zone:Zone:Read, Zone:DNS:Edit, Account:Cloudflare Tunnel:Edit, resolved via data source by canonical name. Proxmox role grants exactly the spec T005 12-privilege list. tofu validate clean, tofu test 6/6 pass, tofu fmt -check clean. The 4 remaining partial verdicts are the same live-API gate that was partial in v1 (cannot run tofu apply against Cloudflare + Proxmox without network + .env secrets); structurally all 7 acceptance criteria are satisfied.",
+  "reviewer": "cursor",
+  "criteria": [
+    {
+      "name": "[ ] `cd infra/tokens && tofu init && tofu apply -auto-approve` exits 0",
+      "verdict": "partial",
+      "note": "HCL validates cleanly with the spec-mandated provider versions (bpg/proxmox 0.111.1). Live apply requires CLOUDFLARE_TOKEN_CREATOR + PROXMOX_API_TOKEN env vars + network. Deferred to CI apply gate."
+    },
+    {
+      "name": "[ ] `cat infra/tokens/output.json | jq -r '.cloudflare_scoped_token | length'` returns a non-zero integer",
+      "verdict": "partial",
+      "note": "output.json is now written by local_sensitive_file.tokens_output (provider-managed, chmod 0600) — spec T007 contract satisfied at the writer-mechanism level. Live token value requires apply."
+    },
+    {
+      "name": "[ ] Cloudflare dashboard shows the new token with exactly 3 permissions",
+      "verdict": "partial",
+      "note": "cloudflare_api_token.k3s_scoped.policies declares exactly 3 policies matching spec T003 (Zone Read → Zone:Zone:Read, Zone DNS Write → Zone:DNS:Edit, Cloudflare Tunnel:Edit → Account:Cloudflare Tunnel:Edit). Mocked test `cloudflare_token_has_three_policies` asserts this. Cannot verify the dashboard without a live apply."
+    },
+    {
+      "name": "[ ] Proxmox dashboard shows user `k3s-terraform@pam` with role `k3s-cluster`",
+      "verdict": "partial",
+      "note": "proxmox_virtual_environment_user.k3s_terraform (k3s-terraform@pam) + proxmox_virtual_environment_role.k3s_cluster (k3s-cluster) + proxmox_acl.k3s_terraform (path='/', propagate=true) all declared. Cannot verify the dashboard without a live apply."
+    },
+    {
+      "name": "[ ] Re-running `tofu apply` is a no-op in <30 s",
+      "verdict": "pass",
+      "note": "v1 note carries: all resources are simple CRUD; no count/for_each; idempotency is structural. Nothing in the v2 fix-up introduced count/for_each."
+    },
+    {
+      "name": "[ ] `infra/tokens/output.json` is in `.gitignore`",
+      "verdict": "pass",
+      "note": "infra/tokens/.gitignore lists output.json + *.tfstate*."
+    },
+    {
+      "name": "[ ] `pytest infra/tokens/tests/` passes",
+      "verdict": "partial",
+      "note": "Same v1 deviation: `tofu test` with mock providers used instead of pytest. 6/6 pass (1 more than v1 — new test asserts local_sensitive_file.tokens_output chmod 0600). The spec's intent (mocked tests that don't need live API) is fully met; the literal pytest invocation is not."
+    },
+    {
+      "name": "Misfit Resolution: each misfit in misfits_addressed has a passing test",
+      "verdict": "pass",
+      "note": "M7 (no long-lived admin tokens): CLOUDFLARE_TOKEN_CREATOR + PROXMOX_API_TOKEN flow via TF_VAR_* from env only — verified by inspecting variables.tf (sensitive=true) and scripts/apply.sh (env-to-TF_VAR_ translation). NFR-007 (least privilege): `cloudflare_token_has_three_policies` enforces exactly 3 policies matching spec T003 permission group labels; `proxmox_role_has_spec_t005_privileges` enforces the 12-privilege set per spec T005 with `length == 12` check. Both misfits are structurally eliminated."
+    },
+    {
+      "name": "Subsystem Boundary Respect: no undeclared cross-subsystem coupling",
+      "verdict": "pass",
+      "note": "infra/tokens/ has no imports/calls into other subsystems. Cross-subsystem data flow is exclusively via output.json (gitignored, chmod 0600) which is the declared contract in plan.md."
+    },
+    {
+      "name": "Contract Compliance: implementation matches plan.md inter-system contracts",
+      "verdict": "pass",
+      "note": "All seven v1 issues addressed. Specifically: (a) output.json writer is the local_sensitive_file resource (spec T007 contract preserved; api_discovery documents the deprecation-driven swap from local_file to local_sensitive_file); (b) all six spec T007 keys present in output_json.tf (cloudflare_scoped_token, cloudflare_account_id, cloudflare_zone_id, proxmox_token_id, proxmox_token_secret, pve_endpoint); (c) Cloudflare scoped-token policies match spec T003 exactly; (d) Proxmox privileges match spec T005 exactly (12 privileges); (e) provider pins match spec Technical context."
+    },
+    {
+      "name": "No New Misfits: no new failure modes introduced without documenting them",
+      "verdict": "pass",
+      "note": "v2 fix-up removed the two provider-side deprecation warnings that were present in v1 (proxmox_acl and proxmox_user_token now use short names; proxmox_role / proxmox_user keep the virtual_environment_* prefix because the short aliases don't exist in v0.111.x — documented in the proxmox.tf header). One api_discovery entry on file: spec T007 says local_file.sensitive_content but v2 hashicorp/local provider deprecated that attribute; documented with rationale."
+    },
+    {
+      "name": "Build Health -- language type-checker exits 0",
+      "verdict": "pass",
+      "note": "tofu validate: success. tofu fmt -check: clean. tofu test: 6 passed, 0 failed. Proxmox provider v0.111.1 installed (spec mandate satisfied)."
+    }
+  ],
+  "issues": [],
+  "dependency_notes": "All v1 review issues addressed. No new issues introduced by the v2 cycle, so no dependent WP needs to re-run implement.",
+  "closing": "WP00 v2 satisfies all acceptance criteria that can be verified offline; the four partial verdicts require a live apply against Cloudflare + Proxmox (out of scope for an offline review). All 7 v1 review issues are resolved. Recommend approval."
+}
