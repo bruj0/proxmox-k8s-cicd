@@ -37,26 +37,42 @@ def _stub_fail(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Simulate a non-zero exit.
 
     We can't rely on the real `subprocess.run` to raise CalledProcessError
-    here because we're replacing it wholesale. Return rc=1 so any caller
-    that uses check=False sees the failure, but more importantly, mirror
-    what production does: convert the failure to a clear error.
+    here because we're replacing it wholesale. Raise directly so the
+    production error path (subprocess.CalledProcessError -> BootstrapError)
+    is exercised.
     """
     raise subprocess.CalledProcessError(returncode=1, cmd=list(args), stderr="kaboom")
 
 
 def _write_cluster(tmp_path: Path) -> Path:
+    """Materialise a cluster dir in the SS2 output.json shape."""
     cluster = tmp_path / "clusters" / "cicd"
     cluster.mkdir(parents=True)
+    # SS2 emits: cluster_name, vip, vnet_bridge, control_plane_count,
+    # worker_count, talos_dir, nodes: [{role, name, ip, ...}], helm_releases.
+    # We omit pod_cidr/svc_cidr to exercise the SS3 default fallback.
     (cluster / "output.json").write_text(
         json.dumps(
             {
-                "name": "cicd",
+                "cluster_name": "cicd",
                 "vip": "10.0.0.10",
-                "control_plane": [
-                    {"name": "cp1", "ip": "10.0.0.11"},
-                    {"name": "cp2", "ip": "10.0.0.12"},
+                "vnet_bridge": "vnet0",
+                "control_plane_count": 2,
+                "worker_count": 1,
+                "nodes": [
+                    {"role": "control_plane", "name": "cp1", "ip": "10.0.0.11"},
+                    {"role": "control_plane", "name": "cp2", "ip": "10.0.0.12"},
+                    {"role": "worker", "name": "w1", "ip": "10.0.0.21"},
                 ],
-                "worker": [{"name": "w1", "ip": "10.0.0.21"}],
+                "helm_releases": [
+                    "cilium",
+                    "kube-vip",
+                    "proxmox-cloud-controller-manager",
+                    "proxmox-csi-plugin",
+                    "traefik",
+                    "cloudflare-tunnel-ingress-controller",
+                    "cert-manager",
+                ],
             }
         )
     )
@@ -101,22 +117,83 @@ def test_bootstrap_phase_filter_skips_later_phases(
     bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent, phases=("talos",))
 
 
-def test_bootstrap_logs_redact_secret_tokens(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_bootstrap_full_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """M7 acceptance: token-like strings are redacted by StructuredLogger.scrub()."""
+    """Acceptance: running all four phases in order completes without raising.
+
+    Exercises the canonical operator flow:
+      talos -> k3s -> helm -> kubeconfig
+    Without this test, a structural bug (e.g. helm phase referencing a
+    kubeconfig file that the kubeconfig phase hasn't written yet) could
+    pass every other test and still break in production.
+    """
     cluster = _write_cluster(tmp_path)
-    # Inject a sensitive env var that the helper accidentally passes via stdout.
-    monkeypatch.setenv("CF_API_TOKEN", "supersecret-cf-token-value")
+
+    calls: list[tuple[str, ...]] = []
 
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        # Make stdout leak the env var if not scrubbed.
-        return subprocess.CompletedProcess(
-            args=args, returncode=0, stdout="connected cf=supersecret-cf-token-value",
-            stderr="",
-        )
+        cmd = tuple(str(a) for a in args[0])
+        calls.append(cmd)
+        # kubectl --kubeconfig ... get --raw /healthz needs to return 'ok'.
+        if cmd and cmd[0] == "kubectl" and "/healthz" in cmd:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    bootstrap(
+        cluster_name="cicd",
+        repo_root=cluster.parent.parent,
+    )
+    # Every phase must have been invoked exactly once on the first run.
+    cmds = [" ".join(c) for c in calls]
+    assert any(c.startswith("talosctl apply-config") for c in cmds)
+    assert any(c.startswith("kubectl") and "/healthz" in c for c in cmds)
+    assert any(c.startswith("helm upgrade") for c in cmds)
+    assert any(c.startswith("kubectl config view") or c.startswith("talosctl kubeconfig") for c in cmds)
+
+
+def test_bootstrap_logs_redact_secret_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """M7 acceptance: token-like values are scrubbed before reaching the log.
+
+    The previous version of this test was a false-positive -- it injected a
+    token into the FAKE subprocess's stdout but never exercised the scrub
+    path because bootstrap_cluster.py does not log subprocess stdout. This
+    version injects a token into a StructuredLogger.info() call and
+    verifies it is redacted from the resulting stdout (the console sink
+    the StructuredLogger actually writes to).
+    """
+    cluster = _write_cluster(tmp_path)
+    monkeypatch.setattr(subprocess, "run", _stub_ok)
     bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent, phases=("talos",))
-    text = caplog.text
-    assert "supersecret-cf-token-value" not in text
+    out = capsys.readouterr().out
+    # The token-shaped key is dropped entirely by _scrub (not replaced
+    # with a placeholder). Inject a value via the log module directly to
+    # prove scrub is wired up; the stdout write should not contain it.
+    from lib.log import StructuredLogger
+    StructuredLogger("redaction_probe").info(
+        "scrub.probe",
+        cf_api_token="supersecret-cf-token-value",
+        safe_field="visible",
+    )
+    out += capsys.readouterr().out
+    assert "supersecret-cf-token-value" not in out
+    # The console sink prints [LEVEL] step: msg. Confirm the probe was logged.
+    assert "scrub.probe" in out
+    # Independently exercise _scrub() to prove the redaction function
+    # itself drops token-shaped keys (covers the audit-log path which
+    # the console sink doesn't show).
+    from lib.log import _scrub
+    scrubbed = _scrub(
+        {
+            "cf_api_token": "supersecret-cf-token-value",
+            "safe_field": "visible",
+            "nested": {"ssh_key_path": "leak", "ok": "stay"},
+        }
+    )
+    assert "cf_api_token" not in scrubbed
+    assert "ssh_key_path" not in scrubbed["nested"]
+    assert scrubbed["safe_field"] == "visible"
+    assert scrubbed["nested"]["ok"] == "stay"

@@ -36,10 +36,18 @@ def _require_bin(name: str) -> str:
 
 @dataclass(frozen=True)
 class ClusterTopology:
-    """Shape of clusters/<name>/output.json as SS2 emits it."""
+    """Shape of clusters/<name>/output.json as SS2 emits it.
+
+    SS2 contract (modules/proxmox-k3s-cluster/outputs.tf::local_sensitive_file
+    cluster_output) emits a flat `nodes` array with role="control_plane" or
+    "worker". This class splits them into the two collections the bootstrap
+    script needs.
+    """
 
     name: str
     vip: str
+    pod_cidr: str
+    svc_cidr: str
     control_plane: Sequence[Mapping[str, str]]
     worker: Sequence[Mapping[str, str]]
 
@@ -51,11 +59,16 @@ class ClusterTopology:
     def from_output_json(cls, path: Path) -> "ClusterTopology":
         data: dict[str, Any] = json.loads(path.read_text())
         try:
+            nodes = data["nodes"]
+            cps = [n for n in nodes if n.get("role") == "control_plane"]
+            wks = [n for n in nodes if n.get("role") == "worker"]
             return cls(
-                name=data["name"],
+                name=data["cluster_name"],
                 vip=data["vip"],
-                control_plane=data["control_plane"],
-                worker=data["worker"],
+                pod_cidr=data.get("pod_cidr", "10.42.0.0/16"),
+                svc_cidr=data.get("svc_cidr", "10.43.0.0/16"),
+                control_plane=cps,
+                worker=wks,
             )
         except KeyError as exc:
             missing = exc.args[0]

@@ -96,17 +96,20 @@ def _parse_phases(raw: Iterable[str] | None) -> list[str]:
     return phases
 
 
-def _run_talos(state: State, cluster_dir: Path) -> None:
+def _load_topology(cluster_dir: Path) -> ClusterTopology:
     output_json = cluster_dir / "output.json"
     if not output_json.exists():
         raise BootstrapError(
             "talos",
-            {
-                "reason": "missing output.json",
-                "path": str(output_json),
-            },
+            {"reason": "missing output.json", "path": str(output_json)},
         )
-    topo = ClusterTopology.from_output_json(output_json)
+    try:
+        return ClusterTopology.from_output_json(output_json)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise BootstrapError("talos", {"reason": str(exc)}) from exc
+
+
+def _run_talos(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
     talos_dir = cluster_dir / "talos"
     client = TalosClient(topo, talos_dir)
     try:
@@ -114,32 +117,101 @@ def _run_talos(state: State, cluster_dir: Path) -> None:
         client.wait_for_healthy()
         client.bootstrap_k3s()
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise BootstrapError(
-            "talos",
-            {"reason": str(exc)},
-        ) from exc
+        raise BootstrapError("talos", {"reason": str(exc)}) from exc
     state.phases_done.add("talos")
 
 
-def _run_k3s(state: State, cluster_dir: Path) -> None:
-    # k3s runs inside Talos static pods; this phase is intentionally a
-    # no-op currently. We record success so subsequent phases proceed.
-    _LOG.info("k3s.noop", cluster=state.cluster, note="k3s runs in Talos static pods")
+def _run_k3s(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
+    """Verify k3s is healthy on the cluster.
+
+    k3s runs inside Talos static pods (no operator action needed to start
+    it), but we must verify the apiserver is reachable and at least one
+    node is Ready before declaring the cluster bootable. Otherwise the
+    helm phase will surface a confusing "connection refused" failure.
+    """
+    kubeconfig = cluster_dir / "kubeconfig"
+    if not kubeconfig.exists():
+        # If kubeconfig hasn't been pulled yet (canonical phase order puts
+        # helm after kubeconfig), pull it now so we can talk to the cluster.
+        if not topo.control_plane:
+            raise BootstrapError("k3s", {"reason": "no control plane"})
+        cp_ip = topo.control_plane[0]["ip"]
+        kubeconfig.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                [
+                    "talosctl",
+                    "--nodes",
+                    cp_ip,
+                    "kubeconfig",
+                    str(kubeconfig),
+                ],
+                check=True,
+            )
+        except (subprocess.CalledProcessError, OSError) as exc:
+            raise BootstrapError("k3s", {"reason": str(exc)}) from exc
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "get",
+                "--raw",
+                "/healthz",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        if "ok" not in result.stdout.lower():
+            raise BootstrapError(
+                "k3s",
+                {"reason": f"apiserver /healthz returned: {result.stdout!r}"},
+            )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError("k3s", {"reason": str(exc)}) from exc
     state.phases_done.add("k3s")
 
 
-def _run_helm(state: State, cluster_dir: Path, kubeconfig: Path) -> None:
+def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
+    # Helm needs a kubeconfig file to talk to the cluster. PHASES puts helm
+    # before kubeconfig so the file might not exist yet; pull it inline.
+    kubeconfig = cluster_dir / "kubeconfig"
+    if not kubeconfig.exists():
+        if not topo.control_plane:
+            raise BootstrapError("helm", {"reason": "no control plane"})
+        cp_ip = topo.control_plane[0]["ip"]
+        kubeconfig.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                [
+                    "talosctl",
+                    "--nodes",
+                    cp_ip,
+                    "kubeconfig",
+                    str(kubeconfig),
+                ],
+                check=True,
+            )
+        except (subprocess.CalledProcessError, OSError) as exc:
+            raise BootstrapError("helm", {"reason": str(exc)}) from exc
     client = HelmClient(kubeconfig)
+    cluster_dict = {
+        "name": topo.name,
+        "vip": topo.vip,
+        "pod_cidr": topo.pod_cidr,
+        "svc_cidr": topo.svc_cidr,
+    }
     try:
-        client.install_or_upgrade(first_two_releases(kubeconfig))
+        client.install_or_upgrade(first_two_releases(cluster_dict))
     except subprocess.CalledProcessError as exc:
         raise BootstrapError("helm", {"reason": str(exc)}) from exc
     state.phases_done.add("helm")
 
 
-def _run_kubeconfig(state: State, cluster_dir: Path) -> None:
-    output_json = cluster_dir / "output.json"
-    topo = ClusterTopology.from_output_json(output_json)
+def _run_kubeconfig(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
     if not topo.control_plane:
         raise BootstrapError("kubeconfig", {"reason": "no control plane"})
     cp_ip = topo.control_plane[0]["ip"]
@@ -160,6 +232,10 @@ def bootstrap(
     state = State(cluster=cluster_name, repo_root=repo_root).load()
 
     requested = _parse_phases(phases)
+    # Load topology once up-front so phases can share it. If output.json is
+    # missing, fail fast with the structured message rather than letting
+    # each phase rediscover the gap.
+    topo = _load_topology(cluster_dir)
     _LOG.info("bootstrap.start", cluster=cluster_name, phases=",".join(requested))
 
     for phase in requested:
@@ -172,14 +248,13 @@ def bootstrap(
             )
             continue
         if phase == "talos":
-            _run_talos(state, cluster_dir)
+            _run_talos(state, cluster_dir, topo)
         elif phase == "k3s":
-            _run_k3s(state, cluster_dir)
+            _run_k3s(state, cluster_dir, topo)
         elif phase == "helm":
-            kubeconfig = cluster_dir / "kubeconfig"
-            _run_helm(state, cluster_dir, kubeconfig)
+            _run_helm(state, cluster_dir, topo)
         elif phase == "kubeconfig":
-            _run_kubeconfig(state, cluster_dir)
+            _run_kubeconfig(state, cluster_dir, topo)
         state.save()
 
     _LOG.info("bootstrap.done", cluster=cluster_name)

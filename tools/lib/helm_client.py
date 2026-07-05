@@ -68,11 +68,16 @@ class HelmClient:
             subprocess.run(cmd, check=True)
 
 
-def first_two_releases(kubeconfig: Path) -> list[HelmRelease]:
+def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
     """The first two Helm releases for a new cluster.
+
+    Recipes come straight from the WP04 spec (T005 + T006). The Cilium
+    release pulls pod_cidr from the cluster output so IPAM cluster-pool
+    sizing matches SS2's Pod CIDR.
 
     Versions and values are recorded in tools/versions.lock.yaml.
     """
+    pod_cidr = cluster.get("pod_cidr", "10.42.0.0/16")
     return [
         HelmRelease(
             name="cilium",
@@ -81,6 +86,10 @@ def first_two_releases(kubeconfig: Path) -> list[HelmRelease]:
             version="1.16.1",
             values={
                 "kubeProxyReplacement": "true",
+                "gatewayAPI.enabled": "true",
+                "ipv4NativeRoutingCIDR": "10.0.0.0/8",
+                "ipam.mode": "cluster-pool",
+                "ipam.operator.clusterPoolIPv4PodCIDRList": pod_cidr,
                 "hubble.enabled": "false",
             },
         ),

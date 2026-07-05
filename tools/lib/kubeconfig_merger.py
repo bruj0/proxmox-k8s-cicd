@@ -11,7 +11,6 @@ Behaviour contract:
 """
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,6 +39,11 @@ def _merge_into_default(cluster_name: str, kubeconfig_path: Path, home: Path) ->
 
     Returns the backup path so the caller can log it for the operator.
     Raises if ~/.kube is not writable.
+
+    Behaviour when ~/.kube/config does not yet exist:
+      - If it doesn't, treat the new kubeconfig as the entire merged file.
+        kubectl's `--kubeconfig <new>:<existing>` requires both files to
+        exist, so we shortcut and write the new file directly.
     """
     kube_dir = home / ".kube"
     kube_dir.mkdir(parents=True, exist_ok=True)
@@ -51,20 +55,23 @@ def _merge_into_default(cluster_name: str, kubeconfig_path: Path, home: Path) ->
         backup = kube_dir / f"config.bak.{ts}"
         shutil.copy2(default, backup)
         _LOG.info("kubeconfig.backup", path=str(backup))
-    merged = subprocess.run(
-        [
-            "kubectl",
-            "config",
-            "view",
-            "--flatten",
-            "--kubeconfig",
-            f"{kubeconfig_path}:{default}",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    default.write_text(merged.stdout)
+        merged = subprocess.run(
+            [
+                "kubectl",
+                "config",
+                "view",
+                "--flatten",
+                "--kubeconfig",
+                f"{kubeconfig_path}:{default}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        default.write_text(merged.stdout)
+    else:
+        # No existing config — just copy the new kubeconfig verbatim.
+        shutil.copy2(kubeconfig_path, default)
     _LOG.info("kubeconfig.merged", cluster=cluster_name, path=str(default))
     return backup or kube_dir / "config"
 
@@ -76,9 +83,3 @@ def merge(cluster_name: str, control_plane_ip: str, repo_root: Path, home: Path)
     _talos_kubeconfig(cluster_name, control_plane_ip, kubeconfig_path)
     backup_path = _merge_into_default(cluster_name, kubeconfig_path, home)
     return backup_path
-
-
-def _summarise(path: Path) -> str:
-    if not path.exists():
-        return json.dumps({"exists": False})
-    return json.dumps({"exists": True, "size": path.stat().st_size})
