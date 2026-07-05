@@ -1,6 +1,6 @@
 ---
 feature_slug: "001-build-a-kubernetes-k3s-cluster-on-proxmo"
-status: planned_tasks
+status: planned_accepted
 created: "2026-07-05T14:30:00Z"
 ---
 
