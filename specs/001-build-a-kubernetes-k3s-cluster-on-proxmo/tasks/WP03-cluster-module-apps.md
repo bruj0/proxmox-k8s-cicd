@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP03"
 title: "Cluster Module + Second Instance (apps)"
-lane: "planned"
+lane: doing
 dependencies:
   - WP02
 subsystem: "SS2 (Cluster Provisioning Module)"
@@ -13,8 +13,12 @@ abstract_components:
   - clusters/apps/terraform.tfvars.example
   - clusters/apps/output.json (gitignored)
   - docs/cluster-instances.md
-agent: ""
-history: []
+agent: spec-bridge-implement
+history:
+  - timestamp: "2026-07-05T23:45:00+00:00"
+    lane: doing
+    agent: spec-bridge-implement
+    action: started implementation
 ---
 
 # WP03 — Cluster Module + Second Instance (apps)
