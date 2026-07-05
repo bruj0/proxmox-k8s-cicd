@@ -5,3 +5,20 @@ vendored/
 .agents/skills/spec-bridge-*
 .worktrees/
 .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP00/
+
+# Image build (SS1) — gitignore the bake output but keep the source.
+build/
+*.tfstate
+*.tfstate.*
+.tmp/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / IDE
+.vscode/
+.idea/

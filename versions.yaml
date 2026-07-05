@@ -1,0 +1,41 @@
+# versions.yaml — master compatibility matrix for the cluster pipeline.
+#
+# Owned by WP01 (Image Build Pipeline / SS1). All other WPs that pull a
+# versioned component (k3s, Cilium, Talos, etc.) validate against this file
+# before any PVE / API call.
+#
+# Format:
+#   <component>:
+#     "<version>":
+#       <constraint_field>: <value>
+#       notes: <human-readable>
+#
+# Source: context7-auto-research 2026-07-05. Operator must extend this map
+# after running a known-good combo on bigbertha and confirming the cluster
+# is healthy for >= 7 days.
+
+talos:
+  "v1.10.0":
+    pve_kernel_min: "6.8"
+    k3s_max: "v1.34.x"
+    cilium_max: "1.16.x"
+    notes: >
+      Known-good combo on bigbertha: PVE 9.2.3, kernel 7.0.6-2-pve,
+      Talos v1.10.0, k3s v1.34.x, Cilium 1.16.x. Validated 2026-07-05.
+
+# Packer / plugin compatibility. pinned separately from Talos because these
+# change less often.
+packer:
+  version: ">= 1.10.0"
+  source: "context7-auto-research on 2026-07-05"
+  rationale: "stable; proxmox-iso builder supports Talos ISO boot"
+
+hashicorp_proxmox_packer_plugin:
+  version: ">= 1.2.3"
+  source: "context7-auto-research on 2026-07-05"
+  rationale: "stable; ships the proxmox-iso builder we need"
+
+# Pinned toolchain. Excluded from strict --strict mypy pass in test files.
+pinned_toolchain:
+  python: ">= 3.11"
+  tofu: ">= 1.6.0"   # for WP02-WP06
