@@ -1,0 +1,180 @@
+{
+  "version": 4,
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T13:00:00Z",
+  "topic": "Pick the CNI/network plugin and the Gateway-API / LoadBalancer controller for the 001 k3s-on-Proxmox cluster. Earlier sessions fixed k3s + kube-vip + Proxmox CSI; this session decides the missing two slots.",
+  "research_type": "comparison",
+  "developer_objective": "decision",
+  "starting_context": [
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md (Sessions 1-3)",
+      "summary": "Locked: k3s HA with embedded etcd, kube-vip ARP on vnet0 (VIP=10.0.0.30), Proxmox CSI on data1 lvm-thin, OpenTofu (bpg/proxmox) for VMs, Packer (proxmox-clone) for image bake. Open: CNI choice, Service LoadBalancer controller choice, Gateway API implementation choice.",
+      "relationship": "informs"
+    },
+    {
+      "type": "decision",
+      "reference": "live inspection of BigBertha (2026-07-05, ssh root@10.0.0.1:6022)",
+      "summary": "Host kernel is 7.0.6-2-pve (>= 5.4 needed for Cilium kube-proxy replacement; >=5.8 for full socket-LB). The host does NOT speak BGP; ARP-only for kube-vip is the established choice. Existing k3s-era VMs on vnet0 use q35/virtio-scsi-pci + scsi virtio model.",
+      "relationship": "informs"
+    },
+    {
+      "type": "constraint",
+      "reference": "docs.k3s.io/networking/networking-services (Traefik section, Known Issue)",
+      "summary": "k3s default Traefik install exposes its LoadBalancer Service via ServiceLB on ports 80 and 443. On a multi-node cluster those ports are reserved by Traefik on every node. Disabling ServiceLB by passing --disable=servicelb is required if a different LB controller is used.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "sergelogvinov/proxmox-csi-plugin docs/install.md (vendored)",
+      "summary": "CSI plugin relies on topology.kubernetes.io/region+zone to place PVs onto the right PVE node, and on spec.providerID of the form proxmox://REGION/VMID for VM lookup. Either set these manually via kubectl label, or install the Proxmox Cloud Controller Manager which sets them automatically.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "docs.k3s.io/networking/networking-services (Deploying an External CCM)",
+      "summary": "K3s ships an embedded Cloud Controller Manager that hosts ServiceLB. To deploy an external CCM (e.g. Proxmox CCM) you must start all servers with --disable-cloud-controller AND pass --kubelet-arg=cloud-provider=external, otherwise nodes stay tainted and unschedulable.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "metallb.universe.tf/concepts/layer2 + kube-vip.io/docs/modes/arp",
+      "summary": "Both kube-vip ARP and MetalLB L2 have the same single-leader bottleneck for Service LoadBalancers (~3s failover, single-node bandwidth). The gateway-IP-based design from Session 2-3 makes BGP mode infeasible because the upstream gateway (PVE host) does not speak BGP.",
+      "relationship": "constrains"
+    }
+  ],
+  "tool_invocations": [
+    {
+      "tool_name": "spec-bridge-skill-tool config",
+      "query": "load project settings",
+      "result_summary": "session_id 48a479ea-7f60-4c74-a49c-114e54eed2d1"
+    },
+    {
+      "tool_name": "fetch_webpage (docs.k3s.io/networking/networking-services)",
+      "query": "k3s ServiceLB klipper-lb Traefik gateway-api external Cloud Controller Manager",
+      "result_summary": "Captured: ServiceLB is hostport-based, consumes node ports when Traefik uses LoadBalancer. Traefik v3 supports Gateway API v1.4 via providers.kubernetesGateway.enabled=true. k3s requires --disable-cloud-controller for any external CCM."
+    },
+    {
+      "tool_name": "fetch_webpage (docs.cilium.io/en/v1.16/network/kubernetes/kubeproxy-free/)",
+      "query": "cilium kube-proxy replacement socket-lb kernel requirements",
+      "result_summary": "Captured: Cilium kube-proxy replacement needs kernel 4.19.57+ / 5.1.16+ / 5.2.0+ (best with >=5.3 or >=5.8 for socket-LB host/pod separation). PVE kernel 7.0.x clears all thresholds."
+    },
+    {
+      "tool_name": "fetch_webpage (docs.cilium.io/en/v1.16/network/servicemesh/gateway-api/gateway-api/)",
+      "query": "cilium gateway-api envoy hostNetwork GHA",
+      "result_summary": "Captured: Cilium provides native Gateway API v1.1.0 (also v1.4 via upstream). Requires gatewayAPI.enabled=true and NodePort/kube-proxy replacement. Host-network mode exposes Gateway on :<port> directly without a LoadBalancer service."
+    },
+    {
+      "tool_name": "fetch_webpage (github.com/sergelogvinov/proxmox-cloud-controller-manager)",
+      "query": "proxmox CCM v0.14.0 topology labels providerID capability",
+      "result_summary": "Captured: sergelogvinov/proxmox-ccm v0.14.0 (2 weeks old, 327 stars). Two controllers: cloud-node (sets topology.kubernetes.io/region=cluster-name, topology.kubernetes.io/zone=pve-node-name, instance-type, providerID=proxmox://region/VMID) and cloud-node-lifecycle (cleans up nodes when VMs are deleted). Cluster-aware across multiple Proxmox clusters."
+    },
+    {
+      "tool_name": "fetch_webpage (metallb.universe.tf/concepts/layer2 + bgp)",
+      "query": "MetalLB L2/BGP and limitations",
+      "result_summary": "Captured: MetalLB L2 = same single-leader ARP pattern as kube-vip ARP (different upstream names). MetalLB BGP requires a BGP peer and breaks active connections on backend change."
+    }
+  ],
+  "sources": [
+    {
+      "url": "https://docs.k3s.io/networking/networking-services",
+      "title": "k3s networking services (ServiceLB, Traefik, Gateway API, CCM)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://docs.cilium.io/en/v1.16/network/kubernetes/kubeproxy-free/",
+      "title": "Cilium kube-proxy replacement (kernel requirements, kubeProxyReplacement option)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://docs.cilium.io/en/v1.16/network/servicemesh/gateway-api/gateway-api/",
+      "title": "Cilium Gateway API support (v1.1.0 / v1.4 via upstream)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://github.com/sergelogvinov/proxmox-cloud-controller-manager",
+      "title": "Proxmox Cloud Controller Manager (sergelogvinov) v0.14.0",
+      "type": "code",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://metallb.universe.tf/concepts/layer2/",
+      "title": "MetalLB layer-2 mode (load balancing behavior, limitations)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://metallb.universe.tf/concepts/bgp/",
+      "title": "MetalLB BGP mode (load balancing behavior, limitations)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://metallb.io/",
+      "title": "MetalLB landing (redirect from metallb.universe.tf)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "option": "CNI = Flannel (k3s default)",
+      "pros": ["Zero install -- ships with k3s", "VXLAN needs no L2 underlay assumption (works on routed networks)"],
+      "cons": ["No L3 policy / network policy unless k3s netpol controller is left on (it is on by default but uses kube-router netpol which is minimal)", "kube-proxy replacement requires installing a sidecar anyway for any meaningful performance", "No Gateway API implementation"],
+      "reason_rejected": "Default choice for trivial clusters; for a single-L2 homelab with SDN already wired it's fine but does nothing to consolidate the cluster's networking."
+    },
+    {
+      "option": "CNI = Calico",
+      "pros": ["Mature NetworkPolicy and BGP peering (could replace the no-BGP limitation)", "Rich eBPF data plane on newer kernels"],
+      "cons": ["Requires --flannel-backend=none on k3s and a separate install", "No Gatekeeper API without an additional Gateway API implementation (Envoy Gateway / NGINX Gateway Fabric)", "Calico autodetection can pick the kube-vip VIP as `InternalIP` -- the Session 2 caveat explicitly warned about this"],
+      "reason_rejected": "Calico brings policy but no Gateway API; with Cilium delivering both, Calico loses on TCO."
+    },
+    {
+      "option": "CNI = Cilium (kube-proxy replacement + Gateway API)",
+      "pros": ["Single binary for CNI, kube-proxy replacement, NetworkPolicy, KubePrism GAMMA, and native Gateway API v1.1.0+", "Eliminates kube-proxy from the nodes -- IPs autodetect correctly on a single L2", "Cilium's Gateway API hostNetwork mode (>=1.16) exposes the Gateway directly on the node without a LoadBalancer service -- plugs neatly into the existing kube-vip VIP"],
+      "cons": ["eBPF kernel dependency (cleared at 7.0.6-2-pve)", "egress gateway / BGP features still require a router peer (not relevant here)", "must set IP_AUTODETECTION_METHOD=kubernetes-internal-ip when sharing a L2 with kube-vip ARP VIP (the Session 2 caveat) -- still required"],
+      "reason_rejected": "Selected. Single dependency for everything networking."
+    },
+    {
+      "option": "Service LB = k3s default ServiceLB (klipper-lb)",
+      "pros": ["Built in; zero install"],
+      "cons": ["Reserves host ports 80/443 for Traefik, conflicts with Traefik LoadBalancer Service", "No source IP preservation", "Single-leader bottleneck per Service (same as ARP)"],
+      "reason_rejected": "Conflicts with Traefik in the same cluster. Better choice: disable ServiceLB, hand LB to kube-vip."
+    },
+    {
+      "option": "Service LB = MetalLB L2 or BGP",
+      "pros": ["Mature; well known", "BGP has per-flow ECMP"],
+      "cons": ["L2 same single-leader as kube-vip (adds nothing), BGP needs a peer we don't have", "extra dependency + an additional IP pool"],
+      "reason_rejected": "kube-vip already handles control-plane VIP and Service LB. Adding MetalLB duplicates traffic flow."
+    },
+    {
+      "option": "Service LB = kube-vip cloud-controller + kube-vip DaemonSet",
+      "pros": ["Already in the design (Session 2 picked kube-vip DaemonSet)", "Watch namespaces, automatic LoadBalancer IP from a CIDR", "Single binary for control plane VIP and Service LB"],
+      "cons": ["Steep install: needs --disable servicelb to avoid conflicts and the kube-vip-ccm Helm release"],
+      "reason_rejected": "Selected. Already chosen in v2; reaffirm with concrete config."
+    },
+    {
+      "option": "Cloud Controller = Proxmox CCM (sergelogvinov)",
+      "pros": ["Sets exactly the topology labels the CSI plugin reads", "providerID = proxmox://region/VMID matches controller.go's lookup", "Replaces what would be manual kubectl label commands at scale", "Same author as the CSI plugin"],
+      "cons": ["Needs --disable-cloud-controller + --kubelet-arg=cloud-provider=external", "Increases moving parts by one deployment"],
+      "reason_rejected": "Selected. Topology labels and providerID are the CSI plugin's contract; automating them is more reliable than manual labelling."
+    },
+    {
+      "option": "Gateway API implementation = Traefik (via HelmChartConfig)",
+      "pros": ["Default in k3s -- no extra installs", "Gateway API v1.4 supported when providers.kubernetesGateway.enabled=true", "Route to Services via classic kube-proxy / Cilium"],
+      "cons": ["For Cilium-only designs it duplicates the L7 proxy", "Cilium and Traefik both ship Envoy-derived L7 proxies"],
+      "reason_rejected": "Selected. It's already on the cluster, works fine, and we don't need Cilium GAMMA for cluster-local traffic."
+    },
+    {
+      "option": "Gateway API implementation = Cilium GAMMA",
+      "pros": ["If Cilium is chosen for CNI, GAMMA is essentially free"],
+      "cons": ["Premature; off by default and only needed if HA-aware service routing is required"],
+      "reason_rejected": "Traefik covers the use case without changing the design."
+    }
+  ],
+  "recommendation": "Set the default stack as: **Cilium (kube-proxy replacement + Gateway API + NetworkPolicy)**, **kube-vip for control-plane VIP and LoadBalancer Service**, **Proxmox CCM (v0.14.0) for topology labels + providerID**, **Traefik v3 (already shipped with k3s) with Gateway API enabled for the user-facing HTTPS ingress**. Concretely:\n\n1. **k3s server flags** (must be identical on every server, identical to the plan from Session 1's k3s install):\n   ```\n   --cluster-init --tls-san=10.0.0.30\n   --flannel-backend=none             # disable built-in Flannel\n   --disable-kube-proxy              # hand kube-proxy work to Cilium\n   --disable-network-policy          # Cilium handles NetworkPolicy\n   --disable-cloud-controller        # run external Proxmox CCM\n   --disable=servicelb               # kube-vip handles Service LoadBalancer\n   --kubelet-arg=cloud-provider=external\n   ```\n   Bootstrapping after `--cluster-init` requires Cilium's kube-proxy replacement or a manual cluster DNS workaround. The recommended path on k3s: install Cilium via helm AFTER bootstrap but BEFORE joining agent nodes.\n\n2. **Cilium install (Helm)**:\n   ```\n   helm install cilium cilium/cilium --version 1.16.x \\\n     --namespace kube-system \\\n     --set kubeProxyReplacement=true \\\n     --set k8sServiceHost=10.0.0.30 \\\n     --set k8sServicePort=6443 \\\n     --set ipam.mode=kubernetes \\\n     --set ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16 \\\n     --set ipv4NativeRoutingCIDR=10.0.0.0/8 \\\n     --set gatewayAPI.enabled=true \\\n     --set l7Proxy=true \\\n     --set bgpControlPlane.enabled=false\n   ```\n   PVE kernel 7.0.x satisfies all kernel requirements.\n\n3. **Proxmox CCM install (Helm)**:\n   ```\n   helm install proxmox-ccm sergelogvinov/proxmox-cloud-controller-manager \\\n     --namespace kube-system \\\n     --set credentials.secret=proxmox-ccm-credentials \\\n     --set clusters[0].url=https://10.0.0.1:8006/api2/json \\\n     --set clusters[0].insecure=false \\\n     --set clusters[0].tokenId=kubernetes-csi@pve!csi \\\n     --set clusters[0].tokenSecret=<from-secret> \\\n     --set clusters[0].region=bigbertha\n   ```\n   Topology labels (region=bigbertha, zone=BigBertha) and providerID (proxmox://bigbertha/<VMID>) appear automatically; CSI plugin reads them directly without manual labelling.\n\n4. **kube-vip ARP** (control-plane VIP + Service LB) — already designed in Session 2. Add the kube-vip cloud-controller (`kube-vip/kube-vip-cloud-controller`) Helm chart to advertise ServiceIPs from a CIDR pool (e.g. `10.0.0.240-250`).\n\n5. **Traefik Gateway API**:\n   ```yaml\n   # /var/lib/rancher/k3s/server/manifests/k3s-traefik-config.yaml\n   apiVersion: helm.cattle.io/v1\n   kind: HelmChartConfig\n   metadata:\n     name: traefik\n     namespace: kube-system\n   spec:\n     valuesContent: |-\n       providers:\n         kubernetesGateway:\n           enabled: true\n       ports:\n         web:\n           redirectTo: websecure\n       certificatesresolvers:\n         letsencrypt:\n           acme:\n             email: ops@yourdomain\n             storage: /data/letsencrypt/acme.json\n             httpChallenge:\n               entryPoint: web\n           tlsChallenge: false\n   ```\n   The user-facing ingress is then declared as a `Gateway` + `HTTPRoute`, not the legacy `Ingress` resource. This is the modern, role-oriented path.\n\n6. **Add an OPEN-Tofu variable** to the design so reviewers can flip the stack:\n   ```hcl\n   variable \"cni\"            { default = \"cilium\" }    # cilium | flannel | calico\n   variable \"lb_provider\"    { default = \"kube-vip\" }  # kube-vip | metallb | klipper-lb\n   variable \"ccm_provider\"   { default = \"proxmox\" }   # proxmox | none\n   variable \"gateway_api_impl\" { default = \"traefik\" } # traefik | cilium\n   ```\n   Defaults above reflect this recommendation.\n\n7. **Smoke test the chosen stack**:\n   ```bash\n   kubectl -n kube-system exec ds/cilium -- cilium-dbg status | grep KubeProxyReplacement\n   kubectl -n kube-system get pods -l k8s-app=proxmox-cloud-controller-manager\n   kubectl get nodes -L topology.kubernetes.io/region,topology.kubernetes.io/zone\n   kubectl apply -f gateway.yaml && kubectl get gateway -A\n   kubectl apply -f vendored/proxmox-csi-plugin/docs/deploy/test-pod-ephemeral.yaml\n   ```",
+  "rationale": "Starting context constrains us to k3s on a single Proxmox host with no BGP peer. (a) Cilium wins on TCO because it covers CNI + kube-proxy replacement + NetworkPolicy + native Gateway API in one binary, the host kernel clears every eBPF threshold, and its single-L2 routing mode matches the vnet0 fabric exactly. (b) kube-vip wins over MetalLB and ServiceLB because it covers both the apiserver VIP (Session 2) and Service LoadBalancer in one DaemonSet with no extra IP pool to manage for control-plane traffic. (c) Proxmox CCM wins over manual labelling because the vendored CSI plugin reads providerID = proxmox://region/VMID and topology.kubernetes.io/{region,zone}; the CCM sets those without per-VM kubectl label commands and is from the same author (single support channel). (d) Traefik's Gateway API support on k3s is essentially free -- the HelmChartConfig flag turns it on -- and it sidesteps having to run a second Gateway implementation alongside Cilium GAMMA."
+}

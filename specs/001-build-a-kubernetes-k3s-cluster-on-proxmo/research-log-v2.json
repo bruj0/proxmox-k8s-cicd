@@ -1,0 +1,167 @@
+{
+  "version": 2,
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T10:00:00Z",
+  "topic": "Use the gateway IP and how it interacts with kube-vip (ARP and BGP modes) for the 001 k3s-on-Proxmox spec.",
+  "research_type": "integration",
+  "developer_objective": "implementation-details",
+  "starting_context": [
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md (Session 1)",
+      "summary": "Session 1 fixed the integration as: Packer template + OpenTofu (bpg/proxmox) clones + cloud-init k3s install with --cluster-init --tls-san=<VIP> + kube-vip DaemonSet + CSI Helm. VIP placement, gateway behaviour, and kube-vip mode selection were not yet decided.",
+      "relationship": "informs"
+    },
+    {
+      "type": "constraint",
+      "reference": "kube-vip.io/docs/modes/arp (Cautions)",
+      "summary": "ARP mode adds a VIP to a node interface that kubelet may wrongly autodetect as the node's InternalIP. Fix is to set --node-ip explicitly on kubelet and, when using Calico, set IP_AUTODETECTION_METHOD=kubernetes-internal-ip and IP6_AUTODETECTION_METHOD=kubernetes-internal-ip on calico-node.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "kube-vip.io/docs/troubleshooting/arp",
+      "summary": "Average ARP failover ~3s, dependent on switches forwarding gratuitous ARP. Some switches filter/learn gratuitous ARP across ports.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "pve.proxmox.com/wiki/Network_Configuration (Default Configuration Using a Bridge)",
+      "summary": "Default Proxmox install creates vmbr0 as a Linux bridge attached to the first NIC; host IP and gateway are on vmbr0. Guest NICs attach to vmbr0 like a software switch. Gratuitous ARP traverses vmbr0 transparently to the physical NIC and the upstream switch.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "docs.k3s.io/networking/basic-network-options (Flannel Options)",
+      "summary": "k3s default Flannel backend is vxlan. On --flannel-backend=host-gw, kube-vip ARP VIP traffic depends on direct L2 connectivity between all nodes (gateway must be on the same L2). --flannel-backend=vxlan is recommended for most setups because it does not assume any L3 topology on the underlay.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "kube-vip.io/docs/modes/bgp (Control Plane Health Check)",
+      "summary": "When using BGP without leader election, all nodes announce the VIP. kube-vip polls kube-apiserver health and withdraws the BGP route for a node whose apiserver is failing. Requires a BGP-speaking router as the gateway or adjacent.",
+      "relationship": "constrains"
+    }
+  ],
+  "tool_invocations": [
+    {
+      "tool_name": "spec-bridge-skill-tool config",
+      "query": "load project settings",
+      "result_summary": "session_id 9b2aa6bf-bd98-403a-b3d9-4eb3f11d7c3e, artifacts_dir=specs"
+    },
+    {
+      "tool_name": "spec-bridge-skill-tool check-skill-entry",
+      "query": "research/main entry gate for 001-build-a-kubernetes-k3s-cluster-on-proxmo",
+      "result_summary": "status: ok, phase_valid + feature_dir_exists"
+    },
+    {
+      "tool_name": "fetch_webpage (kube-vip.io/docs/modes/arp)",
+      "query": "ARP mode cautions node-ip calico IP_AUTODETECTION_METHOD",
+      "result_summary": "Captured: VIP may be wrongly picked as node InternalIP; set --node-ip explicitly. For Calico, set IP_AUTODETECTION_METHOD=kubernetes-internal-ip and IP6_AUTODETECTION_METHOD=kubernetes-internal-ip."
+    },
+    {
+      "tool_name": "fetch_webpage (kube-vip.io/docs/modes/bgp)",
+      "query": "BGP mode, control-plane health check, ECMP",
+      "result_summary": "Captured: BGP mode advertises VIP to a configured peer; without leader election all nodes advertise and the router does ECMP; kube-vip can withdraw a node's BGP route on apiserver health-check failure."
+    },
+    {
+      "tool_name": "fetch_webpage (kube-vip.io/docs/troubleshooting/arp)",
+      "query": "failover time, VIP preservation, gratuitous ARP across switches",
+      "result_summary": "Captured: typical ARP failover ~3s; PreserveVIPOnLeadershipLoss feature; IPv6 always removed immediately on leadership loss to prevent DAD failures."
+    },
+    {
+      "tool_name": "fetch_webpage (kube-vip.io/docs/troubleshooting/routingtables)",
+      "query": "routing-table mode table id 198",
+      "result_summary": "Captured: routing-table mode injects routes into table 198 with proto 248. Useful when kube-vip is fenced by rp_filter or when ARP works only one-way."
+    },
+    {
+      "tool_name": "fetch_webpage (pve.proxmox.com/wiki/Network_Configuration)",
+      "query": "vmbr0 default Linux bridge gratuitous ARP VLAN",
+      "result_summary": "Captured: vmbr0 is a Linux bridge forwarding MAC frames transparently between guest vNICs and the physical NIC. STP off by default. bridge-disable-mac-learning 1 available since PVE 7.3."
+    },
+    {
+      "tool_name": "fetch_webpage (docs.k3s.io/networking/basic-network-options)",
+      "query": "Flannel vxlan host-gw kube-vip underlay",
+      "result_summary": "Captured: default vxlan (no underlay L2 assumption); host-gw requires direct L2 between nodes; wireguard-native encrypts the pod overlay."
+    }
+  ],
+  "sources": [
+    {
+      "url": "https://kube-vip.io/docs/modes/arp/",
+      "title": "kube-vip :: ARP mode (Cautions + leaderElection)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://kube-vip.io/docs/modes/bgp/",
+      "title": "kube-vip :: BGP mode (Control Plane Health Check)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://kube-vip.io/docs/troubleshooting/arp/",
+      "title": "kube-vip :: Troubleshooting ARP (failover times, VIP preservation)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://kube-vip.io/docs/troubleshooting/routingtables/",
+      "title": "kube-vip :: Troubleshooting RoutingTable (table 198)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://pve.proxmox.com/wiki/Network_Configuration",
+      "title": "Proxmox VE :: Network Configuration (vmbr0, VLAN, bond)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://docs.k3s.io/networking/basic-network-options",
+      "title": "K3s Networking :: Basic Network Options (flannel backends)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://github.com/projectcalico/calico/issues/8291",
+      "title": "Calico autodetection and kube-vip VIP interaction",
+      "type": "discussion",
+      "checked_at": "2026-07-05"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "option": "ARP mode with VIP = the gateway's IP",
+      "pros": ["Minimal moving parts; single address for upstream"],
+      "cons": ["The current gateway host (Proxmox PVE host) would lose the IP during kube-vip leadership transitions; ARP on the upstream switch risks flapping the entire VLAN",
+                "Conflicts with Proxmox management IP; do not repurpose the PVE host's gateway"],
+      "reason_rejected": "Don't redeclare PVE's gateway as kube-vip VIP. Use a free address in the same /24 as the gateway instead."
+    },
+    {
+      "option": "ARP mode with VIP in a different subnet than the gateway",
+      "pros": ["BGP-like isolation without BGP"],
+      "cons": ["Requires upstream router to accept gratuitous ARP for an off-subnet IP; most L2 switches drop or filter this"],
+      "reason_rejected": "Pick a free IP inside the same L2 subnet as the gateway so gratuitous ARP works end-to-end."
+    },
+    {
+      "option": "BGP mode with the gateway as the BGP peer",
+      "pros": ["No gratuitous ARP; works across routed hops; BGP ECMP for control-plane HA without leader election bottleneck"],
+      "cons": ["Requires the gateway (or an upstream router) to speak BGP; ARP mode is simpler for a homelab"],
+      "reason_rejected": "Default in the spec, but flagged as an ADR-worthy escape hatch when the gateway is a router with a BGP daemon (FRRouting, BIRD, OpenBGPD)."
+    },
+    {
+      "option": "Use the ARP VIP as the default gateway for VMs",
+      "pros": ["No need for kube-vip LB on Service type; all east-west traffic funnels through the leader"],
+      "cons": ["Single-leader bottleneck (matches the kube-vip docs warning on leaderElection-for-all-services), and the upstream default route changes whenever leadership changes, which can confuse Proxmox's own networking"],
+      "reason_rejected": "Keep the VIP strictly for kube-apiserver and Service LoadBalancer; let the existing gateway keep its role."
+    },
+    {
+      "option": "Routing-table mode (kube-vip adds routes to ip table 198)",
+      "pros": ["Sidesteps rp_filter or one-way ARP problems"],
+      "cons": ["Requires policy routing setup on the host; not portable across cloud images; adds operational debt"],
+      "reason_rejected": "Default back to ARP unless rp_filter asymmetry is observed."
+    }
+  ],
+  "recommendation": "Reuse the existing PVE gateway subnet for the kube-vip VIP. Select a free host IP in the same /24 as vmbr0's gateway (e.g. gateway 192.168.10.1 -> VIP 192.168.10.40) and run kube-vip in ARP mode with --leaderElection. Concretely:\n\n1. Define three OpenTofu variables: `network_gateway` (e.g. 192.168.10.1), `network_subnet` (e.g. 192.168.10.0/24), `kube_vip_vip` (a free IP inside the subnet). Reject any plan where `kube_vip_vip` is not in `cidrsubnet(network_subnet,...)`.\n2. Pin the VIP into the cloud-init user-data and into every k3s install with `--tls-san=<kube_vip_vip>`. Document that the same value is used as the cluster's `kube-apiserver` endpoint.\n3. For every node, set `--node-ip=<node_internal_ip>` explicitly in cloud-init so kubelet does not pick the VIP as InternalIP (avoids the kube-vip ARP 'Cautions' issue).\n4. If the CNI is Calico (vendored-CSI plugin tolerates any CNI; PKE uses Cilium), set IP_AUTODETECTION_METHOD=kubernetes-internal-ip on calico-node.\n5. Generate the kube-vip DaemonSet manifest with `--interface <iface> --address $kube_vip_vip --controlplane --services --arp --leaderElection`. Hardcode the k3s-builtin `--node-ip` to the per-node address, not the VIP.\n6. BGP upgrade path (separate ADR, not the default): document a `kube_vip_mode` variable ('arp' or 'bgp'). When set to 'bgp', the manifest switches to `--bgp --localAS <as> --bgpRouterID <id> --bgppeers <gateway-ip>:<as>::false`. The implementer must confirm the gateway speaks BGP (FRR/BIRD/OpenBGPD). Do not default to this.",
+  "rationale": "Starting context constrains us to: (a) single Proxmox host, (b) k3s as the cluster manager, (c) default `vmbr0` Linux bridge with an upstream gateway, (d) kube-vip for HA, (e) Proxmox CSI for storage. The kube-vip ARP-mode Cautions warn that the VIP must not be picked as node InternalIP — solves by pinning --node-ip. Gratuitous ARP traverses the Linux bridge to the upstream switch transparently (per Proxmox Network_Configuration), so the only remaining requirement is that the VIP live in the same L2 subnet as the gateway. The router/gateway DOES NOT need to be reconfigured because gratuitous ARP merely updates its ARP cache; no static ARP entries are required. If the gateway is a Layer-3 BGP-capable router, BGP mode avoids the leader-election bottleneck, but that is an explicit upgrade decision (ADR), not the default for a homelab."
+}

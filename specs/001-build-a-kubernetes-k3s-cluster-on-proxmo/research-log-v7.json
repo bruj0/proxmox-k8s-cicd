@@ -1,0 +1,196 @@
+{
+  "version": 7,
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T15:15:00Z",
+  "topic": "Re-evaluation: ExternalName vs Cilium ClusterMesh vs Submariner for inter-cluster Service consumption, given the new minimal cluster shape (1 control-plane + 1 worker per cluster, no etcd HA, single-host tolerance)",
+  "research_type": "comparison",
+  "developer_objective": "validation",
+  "starting_context": [
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md Session 6",
+      "summary": "Recommended ExternalName Services in the apps cluster pointing at cicd *.intranet hostnames. Rejected ClusterMesh and Submariner as overkill for spec 001. Identified future-upgrade criteria.",
+      "relationship": "extends"
+    },
+    {
+      "type": "decision",
+      "reference": "spec.md FR-031 (added 2026-07-05)",
+      "summary": "Default cluster shape is 1 control-plane + 1 worker. control_plane.count must be 1 or 3 (2-node etcd is invalid). Workers are dynamic, added via tofu apply with bumped worker_count.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "decision",
+      "reference": "spec.md FR-035",
+      "summary": "Ships a Kubernetes manifest at clusters/apps/manifests/cicd-system/externalname.yaml declaring ExternalName Services (gitlab, registry, minio) in namespace cicd-system.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md Final Recommendation section 3",
+      "summary": "Both clusters share vnet0 L2 broadcast domain. ipv4NativeRoutingCIDR=10.0.0.0/8 covers both clusters' pod CIDRs (10.42.x cicd, 10.44.x apps) and Service CIDRs (10.43.x cicd, 10.45.x apps).",
+      "relationship": "constrains"
+    },
+    {
+      "type": "spec",
+      "reference": "spec.md FR-013",
+      "summary": "The cluster module and bootstrap script shall never add an inbound DNAT rule, an iptables ACCEPT, or any nft rule on the PVE host's nft table. The only host-side network side effect is the dnsmasq host reservation.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "spec",
+      "reference": "spec.md FR-028",
+      "summary": "Cluster CoreDNS and operator workstation shall use 10.0.0.3 as the primary nameserver so *.intranet hostnames resolve via PowerDNS authoritative answers.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "spec",
+      "reference": "spec.md FR-036",
+      "summary": "If an apps-cluster Pod queries a cicd-service hostname and the cicd cluster is unreachable, apps-CoreDNS returns NXDOMAIN within 5 seconds.",
+      "relationship": "informs"
+    },
+    {
+      "type": "decision",
+      "reference": "research Session 4",
+      "summary": "Cilium 1.16.x with kubeProxyReplacement=true, Gateway API enabled. Cilium is the CNI on both clusters.",
+      "relationship": "constrains"
+    }
+  ],
+  "tool_invocations": [
+    {
+      "tool_name": "context7",
+      "query": "cilium clustermesh 1.16 etcd single-node control-plane requirements",
+      "result_summary": "ClusterMesh requires an apiserver pair (clustermesh-apiserver) on each cluster, with mutual TLS between them. Both sides must be Cilium 1.16. Identity-based policy works across clusters. Documented as production-ready for Cilium 1.14+."
+    },
+    {
+      "tool_name": "fetch_webpage",
+      "query": "cilium clustermesh failure modes etcd loss control plane restart",
+      "result_summary": "ClusterMesh tolerates etcd restarts on either side; the clustermesh-apiserver caches identities. However if the entire control plane is gone, the data plane fails open only if cached identities cover the workloads -- otherwise new policy evaluation errors. Documented behavior."
+    },
+    {
+      "tool_name": "context7",
+      "query": "submariner 0.16 single-node k3s supported cable engine libreswan wireguard",
+      "result_summary": "Submariner requires a broker cluster and a gateway engine. Supported with k3s. For 1-node control plane clusters, Submariner still works but the gateway node is a single point of failure on each side."
+    },
+    {
+      "tool_name": "fetch_webpage",
+      "query": "kubernetes externalname service cross-cluster resolution performance",
+      "result_summary": "ExternalName Services resolve to a CNAME in CoreDNS. Per-query latency is one DNS round-trip plus the cross-VIP packet. For single-bridge L2 paths (sub-millisecond), ExternalName adds under 1 ms total overhead. No documented failure modes that aren't already present in standard DNS."
+    },
+    {
+      "tool_name": "context7",
+      "query": "cilium clustermesh resource overhead small clusters 1 control plane",
+      "result_summary": "ClusterMesh apiserver typically runs 2 replicas with 1 vCPU / 1 GiB each. On a 1-control-plane cluster, those 2 replicas must schedule on the single control-plane node, doubling the control-plane CPU/memory pressure on a minimal profile (4 vCPU / 8 GiB)."
+    }
+  ],
+  "sources": [
+    {
+      "url": "https://docs.cilium.io/en/v1.16/network/clustermesh/clustermesh/",
+      "title": "Cilium 1.16 ClusterMesh",
+      "type": "documentation",
+      "checked_at": "2026-07-05T15:10:00Z"
+    },
+    {
+      "url": "https://docs.cilium.io/en/v1.16/network/clustermesh/troubleshooting/",
+      "title": "Cilium ClusterMesh Troubleshooting",
+      "type": "documentation",
+      "checked_at": "2026-07-05T15:10:00Z"
+    },
+    {
+      "url": "https://submariner.io/docs/v0.16/quickstart/",
+      "title": "Submariner 0.16 Quickstart",
+      "type": "documentation",
+      "checked_at": "2026-07-05T15:11:00Z"
+    },
+    {
+      "url": "https://kubernetes.io/docs/concepts/services-networking/service/#externalname",
+      "title": "Kubernetes Service: ExternalName",
+      "type": "documentation",
+      "checked_at": "2026-07-05T15:11:00Z"
+    },
+    {
+      "url": "https://docs.cilium.io/en/v1.16/operations/performance/scalability/",
+      "title": "Cilium Scalability and Performance",
+      "type": "documentation",
+      "checked_at": "2026-07-05T15:12:00Z"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "option": "ExternalName Services in the apps cluster pointing at cicd *.intranet hostnames (Session 6 recommendation, unchanged)",
+      "pros": [
+        "Zero new components on either cluster",
+        "Zero CPU/RAM overhead on the minimal 1-CP+1-worker profile",
+        "Reversible -- delete the namespace",
+        "Works on the minimal shape with no caveats",
+        "Total request overhead: one DNS lookup + one L2 ARP + one TCP connect (sub-millisecond on vnet0)",
+        "Spec 001 already has FR-035 shipping the manifest"
+      ],
+      "cons": [
+        "No Pod-to-Pod identity (apps Pods reach the cicd Service VIP by IP; no CiliumIdentity propagation across clusters)",
+        "apps-CoreDNS caches the IP; if cicd VIP moves, apps may serve stale IP for the duration of the TTL (mitigation: short TTL on *.intranet)",
+        "If cicd cluster is gone, apps Pods error with DNS failure (acceptable per FR-036: NXDOMAIN within 5 s)"
+      ],
+      "reason_rejected": "Not rejected -- this remains the recommended option for spec 001. The new minimal cluster shape **strengthens** the case because ClusterMesh's overhead is now a meaningful fraction of the cluster's resources."
+    },
+    {
+      "option": "Cilium ClusterMesh (apiserver pair on each cluster, mutual TLS, global services)",
+      "pros": [
+        "Pod-to-Pod identity propagation (CiliumIdentity works across clusters)",
+        "Native to the CNI we already run -- no second data plane",
+        "Policy propagation if needed later",
+        "Works with 1-node etcd control plane on either side"
+      ],
+      "cons": [
+        "Clustermesh-apiserver typically runs 2 replicas at 1 vCPU / 1 GiB each -- that's 2 vCPU + 2 GiB on a control-plane profile that is already 4 vCPU / 8 GiB. Effectively 50 percent of control-plane CPU and 25 percent of RAM consumed by the cross-cluster control plane.",
+        "Requires another Helm release + a kubeconfig + a third namespace (clustermesh-apiserver) on each cluster. Module complexity goes up.",
+        "Mutual-TLS cert rotation is an operational burden on a single-host cluster.",
+        "On a 1-CP cluster, the clustermesh-apiserver runs ON the control-plane VM, so a control-plane restart = clustermesh outage.",
+        "On a 1-worker cluster, identity caching only covers Pods already known; new Pod identities after clustermesh restart may not resolve until the apiserver comes back.",
+        "Adds a third failure domain to the spec 001 surface (Packer image, tofu module, bootstrap, AND now clustermesh)."
+      ],
+      "reason_rejected": "The cost (50 percent of control-plane CPU, mutual-TLS rotation, restart coupling) outweighs the benefit (Pod-to-Pod identity) for spec 001's stated need (apps pulls from cicd services by Service name, not by Pod identity). Reserve for the day NetworkPolicy by CiliumIdentity across clusters is actually required."
+    },
+    {
+      "option": "Submariner (broker cluster + cable engine)",
+      "pros": [
+        "Supports k3s officially",
+        "Works across L3 boundaries",
+        "Active/active Service discovery across clusters"
+      ],
+      "cons": [
+        "Requires a dedicated broker cluster (extra infrastructure: at minimum another VM)",
+        "Cable engine (libreswan / wireguard / vxlan) is one more thing to debug",
+        "Cilium already does L3 routing on vnet0 -- Submariner solves a problem that does not exist on a single host",
+        "Gateway node becomes a SPOF on a 1-worker cluster",
+        "Adds another Helm release and another control plane (broker) to the surface"
+      ],
+      "reason_rejected": "Still overkill. The 1-CP+1-worker minimal shape makes Submariner's gateway SPOF even more pronounced."
+    },
+    {
+      "option": "Single shared Cloudflare tunnel across clusters (different hostname per cluster)",
+      "pros": [
+        "Public-hostname-based routing across clusters"
+      ],
+      "cons": [
+        "Forces in-vnet0 cross-cluster traffic onto the public internet path (adds Cloudflare-account dependency)",
+        "Adds latency (Cloudflare anycast PoP + TLS termination twice)",
+        "Doesn't help cluster-internal Services like git.intranet (which should never be public)"
+      ],
+      "reason_rejected": "Wrong layer. Use only for cross-cluster public hostnames; for internal Services, ExternalName is the right tool."
+    },
+    {
+      "option": "Single cluster for both (merge cicd and apps)",
+      "pros": [
+        "No cross-cluster plumbing"
+      ],
+      "cons": [
+        "Violates the user's explicit 'two clusters' requirement",
+        "Couples blast radius",
+        "Out of scope"
+      ],
+      "reason_rejected": "Out of scope."
+    }
+  ],
+  "recommendation": "**Stay with ExternalName. The new minimal cluster shape (1 CP + 1 worker) strengthens the recommendation.**\n\n## Why the minimal shape changes the calculus\n\n| Concern | 3-CP+2-worker (Session 6) | 1-CP+1-worker (spec 001 current) |\n|---|---|---|\n| ClusterMesh apiserver CPU | ~5 percent of cluster CPU | ~50 percent of control-plane CPU |\n| ClusterMesh apiserver RAM | ~5 percent of cluster RAM | ~25 percent of control-plane RAM |\n| Mutually-TLS rotation cost | marginal | noticeable on a 1-CP cluster |\n| ClusterMesh restart coupling | tolerated (3 CP) | couples clustermesh to CP VM lifecycle |\n| Identity caching resilience | high (3 CP) | lower (1 CP) |\n| Submariner gateway SPOF | tolerated (2 W) | pronounced (1 W) |\n\nOn a 3-CP+2-worker cluster, ClusterMesh's overhead is roughly negligible. On a 1-CP+1-worker cluster, the same overhead becomes a meaningful fraction of the entire cluster's resources and couples the cross-cluster control plane to a single VM's lifecycle.\n\n## What stays the same\n\n- ExternalName Services in the apps cluster pointing at `*.intranet` hostnames is still the right mechanism for spec 001.\n- The constraints (no host open ports, PowerDNS reads only, no nft, no DNAT) are unchanged.\n- The cross-cluster traffic path (apps CoreDNS -> 10.0.0.3 -> 10.0.0.30 -> kube-vip ARP -> cicd Cilium) is unchanged.\n\n## What the minimal shape adds (operational)\n\n- **ClusterMesh becomes a strict 'only if identity is needed' upgrade**: if a future spec adds cross-cluster NetworkPolicy by CiliumIdentity, ClusterMesh can be added on top of ExternalName without removing ExternalName. The two are not mutually exclusive -- apps could keep its ExternalName Services for Service-name resolution and additionally use ClusterMesh for Pod-to-Pod policy.\n- **DNS TTL matters more**: with a 1-CP cluster, the cicd VIP can move if the CP VM is rebuilt. apps CoreDNS must refresh `*.intranet` A records quickly. The downstream DNS spec must enforce short TTLs (60s) on `gitlab.intranet`, `registry.intranet`, `minio.intranet`, etc.\n- **apps cluster resilience to cicd absence is unchanged**: ExternalName fails loudly (NXDOMAIN within 5s per FR-036); that is the desired behaviour because there is nothing apps can do without cicd.\n\n## Decision matrix (updated)\n\n| Criterion | ExternalName | ClusterMesh | Submariner | Shared CF Tunnel |\n|---|---|---|---|---|\n| Spec 001 cost (CPU+RAM) | 0 | **+50 percent CP CPU, +25 percent CP RAM** | +1 broker VM | already deployed |\n| New components | 0 | clustermesh-apiserver (Helm) | broker cluster + cable engine | 0 |\n| New failure domains | 0 | 1 (apiserver) | 2 (broker, gateway) | 0 |\n| Pod-to-Pod identity | no | **yes** | partial | no |\n| Works on 1-CP+1-worker | yes | yes (with caveat) | yes (with caveat) | yes |\n| Operational burden on minimal shape | **lowest** | medium (cert rotation, restart coupling) | high (broker + gateway) | low |\n| Reversibility | trivial | moderate | high | moderate |\n| Matches spec 001 constraints | **yes** | over-spec | over-spec | wrong layer |\n\n## When to revisit\n\n- **Adopt ClusterMesh** when: a downstream spec requires NetworkPolicy by CiliumIdentity across clusters (e.g. 'only apps-cluster Pods with identity X can reach cicd-cluster gitlab Pod'), or transparent mTLS across clusters becomes a compliance requirement. The +50 percent CP CPU cost on a minimal profile should be planned for (e.g. bump control-plane to 6 vCPU / 12 GiB when adding ClusterMesh).\n- **Adopt Submariner** when: a third cluster lands on a different Proxmox host or a different network (L3 boundary appears).\n- **Adopt a service mesh** (Istio / Linkerd) when: mutual TLS between clusters becomes mandatory.",
+  "rationale": "All starting-context constraints are still satisfied by ExternalName:\n\n- spec.md FR-031 (constrains) sets the cluster shape to 1 CP + 1 worker. ClusterMesh's overhead as a fraction of cluster resources is now meaningful (50 percent CP CPU) -- a strong reason to defer.\n- spec.md FR-035 (constrains) already ships the ExternalName manifest. No new component is needed.\n- spec.md FR-013 (constrains) forbids host open ports. ExternalName causes zero host changes.\n- spec.md FR-028 (constrains) requires PowerDNS for *.intranet. ExternalName targets the *.intranet name; resolution flows through PowerDNS.\n- spec.md FR-036 (informs) requires graceful DNS failure within 5 seconds. ExternalName fails with NXDOMAIN on missing/upstream-down, satisfying the requirement.\n- Session 6 (extends) recommended ExternalName. This session confirms that recommendation under the new minimal cluster shape assumptions and **strengthens** it by quantifying ClusterMesh's cost on the minimal profile.\n- Session 4 (constrains) picks Cilium. ClusterMesh remains the natural future upgrade path because we already run Cilium on both clusters; this is an architectural advantage we keep, even while deferring the apiserver overhead for now.\n\nThe ExternalName option continues to be the smallest tool that satisfies every constraint, and the new minimal-shape analysis makes ClusterMesh's deferral even more defensible than it was in Session 6."
+}

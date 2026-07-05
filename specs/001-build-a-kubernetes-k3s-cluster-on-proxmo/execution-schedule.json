@@ -1,0 +1,13 @@
+{
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "generated_at": "2026-07-05T00:41:42+00:00",
+  "groups": [
+    {"group": 1, "parallel": false, "wps": ["WP00"], "depends_on": []},
+    {"group": 2, "parallel": true,  "wps": ["WP01", "WP03"], "depends_on": ["WP00"]},
+    {"group": 3, "parallel": false, "wps": ["WP02"], "depends_on": ["WP01"]},
+    {"group": 4, "parallel": false, "wps": ["WP04"], "depends_on": ["WP02"]},
+    {"group": 5, "parallel": false, "wps": ["WP05"], "depends_on": ["WP04"]},
+    {"group": 6, "parallel": false, "wps": ["WP06"], "depends_on": ["WP03", "WP05"]},
+    {"group": 7, "parallel": false, "wps": ["WP07"], "depends_on": ["WP06"]}
+  ]
+}

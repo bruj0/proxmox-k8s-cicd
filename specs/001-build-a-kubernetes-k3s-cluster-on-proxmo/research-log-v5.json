@@ -1,0 +1,172 @@
+{
+  "version": 5,
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T14:00:00Z",
+  "topic": "Investigate Cloudflare Tunnel (cloudflared) as a replacement for the on-prem Traefik + kube-vip + vnet0-DNAT ingress path on BigBertha. Specifically: (a) is Cloudflare Tunnel viable as the primary ingress for the 001 k3s cluster, (b) what deployment shape (in-cluster operator vs external cloudflared VM), (c) how it interacts with the vnet0/vmbr0 networking decisions made in Sessions 2-3, and (d) what changes vs the Session 4 Traefik decision.",
+  "research_type": "comparison",
+  "developer_objective": "decision",
+  "starting_context": [
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md (Sessions 1-4)",
+      "summary": "Locked: k3s HA with embedded etcd + cilium CNI + kube-vip ARP for control-plane VIP + Service LB + Proxmox CCM + Proxmox CSI + Traefik v3 with Gateway API. Open: whether to insert Cloudflare Tunnel between Cloudflare-edge users and the cluster's Traefik, replacing Traefik for the public-HTTPS path.",
+      "relationship": "informs"
+    },
+    {
+      "type": "decision",
+      "reference": "live inspection of BigBertha (ssh root@10.0.0.1:6022, 2026-07-05)",
+      "summary": "The cloudflared VM that existed in Session 3 (VMID 103 -> 10.0.0.51) has been removed. qm status 103 returns 'Configuration file ... does not exist'. The only inbound NAT rules still map to other VMs (5023-5027/6023-6027 -> .50-58). The current cluster tenant is empty for tunnel brokers. The PVE host has outbound internet (resolves github.com, developers.cloudflare.com), so a new cloudflared DaemonSet inside the new cluster can dial Cloudflare's edge.",
+      "relationship": "informs"
+    },
+    {
+      "type": "constraint",
+      "reference": "github.com/cloudflare/cloudflare-ingress-controller (archived Nov 7, 2023)",
+      "summary": "Cloudflare's official Kubernetes ingress controller is archived; releases stopped at v0.6.5 (2019). Do not adopt it.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "github.com/cloudflare/cloudflared 2026.6.1 (release 2 weeks ago); github.com/STRRL/cloudflare-tunnel-ingress-controller v0.0.23 (2026-03-20, 1.1k stars, latest commit 2026-05-25)",
+      "summary": "The maintained open-source Cloudflare Tunnel ingress controller for Kubernetes is STRRL/cloudflare-tunnel-ingress-controller v0.0.23. Helm install: strrl.dev/cloudflare-tunnel-ingress-controller. Required API token permissions: Zone:Zone:Read, Zone:DNS:Edit, Account:Cloudflare Tunnel:Edit. ingressClassName: cloudflare-tunnel.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "developers.cloudflare.com/cloudflare-one/connections/connect-networks/ (How it works - Outbound-only connections)",
+      "summary": "cloudflared establishes an outbound HTTP/2 (QUIC) connection to Cloudflare's edge. Origin can keep its firewall closed -- Cloudflare pushes requests down the tunnel. Means: no inbound DNAT, no Traefik on the public side, no public IPs required on the cluster.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "kube-vip.io/docs/modes/arp (Cautions)",
+      "summary": "kube-vip ARP binds the VIP to a node's interface -- autodetect may pick it as InternalIP. Already handled by Session 2's --node-ip pin. Independent of Cloudflare Tunnel choice but stays in the design either way.",
+      "relationship": "informs"
+    },
+    {
+      "type": "constraint",
+      "reference": "github.com/cloudflare/cloudflared README (Before you get started)",
+      "summary": "Tunnel requires a zone in Cloudflare and the zone's nameservers pointed at Cloudflare. 'Legacy' requirement, still enforced. Cannot use Tunnel with only TryCloudflare for production-like usage.",
+      "relationship": "constrains"
+    }
+  ],
+  "tool_invocations": [
+    {
+      "tool_name": "spec-bridge-skill-tool config",
+      "query": "load project settings",
+      "result_summary": "session_id 92692246-cc68-4ff1-8e70-f2aef8b73217"
+    },
+    {
+      "tool_name": "ssh root@10.0.0.1:6022 (BigBertha live inspection)",
+      "query": "confirm cloudflared VM 103 status, NAT rules, external DNS resolution",
+      "result_summary": "VM 103 deleted (qm config missing). Inbound NAT only points to .50 .52 .53 .54 .57. PVE can resolve github.com and developers.cloudflare.com. cloudflared default ports (6024, 6389) for that VM no longer routed."
+    },
+    {
+      "tool_name": "fetch_webpage (github.com/cloudflare/cloudflared)",
+      "query": "cloudflared daemon 2026.6.1 release tunnel token",
+      "result_summary": "cloudflared 2026.6.1 (latest, 2 weeks ago, 14.7k stars). Outbound-only tunnel model. Step 1 needs a zone added to Cloudflare and its nameservers changed to Cloudflare; legacy requirement."
+    },
+    {
+      "tool_name": "fetch_webpage (developers.cloudflare.com/cloudflare-one/connections/connect-networks/)",
+      "query": "cloudflare tunnel outbound-only connections how it works",
+      "result_summary": "Outbound HTTP/2/QUIC persistent connection. Origin stays closed. Cloudflare terminates public traffic."
+    },
+    {
+      "tool_name": "fetch_webpage (github.com/cloudflare/cloudflare-ingress-controller)",
+      "query": "kubernetes ingress controller cloudflare argo tunnel archived",
+      "result_summary": "OFFICIAL repo archived Nov 7, 2023. Last release 2019. Not viable."
+    },
+    {
+      "tool_name": "fetch_webpage (github.com/STRRL/cloudflare-tunnel-ingress-controller)",
+      "query": "kubernetes ingress controller cloudflare tunnel STRRL maintained fork",
+      "result_summary": "Maintained fork, 1.1k stars, last commit 2026-05-25, latest release v0.0.23 (2026-03-20). helm install via strrl.dev/cloudflare-tunnel-ingress-controller. Watches Ingress resources with class cloudflare-tunnel. Required API token permissions: Zone:Zone:Read, Zone:DNS:Edit, Account:Cloudflare Tunnel:Edit. Helm chart package: adds leader election in v0.0.23."
+    },
+    {
+      "tool_name": "github API search (topics: cloudflare, tunnel, ingress, controller)",
+      "query": "find maintained CF tunnel ingress controller for k8s",
+      "result_summary": "Alternatives ranked: STRRL/cloudflare-tunnel-ingress-controller (1161 stars, 2026-05-25); cloudflare/cloudflare-ingress-controller (369, archived); felipesoaresti/Cloudflare-Metallb-NginxIngress-Controler (34); clbs-io/cloudflare-tunnel-ingress-controller (7, 2026-06-26, fork claiming Gateway API support). STRRL adopted as the default."
+    },
+    {
+      "tool_name": "fetch_webpage (github.com/clbs-io/cloudflare-tunnel-ingress-controller/README.md)",
+      "query": "compare alternative cloudflare tunnel ingress controller",
+      "result_summary": "Younger fork (~7 stars) explicitly 'inspired by STRRL'. Adds optional k8s apiserver tunnel + multi-zone. Listed as an escape hatch under STRRL."
+    }
+  ],
+  "sources": [
+    {
+      "url": "https://github.com/cloudflare/cloudflared",
+      "title": "Cloudflare Tunnel daemon (cloudflared) - 2026.6.1 release",
+      "type": "code",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/",
+      "title": "Cloudflare Tunnel overview (How it works, outbound-only connections)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/",
+      "title": "Cloudflare Tunnel connector documentation index",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://github.com/cloudflare/cloudflare-ingress-controller",
+      "title": "Cloudflare Argo Tunnel Ingress Controller (archived Nov 7, 2023)",
+      "type": "code",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://github.com/STRRL/cloudflare-tunnel-ingress-controller",
+      "title": "STRRL fork of Cloudflare Tunnel Ingress Controller v0.0.23 (2026-03-20)",
+      "type": "code",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://github.com/clbs-io/cloudflare-tunnel-ingress-controller",
+      "title": "clbs-io fork claiming Gateway API and apiserver tunnel support",
+      "type": "code",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://hub.docker.com/r/cloudflare/cloudflared",
+      "title": "Official cloudflared Docker image",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "option": "External cloudflared VM (recreate the deleted VMID 103)",
+      "pros": ["Clean demarcation between cluster and tunnel broker", "Single systemd unit to manage", "Persistent state survives cluster reinstall"],
+      "cons": ["Re-adds host-level state for every tenant who ever needs a tunnel", "Doesn't react to Service changes in the cluster -- routes must be edited by hand or via API polling", "Adds another VM to license / monitor"],
+      "reason_rejected": "We just got rid of it for a reason. The cluster operator path -- running cloudflared inside k8s as the broker -- reuses the same controller code as the external VM but stays in sync with k8s Ingress / HTTPRoute state automatically."
+    },
+    {
+      "option": "cloudflared sidecar per workload",
+      "pros": ["Zero extra components", "Per-namespace isolation"],
+      "cons": ["Each workload author has to own a tunnel", "Manifest proliferation (annotation, sidecar, secret)", "Doesn't compose with Traefik / Gateway API"],
+      "reason_rejected": "Doesn't unify ingress the way an operator does. Pick this only if multi-tenancy is a hard requirement and the cluster admin refuses to operate a single tunnel."
+    },
+    {
+      "option": "STRRL/cloudflare-tunnel-ingress-controller (Ingress-only)",
+      "pros": ["Maintained, 1.1k stars, v0.0.23 (2026-03-20)", "Helm install via strrl.dev/cloudflare-tunnel-ingress-controller", "Single tunnel per cluster, automatic DNS CNAMEs", "Treats 'cloudflare-tunnel' as a normal Ingress class"],
+      "cons": ["Ingress-only -- no native Gateway API HTTPRoute support in upstream (would need adding the HTTPRoute ingressClass field manually if at all)", "Stranger to ops teams used to Traefik plus cert-manager"],
+      "reason_rejected": "Selected default. The Ingress-only limitation is acceptable because Traefik was the Gateway-API choice in Session 4; Session 5 moves the public HTTPS path to Ingress+Cloudflare Tunnel and keeps Traefik for in-cluster HTTP services."
+    },
+    {
+      "option": "clbs-io fork claiming Gateway API support",
+      "pros": ["HTTPRoute support (claims)", "Optional apiserver tunnel to kubectl-from-Cloudflare"],
+      "cons": ["7 stars vs STRRL 1.1k", "Newer; less battle-tested", "Would pull cluster maintenance away from STRRL's release cadence"],
+      "reason_rejected": "Documented as an upgrade path. Adopt only if Gateway API is required for the public HTTPS path AND STRRL has not added it by then."
+    },
+    {
+      "option": "Traefik v3 + cert-manager + kube-vip ARP on 10.0.0.30 (Session 4 default, no Cloudflare)",
+      "pros": ["No external dependency", "No vendor lock-in", "Single Helm release"],
+      "cons": ["Requires opening inbound TCP 80/443 on vmbr0 (= NAT from public IP 151.80.34.63 to 10.0.0.30 -- a DNAT chain the team does not currently maintain)", "Requires a public DNS A record pointing at 151.80.34.63 (not always available; the cluster DNS for *.intranet uses PowerDNS)", "User has explicitly asked for cloudflared, signalling pain in the pure Traefik path"],
+      "reason_rejected": "Held as the failure-mode fallback. If Cloudflare Tunnel ever falls over and the team needs a non-Cloudflare ingress, this is the path to take."
+    }
+  ],
+  "recommendation": "**Adopt Cloudflare Tunnel as the primary public HTTPS ingress for the 001 cluster, in front of a stripped-down Traefik used only for in-cluster east-west HTTP routing.**\n\n### Concrete decision\n\n1. **Don't touch the PVE inbound NAT table.** Cloudflare Tunnel needs no inbound port at all (outbound-only 7844/HTTP2 from cloudflared Pod to edge.cloudflare.com). The vmbr0 NAT chain stays untouched.\n\n2. **Install `STRRL/cloudflare-tunnel-ingress-controller` v0.0.23** as a new OpenTofu variable `cf_tunnel_controller` (default `enabled`).\n   ```\n   helm upgrade --install --wait \\\n     -n cloudflare-tunnel-ingress-controller --create-namespace \\\n     cloudflare-tunnel-ingress-controller \\\n     strrl.dev/cloudflare-tunnel-ingress-controller \\\n     --set cloudflare.apiToken=<secret> \\\n     --set cloudflare.accountId=<from CF dashboard> \\\n     --set cloudflare.tunnelName=k3s-prod\n   ```\n   The controller creates a Tunnel of the given name if it doesn't exist.\n\n3. **Add a new IngressClass** named `cloudflare-tunnel`. Application developers then declare:\n   ```yaml\n   apiVersion: networking.k8s.io/v1\n   kind: Ingress\n   metadata:\n     name: my-app\n     annotations:\n       nginx.ingress.kubernetes.io/backend-protocol: HTTP\n   spec:\n     ingressClassName: cloudflare-tunnel\n     rules:\n       - host: app.example.com\n         http:\n           paths:\n             - path: /\n               pathType: Prefix\n               backend:\n                 service:\n                   name: my-app\n                   port:\n                     number: 80\n   ```\n   The controller creates the CNAME on Cloudflare and pushes an ingress config into the Tunnel that targets the in-cluster Service. Cert provisioning stays on Cloudflare (Universal SSL + Edge Certificates -- no cert-manager needed for the public side).\n\n4. **Demote Traefik to internal-only.** Set Traefik's HelmChartConfig to expose ports 80/443 on `ClusterIP` only (`publishService.enabled=false` or `service.type=ClusterIP`). Traefik still serves in-cluster HTTP via its Gateway CRDs, but no longer competes for public HostPorts. This also removes the constraint flagged in Session 4: \"Traefik ports 80/443 are reserved by Traefik on every node\" -- because Traefik no longer uses ServiceLB type=LoadBalancer.\n\n5. **Drop the public-side burden from the cluster.** This means the vnet0 VIP `10.0.0.30` (kube-vip control plane) is now only needed for the kube-apiserver endpoint and Service type=LoadBalancer traffic inside the SDN. Public HTTP stops touching the SDN entirely; kube-vip ARP/failover semantics on `10.0.0.30` aren't affected.\n\n6. **OpenTofu variables to add to the spec:**\n   ```\n   variable \"cf_account_id\"           { type = string, sensitive = true }\n   variable \"cf_api_token\"            { type = string, sensitive = true }\n   variable \"cf_tunnel_name\"          { default = \"k3s-prod\" }\n   variable \"cf_ingress_class\"        { default = \"cloudflare-tunnel\" }\n   variable \"cf_tunnel_controller_chart_version\" { default = \"0.0.23\" }\n   variable \"cf_publish_traefik_publicly\" { default = false }\n   ```\n\n7. **DNS policy:** keep `*.intranet` on PowerDNS inside vnet0; route your real domain (e.g. `example.com`) through Cloudflare DNS. Public DNS records for the tunnel endpoints live on Cloudflare, not on the cluster.\n\n8. **Why not scrap Traefik entirely?** Traefik still does useful work inside the cluster: the metrics dashboards (Prometheus), the Gateway API conformance tests, etc. Keep it as an internal Ingress class. The chosen Tunnel is the public-facing L7 boundary.\n\n9. **Smoke test**: from a local laptop outside the cluster, `curl -i https://app.example.com/healthz` returns 200; `cloudflared` Pod logs show the request hitting `my-app.default.svc.cluster.local:80`; no DNAT rules were added to the PVE `nft` table.\n\n### Risks captured\n\n- **Cloudflare account outage** = ingress outage. Mitigation: keep the Session 4 Traefik path alive behind a toggled Service (HelmChartConfig flip), and apply that only as a break-glass.\n- **Tunnel token leakage** = anyone with the token can configure your tunnel. Mitigation: store the API token and Tunnel secret in a k8s Secret sourced from OpenTofu (sensitive variables above); apply least-privilege token permissions (`Zone:Zone:Read`, `Zone:DNS:Edit`, `Account:Cloudflare Tunnel:Edit` -- not Cloudflare:Edit/Write).\n- **Vendor lock-in**: switching out of Cloudflare Tunnel would mean migrating the public-DNS records back to a provider that can serve A records, and re-opening the inbound path. Documented; not currently a show-stopper for the lab.\n- **`STRRL/cloudflare-tunnel-ingress-controller` is a community fork, not Cloudflare-incubated.** Mitigation: monitor for upstream adoption; if Cloudflare resumes an official controller, plan migration. The Helm release is independent enough that re-installation should not break Ingress state.\n",
+  "rationale": "Starting context constrains us to: (a) the user explicitly asked whether Cloudflare Tunnel is viable, signaling they don't want public inbound firewall changes; (b) the cluster lives on a single Proxmox host's private SDN, public NAT chains are currently limited to VM SSH ports; (c) Traefik + kube-vip ARP for public HTTPS was identified as Option 4.5 in Session 4 and was never the user's preferred shape -- Cloudflare Tunnel removes the need for it; (d) the cloudflared VM that previously brokered tunnels in this lab has been decommissioned, so adding Cloudflare Tunnel for the new cluster doesn't disturb existing infra; (e) the official Cloudflare ingress controller is archived, leaving STRRL as the maintained successor. The recommendation -- STRRL controller + Ingress class `cloudflare-tunnel`, Traefik retained for internal-only HTTP -- aligns with the user's stated direction, removes public inbound complexity, and is a one-way door that's well-documented for reversal."
+}

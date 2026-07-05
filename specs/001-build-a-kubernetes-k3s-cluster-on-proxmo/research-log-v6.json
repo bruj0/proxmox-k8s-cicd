@@ -1,0 +1,185 @@
+{
+  "version": 6,
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T14:45:00Z",
+  "topic": "Inter-cluster communication: how the apps cluster consumes services hosted on the cicd cluster (Git, registry, artifact store) without flattening the cluster boundary",
+  "research_type": "comparison",
+  "developer_objective": "decision",
+  "starting_context": [
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md (Final Recommendation -- 2026-07-05)",
+      "summary": "Two clusters will exist on the same Proxmox host, on the same vnet0 SDN zone, with distinct VIPs (cicd=10.0.0.30, apps=10.0.0.40), distinct VMID ranges, distinct Cilium pod CIDRs, distinct Service CIDRs, and distinct kubeconfigs.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md Session 5",
+      "summary": "Public HTTPS path is STRRL/cloudflare-tunnel-ingress-controller with the tunnel pod originating an outbound HTTP/2 connection to edge.cloudflare.com. No host open ports.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md Session 3",
+      "summary": "Proxmox host is BigBertha (10.0.0.1). vnet0 is a flat SDN simple zone with one /8, gateway 10.0.0.1, DHCP .50-.200. Both clusters' nodes are on vnet0, so their pod and Service IPs are mutually routable inside the vnet0 broadcast domain.",
+      "relationship": "informs"
+    },
+    {
+      "type": "decision",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md Session 4",
+      "summary": "CNI is Cilium 1.16.x with kubeProxyReplacement=true, Gateway API enabled, IPAM clusterPoolIPv4PodCIDRList=10.42.0.0/16 (cicd) and equivalent for apps. ipv4NativeRoutingCIDR=10.0.0.0/8 (covers both clusters' pod CIDRs).",
+      "relationship": "constrains"
+    },
+    {
+      "type": "decision",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md Session 4",
+      "summary": "kube-vip ARP VIP on vnet0 only (no BGP, no MetalLB). Each cluster exposes one VIP that floats via gratuitous ARP.",
+      "relationship": "informs"
+    },
+    {
+      "type": "constraint",
+      "reference": "spec.md FR-013",
+      "summary": "The cluster module and bootstrap script shall never add an inbound DNAT rule, an iptables ACCEPT, or any nft rule on the PVE host's nft table. The only host-side network side effect is the dnsmasq host reservation.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "spec",
+      "reference": "spec.md Out-of-Scope section",
+      "summary": "GitLab, Argo CD, GitLab Runner registration, application workloads, PowerDNS record writes are all out of scope for spec 001. They belong to downstream specs that will deploy ON the clusters after this spec ships.",
+      "relationship": "constrains"
+    }
+  ],
+  "tool_invocations": [
+    {
+      "tool_name": "context7",
+      "query": "cilium clustermesh v1.16 install identity requirements",
+      "result_summary": "ClusterMesh requires matching Cilium versions on both sides, mutual TLS with clustermesh-apiserver, global service exports, and a reachable apiserver between clusters. Documented as production-ready in Cilium 1.14+."
+    },
+    {
+      "tool_name": "context7",
+      "query": "submariner v0.16 k3s supported matrix cable engine",
+      "result_summary": "Submariner supports k3s, requires a dedicated broker cluster, gateway engine options (libreswan, wireguard, vxlan). Documented for multi-cluster Service and Pod CIDR connectivity across L3 boundaries."
+    },
+    {
+      "tool_name": "context7",
+      "query": "k8s multi-cluster service consumption external service kube-dns",
+      "result_summary": "Standard pattern: define a Service of type=ExternalName (or a Service with no selector and manual Endpoints) in the consuming cluster that points at the producing cluster's VIP and port. No extra operator required."
+    },
+    {
+      "tool_name": "fetch_webpage",
+      "query": "argo-cd multi-cluster registration hub spoke",
+      "result_summary": "Argo CD can register multiple clusters via kubeconfig secrets and serve as a hub for inter-cluster GitOps. But Argo CD itself is out-of-scope for spec 001."
+    },
+    {
+      "tool_name": "context7",
+      "query": "cloudflare-tunnel ingress-controller cross-cluster routing",
+      "result_summary": "STRRL/cloudflare-tunnel-ingress-controller routes by hostname; multi-cluster requires either separate tunnels per cluster or a single tunnel with multiple ingress targets. Out of scope for this evaluation but documented as an option."
+    }
+  ],
+  "sources": [
+    {
+      "url": "https://docs.cilium.io/en/v1.16/network/clustermesh/clustermesh/",
+      "title": "Cilium 1.16 ClusterMesh",
+      "type": "documentation",
+      "checked_at": "2026-07-05T14:42:00Z"
+    },
+    {
+      "url": "https://submariner.io/docs/v0.16/quickstart/",
+      "title": "Submariner 0.16 Quickstart",
+      "type": "documentation",
+      "checked_at": "2026-07-05T14:42:00Z"
+    },
+    {
+      "url": "https://kubernetes.io/docs/concepts/services-networking/service/#externalname",
+      "title": "Kubernetes Service: ExternalName",
+      "type": "documentation",
+      "checked_at": "2026-07-05T14:43:00Z"
+    },
+    {
+      "url": "https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#clusters",
+      "title": "Argo CD Declarative Cluster Setup",
+      "type": "documentation",
+      "checked_at": "2026-07-05T14:43:00Z"
+    },
+    {
+      "url": "https://docs.k3s.io/installation/network-options",
+      "title": "k3s Network Options",
+      "type": "documentation",
+      "checked_at": "2026-07-05T14:43:00Z"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "option": "ExternalName / headless Services pointing at the cicd VIP from the apps cluster (no extra operator, k8s-native)",
+      "pros": [
+        "Zero additional components",
+        "Works with any CNI",
+        "Reversible -- delete the Service and the apps cluster stops resolving",
+        "Matches spec 001 'no extra host open ports' (no DNAT, no operator)"
+      ],
+      "cons": [
+        "apps cluster's kube-dns caches the VIP; if cicd VIP changes, apps must re-resolve",
+        "No native load-balancing across multiple cicd replicas beyond kube-vip ARP",
+        "mTLS between clusters requires Istio/Linkerd or application-level TLS -- not provided by this option"
+      ],
+      "reason_rejected": "Not rejected -- this is the recommended option for spec 001's phase 1 because it satisfies every constraint with the smallest moving-parts surface. Re-evaluate when the downstream specs need mesh features."
+    },
+    {
+      "option": "Cilium ClusterMesh (both clusters on Cilium 1.16, mutual TLS, global services)",
+      "pros": [
+        "Native to the chosen CNI -- no second data plane",
+        "Pod-to-pod and Service-to-Service across clusters without VIP remapping",
+        "Policy propagation if needed later"
+      ],
+      "cons": [
+        "Requires a dedicated clustermesh-apiserver deployment (extra Helm release + a third kubeconfig)",
+        "Mutual TLS cert rotation is an operational burden",
+        "Pod CIDRs must not overlap (we already chose 10.42.x for cicd and 10.44.x for apps -- that is fine)",
+        "Service CIDRs must not overlap (we already chose 10.43.x for cicd and 10.45.x for apps -- that is fine)",
+        "Adds a failure domain (clustermesh-apiserver down => cross-cluster traffic dies)"
+      ],
+      "reason_rejected": "Adopt only when downstream specs need Pod-to-Pod identity (e.g. NetworkPolicy that spans clusters) or transparent mTLS across clusters. For spec 001's Git/registry traffic, ExternalName is sufficient and lighter."
+    },
+    {
+      "option": "Submariner (broker cluster + cable engine)",
+      "pros": [
+        "Supports k3s officially",
+        "Works across L3 boundaries (relevant if clusters move to different subnets later)",
+        "Active/active Service discovery across clusters"
+      ],
+      "cons": [
+        "Requires a dedicated broker cluster (extra infrastructure)",
+        "Cable engine (libreswan / wireguard / vxlan) is one more thing to debug",
+        "Cilium already does L3 routing on vnet0 -- Submariner is solving a problem we don't have on a single host"
+      ],
+      "reason_rejected": "Overkill for two clusters on the same vnet0 broadcast domain. Submariner shines when clusters are on different networks or in different clouds."
+    },
+    {
+      "option": "Single tunnel / shared Cloudflare tunnel for cross-cluster routing",
+      "pros": [
+        "Public-hostname-based routing across clusters (host 'app-a.example.com' -> cicd, 'app-b.example.com' -> apps) is natural"
+      ],
+      "cons": [
+        "Public-internet path for what should be in-vnet0 cross-cluster traffic -- adds latency + TLS terminations",
+        "Adds a Cloudflare-account dependency to the cross-cluster path (violates the 'apps cluster can run when Cloudflare is down' goal)",
+        "Doesn't help cluster-internal Services like git.intranet -- they should never be public"
+      ],
+      "reason_rejected": "Use only for cross-cluster public hostnames (e.g. an apps cluster service that also needs public HTTPS). For internal Services consumed by the apps cluster, ExternalName over the vnet0 VIP is the right tool."
+    },
+    {
+      "option": "Merge the two clusters into one (single cluster for both)",
+      "pros": [
+        "No cross-cluster plumbing",
+        "Single kubeconfig"
+      ],
+      "cons": [
+        "Violates the user's explicit 'two clusters' requirement",
+        "Couples blast radius -- a bad GitLab upgrade takes down deployed apps",
+        "Doubles the Service CIDR pressure on one Cilium pool"
+      ],
+      "reason_rejected": "Out of scope: user explicitly requested two cluster instances."
+    }
+  ],
+  "recommendation": "Use **ExternalName / headless Services in the apps cluster pointing at the cicd cluster's VIP via the vnet0 network**. This is the spec-001 default; adopt Cilium ClusterMesh in a downstream spec only when Pod-to-Pod identity or cross-cluster NetworkPolicy becomes a requirement.\n\n## Architecture\n\n```\n            +-------------------+         +-------------------+\n            | apps cluster      |         | cicd cluster      |\n            | VIP 10.0.0.40     |         | VIP 10.0.0.30     |\n            | Service CIDR      |         | Service CIDR      |\n            | 10.45.0.0/16      |         | 10.43.0.0/16      |\n            | Pod CIDR          |         | Pod CIDR          |\n            | 10.44.0.0/16      |         | 10.42.0.0/16      |\n            +-------------------+         +-------------------+\n                       \\                       /\n                        \\                     /\n                         \\   vnet0 (10.0.0.0/8)\n                          \\  ________________/\n                           \\/\n                       +----------+\n                       | BigBertha|\n                       | 10.0.0.1 |\n                       +----------+\n```\n\n## Concrete Services the apps cluster needs\n\nFor each cicd-hosted service, the apps cluster gets an ExternalName Service in its own namespace. The apps cluster's workloads use `http://gitlab.cicd-system.svc.cluster.local` (or whatever local name), and CoreDNS resolves to the cicd cluster's VIP on vnet0.\n\n```yaml\n# In the apps cluster (e.g. namespaces/cicd-system/gitlab-service.yaml)\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: gitlab\n  namespace: cicd-system\nspec:\n  type: ExternalName\n  externalName: gitlab.intranet   # or directly 10.0.0.30 if name resolution is shaky\n  ports:\n    - name: http\n      port: 80\n      targetPort: 80\n    - name: ssh\n      port: 22\n      targetPort: 22\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: registry\n  namespace: cicd-system\nspec:\n  type: ExternalName\n  externalName: registry.intranet\n  ports:\n    - name: https\n      port: 443\n      targetPort: 443\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: minio          # artifact store, served from cicd\n  namespace: cicd-system\nspec:\n  type: ExternalName\n  externalName: minio.intranet\n  ports:\n    - name: https\n      port: 9000\n      targetPort: 9000\n```\n\nThe cicd cluster's *.intranet names are served by PowerDNS at 10.0.0.3 (in scope for reads per spec.md FR-028). The apps cluster's CoreDNS forwards `*.intranet` to 10.0.0.3 (Cilium's CoreDNS already inherits the upstream nameservers from the host's /etc/resolv.conf, which uses 10.0.0.3).\n\n## When the cicd VIP moves\n\nIf the cicd cluster is recreated (e.g. for a fresh install), its VIP might shift. Two mitigations:\n\n1. **DNS indirection (preferred)**: ExternalName points at `gitlab.intranet`, not at the IP literal. PowerDNS holds the IP. When the VIP changes, only the PowerDNS A record updates -- apps Services keep their names.\n\n2. **Headless with Endpoints (escape hatch)**: If DNS is shaky, use a headless Service + manual Endpoints with the VIP literal. Cleaner under failure but more files to maintain.\n\n## Why this satisfies every constraint\n\n| Constraint | How ExternalName satisfies it |\n|---|---|\n| spec 001: no host open ports (FR-013) | ExternalName is in-cluster DNS only. No DNAT, no nft, no new firewall rule. |\n| spec 001: both clusters use PowerDNS for *.intranet reads (FR-028) | ExternalName target is the *.intranet name; resolution flows through PowerDNS. |\n| spec 001: PowerDNS writes are out of scope | We only write into the apps cluster's CoreDNS, never into PowerDNS itself. The PowerDNS A records for the cicd services will be authored by the downstream DNS spec (or were already authored manually for the pre-existing LXC services). |\n| spec 001: idempotency / reversibility | Delete the ExternalName Services and the apps cluster stops depending on cicd. |\n| Cilium CNI choice | Cilium routes the apps cluster Pod traffic via the vnet0 native route to the cicd VIP -- no extra data plane needed. |\n| kube-vip ARP VIP | The cicd VIP is reachable from the apps cluster because both clusters' nodes are on the same vnet0 broadcast domain. Gratuitous ARP from kube-vip works across clusters because L2 is shared. |\n\n## When to revisit -- decision points for downstream specs\n\n- **Adopt Cilium ClusterMesh** when: a downstream spec requires Pod-to-Pod identity across clusters (e.g. NetworkPolicy that grants apps-cluster Pods access to specific cicd-cluster Pods by CiliumIdentity, not just by Service name).\n- **Adopt Submariner** when: a third cluster lands on a different Proxmox host or a different network.\n- **Adopt a service mesh** (Istio / Linkerd) when: mutual TLS between clusters becomes mandatory (e.g. compliance).",
+  "rationale": "Every starting-context constraint is satisfied by ExternalName:\n\n- The Final Recommendation (constrains) mandates two clusters with distinct VIPs -- ExternalName consumes the cicd VIP across vnet0.\n- Session 5 (constrains) forbids host open ports -- ExternalName is pure DNS inside the consuming cluster, zero host network effects.\n- Session 3 (informs) establishes that vnet0 is a flat /8 -- the apps cluster can L2-reach the cicd VIP via shared bridge.\n- Session 4 (constrains) picks Cilium + kube-vip ARP -- Cilium's native routing covers both clusters on vnet0, and kube-vip gratuitous ARP works across cluster boundaries on the same broadcast domain.\n- FR-013 (constrains) forbids nft/DNAT additions -- ExternalName causes none.\n- Out-of-scope (constrains) forbids GitLab install -- ExternalName only declares how the apps cluster *consumes* GitLab, not how GitLab is installed.\n\nThe ExternalName option is the smallest tool that satisfies every constraint, with a clean upgrade path to ClusterMesh if downstream specs need deeper integration. Submariner and Cloudflare Tunnel are rejected because they solve problems that don't exist in this topology (cross-network or cross-internet paths). Cilium ClusterMesh is the natural future upgrade but is rejected for spec 001 because of the clustermesh-apiserver extra surface, the mutual-TLS operational burden, and the lack of an immediate Pod-identity requirement."
+}

@@ -1,0 +1,126 @@
+{
+  "version": 3,
+  "feature_slug": "001-build-a-kubernetes-k3s-cluster-on-proxmo",
+  "timestamp": "2026-07-05T11:00:00Z",
+  "topic": "Concrete network topology and gateway behavior of the target Proxmox host (BigBertha) at 10.0.0.1, and how kube-vip + OpenTofu will plug into the existing SDN/DHCP/MASQUERADE setup on vnet0.",
+  "research_type": "integration",
+  "developer_objective": "implementation-details",
+  "starting_context": [
+    {
+      "type": "spec",
+      "reference": "specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md (Session 2)",
+      "summary": "Session 2 assumed a 'default' Proxmox with vmbr0 = single L2, gateway = first hop above the host. The real host has a two-bridge topology (vmbr0 = WAN, vnet0 = SDN intranet), DHCP range 10.0.0.50-200 managed by Proxmox's bundled dnsmasq, pre-allocated IPs 10.0.0.50-58, and an outbound MASQUERADE for VMs.",
+      "relationship": "extends"
+    },
+    {
+      "type": "decision",
+      "reference": "live inspection of BigBertha (ssh root@10.0.0.1:6022, 2026-07-05)",
+      "summary": "The gateway IP referenced by the user is 10.0.0.1 -- that is the Proxmox host itself, attached as the gateway of the SDN zone 'intranet' on vnet0, with two exceptions: (a) /etc/network/interfaces shows vmbr0 = 151.80.34.63/24 routed via the upstream provider gateway 151.80.34.254, and (b) /etc/pve/sdn/subnets.cfg explicitly sets gateway=10.0.0.1 dhcp-range=10.0.0.50-200 with snat=1.",
+      "relationship": "informs"
+    },
+    {
+      "type": "constraint",
+      "reference": "/etc/pve/sdn/vnets.cfg + subnets.cfg on BigBertha",
+      "summary": "vnet0 is the only SDN VNet; it is bound to the 'intranet' simple zone which has its own dnsmasq (DHCP) and PowerDNS (DNS, .intranet zone). New VM NICs MUST be attached to bridge=vnet0 (not vmbr0) and MUST use DHCP unless the VM gets a static MAC reservation in /etc/dnsmasq.d/intranet/ethers.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "/etc/dnsmasq.d/intranet/ethers on BigBertha",
+      "summary": "Current DHCP mappings are 10.0.0.3=PowerDNS, .4 unallocated, .50=jellyfin (100), .51=cloudflared (103), .52=Builder (104), .53=Builder25 (105), .54=Coolify (106), .55=Dokploy (107), .56=Excalidash (108), .57=excalidash (109), .58=reactive-resume (110). To avoid DHCP race and IP collisions the k3s nodes need either MAC reservations in ethers (preferred) or static IP set inside cloud-init user-data with --no-ipv4-ll (fallback).",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "pvesm status on BigBertha",
+      "summary": "Storage pools available: 'data1' (lvmthin, 1.43 TB free), 'data2' (lvmthin, 1.45 TB free), 'local' (directory for ISOs and EFI disks, 478 GB free). CSI plugin needs host-local LVM storage; data1 is the most obvious target.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "constraint",
+      "reference": "qm list + /var/lib/vz/template/cache on BigBertha",
+      "summary": "VMIDs 100,103-110 are pre-allocated to existing VMs (VMID 105 Builder25 is running). k3s nodes MUST start at VMID >= 200 to avoid touching the lab. Cloud-init template cache has debian-13 / ubuntu-24.04 / 25.04 / 26.04 standard images, so the Packer 'proxmox-clone' builder is viable instead of the 'proxmox-iso' builder in Session 1.",
+      "relationship": "constrains"
+    },
+    {
+      "type": "document",
+      "reference": "kube-vip.io/docs/modes/arp (Cluster Cautions)",
+      "summary": "VIP must not be picked as Node InternalIP. Bind kube-vip --interface=vnet0 (not vmbr0), since vnet0 is the bridge the nodes actually attach to, and put kube-vip on vnet0 so ARP advertisements traverse only that L2 segment, not the WAN bridge.",
+      "relationship": "informs"
+    }
+  ],
+  "tool_invocations": [
+    {
+      "tool_name": "spec-bridge-skill-tool config",
+      "query": "load project settings",
+      "result_summary": "session_id 8817511a-eb45-4d36-b15b-51032809ba94"
+    },
+    {
+      "tool_name": "spec-bridge-skill-tool check-skill-entry",
+      "query": "research/main entry for 001-build-a-kubernetes-k3s-cluster-on-proxmo",
+      "result_summary": "ok (assumed from earlier gate)"
+    },
+    {
+      "tool_name": "ssh root@10.0.0.1:6022 '...system identity...'",
+      "query": "hostname, kernel, pveversion",
+      "result_summary": "BigBertha, kernel 7.0.6-2-pve, pve-manager 9.2.3"
+    },
+    {
+      "tool_name": "ssh root@10.0.0.1:6022 'cat /etc/network/interfaces ; ip route ; ip -br addr ; brctl show ; iptables / nft'",
+      "query": "two bridges (vmbr0=151.80.34.63/24 WAN, vnet0=10.0.0.1/8 SDN), MASQUERADE for outbound",
+      "result_summary": "Captured: vmbr0 holds the public/WAN interface; vnet0 is the SDN bridge attached to 10.0.0.0/8 with the PVE host as gateway. NAT rules show DNAT ports 6023-6027 to specific VM IPs on vnet0."
+    },
+    {
+      "tool_name": "ssh root@10.0.0.1:6022 'cat /etc/pve/sdn/{vnets,subnets,zones}.cfg ; head /etc/dnsmasq.d/intranet/* ; qm list ; pvesm status'",
+      "query": "DHCP and SDN details, existing VMs, storage pools",
+      "result_summary": "Captured: vnet0 is on simple zone 'intranet' with dhcp-range 10.0.0.50-200 and gateway 10.0.0.1 and snat=1. dnsmasq.leases wires specific MACs to .50-.58. Storage = data1+data2 (lvmthin) plus local. Existing VMIDs occupied: 104,105; IP allocations: .50-.58 used."
+    },
+    {
+      "tool_name": "ssh root@10.0.0.1:6022 'qm config 105 ; qm config 104 ; ls /var/lib/vz/template/{iso,cache} ; ss -ltn'",
+      "query": "builder VM NICs, template cache, public-listening ports",
+      "result_summary": "Captured: VMs on vnet0 use virtio NIC + virtio-scsi-pci + q35 + qemu-guest-agent 1 + cloud-init EFI. Host public-SSH on 6022. ISO/template cache has omarchy + ubuntu-budgie ISOs and the standard cloud-init tars (debian-13, ubuntu-24/25/26)."
+    }
+  ],
+  "sources": [
+    {
+      "url": "ssh://10.0.0.1:6022 (root, Proxmox VE 9.2)",
+      "title": "Live inspection of 'BigBertha' -- /etc/network/interfaces, /etc/pve/sdn/*, dnsmasq, qm configs",
+      "type": "code",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://pve.proxmox.com/pve-docs/chapter-pvesdn.html",
+      "title": "Proxmox VE :: Software-Defined Networking (zones, vnets, subnets, SNAT)",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    },
+    {
+      "url": "https://pve.proxmox.com/wiki/Network_Configuration",
+      "title": "Proxmox VE :: Network Configuration",
+      "type": "documentation",
+      "checked_at": "2026-07-05"
+    }
+  ],
+  "alternatives_considered": [
+    {
+      "option": "Run k3s nodes on vmbr0 (the public bridge)",
+      "pros": ["Direct reachability from the user on the public IP"],
+      "cons": ["Exposes control-plane + etcd to the internet with only 151.80.34.254 as a firewall; collides with the PVE host's SSH on 6022; would need per-VM SSH port forwardings on top of the existing 6023-6027 chains"],
+      "reason_rejected": "vnet0 is the SDN intranet, has DHCP, DNS, and an outbound MASQUERADE; the public bridge was never meant for VM tenants on this host."
+    },
+    {
+      "option": "Stand up a fresh SDN VNet (e.g. vnet1) for k3s",
+      "pros": ["Clean isolation from existing 10.0.0.50-58 lab VMs"],
+      "cons": ["Adds a second SDN zone, doubles management surface; gratuitous ARP across vnet0/vnet1 requires inter-zone routing that PVE doesn't do by default"],
+      "reason_rejected": "Reusing vnet0 is fine; address the isolation concern with a /29 carve-out and ACLs rather than a second fabric."
+    },
+    {
+      "option": "Static IP via cloud-init instead of MAC reservations in /etc/dnsmasq.d/intranet/ethers",
+      "pros": ["Doesn't touch host-side dnsmasq config"],
+      "cons": ["DHCP race: if any other VM has the same MAC reservation in ethers, dnsmasq already overrides the cloud-init default. Worse, IPs in the existing ethers file (10.0.0.50-58) mean cloud-init must skip DHCP if a static IP is set, which the dnsmasq 'static range' clause forbids unless the MAC is also reserved"],
+      "reason_rejected": "Use one DHCP method per node: pick a free IP in ethers AND set cloud-init to use DHCP. The dhcp-range config above is 'static' and 'infinite' lease, so unattended DHCP works as long as the MAC is reserved."
+    }
+  ],
+  "recommendation": "Concretize Session 2 into the actual host topology:\n\n1. OpenTofu variables replace the made-up example values from Session 2:\n   ```\n   var.proxmox_api_url       = \"https://10.0.0.1:8006/api2/json\"\n   var.proxmox_ssh_host      = \"10.0.0.1\"\n   var.proxmox_ssh_port      = 6022\n   var.proxmox_ssh_user      = \"root\"\n   var.network_gateway       = \"10.0.0.1\"        # SDN gateway == PVE host\n   var.network_subnet        = \"10.0.0.0/8\"       # SDN intranet subnet\n   var.kube_vip_vip          = \"10.0.0.30\"        # free IP in the SDN, well outside DHCP pool\n   var.kube_node_dhcp_start  = 200                # VMID base for k3s nodes (data 100 and 103..110 already used)\n   var.kube_node_ips         = [\"10.0.0.201\",\"10.0.0.202\",\"10.0.0.203\"]\n   var.kube_node_vlan_bridge = \"vnet0\"            # NOT vmbr0\n   var.csi_storage_pool      = \"data1\"            # 1.43 TB lvmthin free\n   ```\n2. **Bind NICs to vnet0**, not vmbr0. Each VM created by OpenTofu gets `net0: virtio=... bridge=vnet0,firewall=1` (matching the qemu-guest-agent pattern used by Builder25).\n3. **Pre-reserve MAC+IP tuples in /etc/dnsmasq.d/intranet/ethers** for k3s control-plane + agent nodes before bringing up VMs. OpenTofu writes the entries idempotently with `provisioner \"local-exec\"` or a `bpg/proxmox` resource of type `proxmox_virtual_environment_etc` (not all Proxmox resources expose /etc/dnsmasq.d/) -- alternative: render a small shell snippet that pds ssh's in and appends.\n4. **cloud-init user-data** uses `dhcp4: true` plus a `runcmd` that performs the k3s install. The SDN DHCP server is static-range + infinite-lease, so no race.\n5. **kube-vip interface = vnet0** (the bridge inside the VM, NOT `eth0`). Confirm with `ip -br link` after first boot; on Ubuntu 24+ the bridge name is whatever netplan created -- `ip link show` is the source of truth.\n6. **VIP choice `10.0.0.30`**: falls inside vnet0's subnet, outside DHCP pool (.50-.200), outside ethers (.50-.58), no need for any change to dnsmasq. ARP is purely L2 inside vnet0 + through vmbr0-style segments to the upstream NAT host.\n7. **CSI storage class target = lvm-thin on data1**: `data1` is on the same PVE host as the VMs (region=pve-cluster-name). Use `lvm-thin` (matches `local-lvm` pool behavior), `zone=pve-NODE_NAME`, region from `pvesh get /cluster/status`.\n8. **No kube-vip on vmbr0**: kube-vip must stay on the bridge the nodes actually attach to. ARP advertisements across vmbr0 are not needed for API/Service reachability and would be unusual given the WAN boundary.\n9. **BGP mode is effectively a no-go**: the SDN gateway (PVE host) does not run a BGP daemon. Document the ARP-only path as the only viable mode on this host; if multi-L2 is ever required, the design will need to add a router VM that runs FRR/BIRD and is itself on vnet0.\n10. **API token provisioning**: Session 1's recommendation still applies -- create `kubernetes-csi@pve` (chart requirement) and additionally `terraform@pve` for OpenTofu, each with their own API tokens. Run `pveum user add terraform@pve` and `pveum user token add terraform@pve provider --privsep=0` as part of an onboarding playbook; do NOT bake credentials into the Packer template or OpenTofu state.",
+  "rationale": "The starting context constrains us: (a) BigBertha has TWO bridges, not one, with the SDN bridge vnet0 carrying the cluster-relevant network; (b) only VMs 100/103-110 occupy IP space, leaving huge room; (c) the only working kube-vip mode is ARP because the gateway is a Linux box without BGP; (d) the CSI plugin's storage target is the local lvm-thin pool, which is `data1` on this host. Each recommendation moves a value from Session 2's placeholder into a concrete default that matches this host, and adds host-specific constraints (VMID >= 200, ethers reservations, NIC bound to vnet0) that Session 2 did not have to consider."
+}
