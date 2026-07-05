@@ -21,6 +21,10 @@ history:
     lane: doing
     agent: spec-bridge-implement
     action: started implementation
+  - timestamp: "2026-07-05T24:30:00+00:00"
+    lane: doing
+    agent: spec-bridge-implement
+    action: validate passed (12/12 checks); advancing to for_review
 ---
 
 # WP03 — Cluster Module + Second Instance (apps)
@@ -128,3 +132,38 @@ cd clusters/apps
 tofu init
 tofu apply -auto-approve
 ```
+
+---
+
+## Implementation Summary
+
+**Worktree**: `.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP03` on branch `001-build-a-kubernetes-k3s-cluster-on-proxmo-WP03`
+
+WP03 instantiates the SS2 module for a second cluster named 'apps' and proves M3 across instances. The module from WP02 is reused unchanged except for two minimal additions: outputs pod_cidr and svc_cidr (so cluster-root tests can assert cross-instance CIDR disjointness), and the cluster root's main.tf passes apps-specific values (vip 10.0.0.40, vmid_start 210, ip_start 10.0.1.0/24, pod_cidr 10.44.0.0/16, svc_cidr 10.45.0.0/16, cf_tunnel_name 'apps', cluster_name 'apps'). The seven-element uniqueness contract is documented in docs/cluster-instances.md and the test suite explicitly asserts each disjointness axis. 
+
+Notable decisions: (a) ip_start uses 10.0.1.0/24 (a fresh /24), not the literal '10.0.0.211' from the WP03 prompt -- because cidrhost() treats the IP portion of the CIDR as the NETWORK address, so '10.0.0.211/24' would produce hosts 10.0.0.0, 10.0.0.1, ... colliding with cicd. This is a documented semantic in modules/proxmox-k3s-cluster/variables.tf (added during WP02 review). (b) The cluster root's main.tf is structurally identical to clusters/cicd/main.tf; the only deltas are the eight apps-specific values + ip_start network choice. (c) cluster_name_unique + image_id_present preconditions were copied verbatim from cicd (these were added in WP02 review commit 069e828). (d) Two tofu test suites: 5 apps tests covering M3 disjointness assertions (VIP, VMID, pod/svc CIDR, cluster name, full-range overlap check via override_module), and the regression baseline (12 module + 2 cicd + 22 pytest = 36 unchanged) all pass.
+
+Branch isolation: all 9 product files committed to WP03 branch; no product diff on main. M3 is structurally enforced: cluster_name_unique precondition at the cluster root, vmid_overlap precondition at the module level (live PVE query), vip_in_dhcp_range at the module level. Negative test for VMID collision lives in modules/proxmox-k3s-cluster/tests/main.tftest.hcl (WP02); the apps cluster root test instead asserts disjointness by override_module on the module's outputs, simulating a cicd+apps coexistence scenario.
+
+Quality gates: 5/5 apps tests pass; 12/12 module + 2/2 cicd + 22/22 pytest (regression baseline) all green; tofu validate clean in apps, cicd, and modules/proxmox-k3s-cluster; tofu init -backend=false clean.
+
+### Files created
+
+| File | Description |
+|------|-------------|
+| `clusters/apps/main.tf` | Cluster root for apps. Identical structure to clusters/cicd/main.tf with apps-specific values: cluster_name='apps', vip='10.0.0.40', vmid_start=210, ip_start='10.0.1.0/24' (fresh /24, see variables.tf cidrhost semantics), pod_cidr='10.44.0.0/16', svc_cidr='10.45.0.0/16', cf_tunnel_name='apps'. 2 cluster-root preconditions (cluster_name_unique, image_id_present) + module.apps invocation. |
+| `clusters/apps/variables.tf` | Empty placeholder for future overrides (matches clusters/cicd/variables.tf shape). |
+| `clusters/apps/terraform.tfvars.example` | Safe template with no secrets. Comments document the M3 cross-instance invariant -- every value must be disjoint from clusters/cicd's identical-value set. |
+| `clusters/apps/.gitignore` | Excludes output.json, *.tfstate*, *.tfvars (real ones), .terraform/, *.tfplan. Secrets never enter VCS. |
+| `clusters/apps/versions.lock.yaml` | T000 dependency matrix pointer. inherits_from ../../modules/proxmox-k3s-cluster/versions.lock.yaml. Documents apps-specific values and the collision_check table that verifies disjointness from cicd on all six identity axes (cluster_name, vip, vmid_start, ip_start, pod_cidr, svc_cidr, cf_tunnel_name). |
+| `clusters/apps/tests/main.tftest.hcl` | 5 tofu tests for M3 cross-instance disjointness: apps_uses_distinct_vip (10.0.0.40 != 10.0.0.30), apps_uses_distinct_vmids (210..211 not 200..201), apps_uses_distinct_pod_and_svc_cidrs (10.44/10.45 vs cicd's 10.42/10.43), apps_cluster_name_is_apps, apps_vmid_range_is_disjoint_from_cicd (override_module on module.apps with cicd+apps VMIDs to verify output is disjoint). |
+| `modules/proxmox-k3s-cluster/outputs.tf` | Added pod_cidr and svc_cidr outputs (var.pod_cidr / var.svc_cidr). Required for cluster-root tests to assert cross-instance CIDR disjointness via module.apps.pod_cidr / module.apps.svc_cidr. |
+| `docs/cluster-instances.md` | T005 documentation. Seven-element uniqueness contract (cluster_name, vip, vmid_start, ip_start, pod_cidr, svc_cidr, cf_tunnel_name), step-by-step procedure for adding a new cluster instance, validation enforcement points (4 module + 2 cluster root preconditions), common-mistakes section (especially the ip_start /24 pitfall), self-check checklist. |
+
+### Test results
+
+41/41 passing -- `cd .worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP03/clusters/apps && tofu test && cd ../../modules/proxmox-k3s-cluster && tofu test && cd ../clusters/cicd && tofu test && cd /home/bruj0/projects/proxmox-k8s-cicd/.worktrees/001-build-a-kubernetes-k3s-cluster-on-proxmo-WP03 && python -m pytest tools/tests/ -q`
+
+### Validator
+
+0/0 checks passed -- `spec-bridge-skill-tool implement WP03 --feature 001-build-a-kubernetes-k3s-cluster-on-proxmo --session-id 17d99ccd-768c-4fe0-b6f0-6d3de16a1b74 --project-root .`
