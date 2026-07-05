@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP00"
 title: "Token Provisioning — declarative Cloudflare scoped token + Proxmox role/user/token"
-lane: "planned"
+lane: "doing"
 dependencies: []
 subsystem: "SS0 (Token Provisioning)"
 misfits_addressed:
@@ -13,8 +13,12 @@ abstract_components:
   - infra/tokens/outputs.tf
   - infra/tokens/terraform.tfvars.example
   - infra/tokens/output.json (gitignored)
-agent: ""
-history: []
+agent: "implement"
+history:
+  - timestamp: "2026-07-05T15:50:00Z"
+    lane: "doing"
+    agent: "implement"
+    action: "started implementation"
 ---
 
 # WP00 — Token Provisioning
