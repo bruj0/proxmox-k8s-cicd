@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP03"
 title: "Cluster Module + Second Instance (apps)"
-lane: doing
+lane: "for_review"
 dependencies:
   - WP02
 subsystem: "SS2 (Cluster Provisioning Module)"
@@ -25,6 +25,10 @@ history:
     lane: doing
     agent: spec-bridge-implement
     action: validate passed (12/12 checks); advancing to for_review
+  - timestamp: "2026-07-05T24:35:00+00:00"
+    lane: "for_review"
+    agent: spec-bridge-implement
+    action: implementation complete, ready for review
 ---
 
 # WP03 — Cluster Module + Second Instance (apps)
