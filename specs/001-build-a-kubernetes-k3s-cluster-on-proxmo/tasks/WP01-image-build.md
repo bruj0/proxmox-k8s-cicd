@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP01"
 title: "Image Build Pipeline — Packer + build_image.py + versions.yaml"
-lane: for_review
+lane: doing
 dependencies: []
 subsystem: "SS1 (Image Build Pipeline)"
 misfits_addressed:
@@ -29,6 +29,10 @@ history:
   note: 21/21 tests pass; coverage 87%; ruff+mypy clean. CLI smoke-tested. 
     Summary at 
     specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/tasks/WP01-implement-summary.json
+- timestamp: '2026-07-05T19:15:00Z'
+  lane: doing
+  agent: cursor
+  action: review started
 tdd_red_clean: true
 tdd_red_clean_note: 'TDD red-phase: tests were written first for the misfits M1, M4,
   M8. Initial red-phase run failed with assertion errors (not ImportError / ModuleNotFoundError
@@ -40,7 +44,9 @@ build_validated_note: 'mypy --strict on tools.lib.* and tools.build_image exits 
   smoke test: `python tools/build_image.py --help` prints argparse usage; --dry-run
   with a known version logs the would-be Packer invocation; --dry-run with an unknown
   version exits non-zero with a structured error.'
+reviewed_by: cursor
 ---
+
 
 
 
