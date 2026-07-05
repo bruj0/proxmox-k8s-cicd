@@ -55,6 +55,16 @@ output "nodes" {
   value       = local.nodes
 }
 
+output "pod_cidr" {
+  description = "Pod CIDR for the k3s cluster (input)."
+  value       = var.pod_cidr
+}
+
+output "svc_cidr" {
+  description = "Service CIDR for the k3s cluster (input)."
+  value       = var.svc_cidr
+}
+
 output "helm_releases" {
   description = "Helm releases SS3 will install in order. Listed here so SS3 does not need to know which chart versions the module pinned."
   value = [

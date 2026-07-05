@@ -1,0 +1,16 @@
+# Cluster-root gitignore.
+# Secrets and state never enter VCS.
+
+output.json
+output.json.tmp
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+*.tfvars
+!terraform.tfvars.example
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+crash.log
+crash.*.log
+.tofu-test-history
