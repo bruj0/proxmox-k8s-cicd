@@ -1,7 +1,7 @@
 ---
 work_package_id: "WP01"
 title: "Image Build Pipeline — Packer + build_image.py + versions.yaml"
-lane: "planned"
+lane: "doing"
 dependencies: []
 subsystem: "SS1 (Image Build Pipeline)"
 misfits_addressed:
@@ -16,8 +16,12 @@ abstract_components:
   - tools/lib/secret_loader.py
   - versions.yaml
   - build/image-id.txt (gitignored)
-agent: ""
-history: []
+agent: "implement"
+history:
+  - timestamp: "2026-07-05T19:00:00Z"
+    lane: "doing"
+    agent: "implement"
+    action: "started implementation"
 ---
 
 # WP01 — Image Build Pipeline
