@@ -16,6 +16,51 @@ dependencies:
     rationale: "The skill's Step 0 requires the agent to load .agents/skills/context7-auto-research/SKILL.md before invoking any external library. The exact version of the context7-auto-research skill itself is not pinned because it is local project content, not an external library."
     source: "local"
 
+# Live-host evidence collected during WP00 deploy (2026-07-06).
+# These are real Proxmox + Cloudflare API endpoints that the
+# tokens module calls, recorded so future operators / agents can
+# verify before re-applying.
+live_host_evidence:
+  proxmox:
+    host: "kvm.bruj0.net:8006"
+    pve_version: "9.2.3"
+    kernel: "7.0.6-2-pve"
+    node_name: "BigBertha"
+    sdn_zones:
+      - "intranet (zone, attached to vnet0)"
+    storage:
+      - "data1 (lvmthin)"
+      - "data2 (lvmthin)"
+      - "local (dir)"
+    vnet0_subnet: "10.0.0.1/8"
+    # Token creation requires Sys.Modify; PVEAdmin does NOT have it.
+    # Only Administrator role has it. Pragmatic answer: use a
+    # root@pam!tf-bootstrap token for WP00, delete after.
+    role_creation_min_priv: "Sys.Modify (Administrator)"
+  cloudflare:
+    account_id: "2e9c09b27d2a089c531b12ae0f0e6ff3"
+    zone_id: "15e4cfe0ecfee91903601ae780932ad3"
+    zone_name: "bruj0.net"
+    # Verified 2026-07-06: stable permission-group UUIDs.
+    # The provider's data source hits /token/permission_groups
+    # (singular) but the real endpoint is /tokens/permission_groups
+    # (plural). With cfat_* admin tokens the data source returns
+    # empty; use these fallbacks.
+    permission_group_uuids:
+      "Zone Read":                   "c8fed203ed3043cba015a93ad1616f1f"
+      "DNS Write":                   "4755a26eedb94da69e1066d98aa820be"
+      "Cloudflare Tunnel Write":     "c07321b023e944ff818fec44d8203567"
+    # Resource key format that Cloudflare's API accepts.
+    # account.id (the API response field) is NOT a valid resource key.
+    resource_keys:
+      zone_scoped:    "com.cloudflare.api.account.zone.<zone_id>"
+      account_scoped: "com.cloudflare.api.account.<account_id>"
+    # Auth: cfat_* tokens cannot mint child tokens; user-level auth
+    # (X-Auth-Email + X-Auth-Key) is required for POST /user/tokens.
+    auth_required: "global_api_key + email (NOT cfat_* for child token mint)"
+
 cross_check:
   skill_schema_both_consumers: "compatible -- claude-code and cursor both parse the YAML frontmatter and load the body without warnings (verified manually on 2026-07-05)"
   pipeline_instructions_match_actual_cli: "verified -- every Phase in the skill (make build-image, tofu apply, talosctl apply-config, helm upgrade, kubectl apply, nft list chain) corresponds to a CLI entry point that exists in this repository as of WP00-WP06"
+  wp00_apply_against_live_host: "verified 2026-07-06 -- scripts/apply.sh against kvm.bruj0.net minted proxmox k3s-cluster role (12 privs from spec T005) and Cloudflare scoped token (Zone Read + DNS Write + Cloudflare Tunnel Write). output.json written (mode 0600). tokens test 6/6 pass."
+  preflight_added_to_skill: "verified 2026-07-06 -- Step 0a (8 sub-probes) and Step 0b (7 apply-time gotchas) added to SKILL.md after the live deploy surfaced each as a hard blocker"
