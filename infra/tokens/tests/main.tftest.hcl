@@ -119,7 +119,12 @@ run "plan_succeeds" {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Proxmox role privilege set is exactly the spec T005 set.
+# 2. Proxmox role privilege set covers spec T005 plus the 7 privs
+# Packer (Phase 1) and the cluster tofu modules need. Updated
+# 2026-07-06 after the live deploy: the 12-priv spec T005 set was
+# insufficient for Packer to clone VM 999 -> 900 template, so we
+# added Sys.Audit, VM.Audit, VM.Clone, VM.Migrate, VM.Config.CDROM,
+# VM.Config.HWType, VM.Snapshot.Rollback. Total 19 privs.
 # ---------------------------------------------------------------------------
 run "proxmox_role_has_spec_t005_privileges" {
   command = plan
@@ -127,6 +132,7 @@ run "proxmox_role_has_spec_t005_privileges" {
   assert {
     condition = alltrue([
       for p in [
+        # Spec T005 baseline (12 privs).
         "VM.Allocate",
         "VM.Config.CPU",
         "VM.Config.Disk",
@@ -139,16 +145,24 @@ run "proxmox_role_has_spec_t005_privileges" {
         "Datastore.AllocateSpace",
         "Datastore.Audit",
         "SDN.Use",
+        # Phase-1 extensions (7 privs added 2026-07-06 for Packer).
+        "Sys.Audit",
+        "VM.Audit",
+        "VM.Clone",
+        "VM.Migrate",
+        "VM.Config.CDROM",
+        "VM.Config.HWType",
+        "VM.Snapshot.Rollback",
       ] :
       contains(proxmox_virtual_environment_role.k3s_cluster.privileges, p)
     ])
-    error_message = "Proxmox role k3s-cluster is missing one or more spec T005 privileges."
+    error_message = "Proxmox role k3s-cluster is missing one or more spec T005 or Phase-1 privileges."
   }
 
-  # And no extras (the spec is the contract).
+  # Total: 12 spec + 7 phase-1 = 19 privs.
   assert {
-    condition     = length(proxmox_virtual_environment_role.k3s_cluster.privileges) == 12
-    error_message = "Proxmox role k3s-cluster must have exactly 12 privileges per spec T005."
+    condition     = length(proxmox_virtual_environment_role.k3s_cluster.privileges) == 19
+    error_message = "Proxmox role k3s-cluster must have exactly 19 privileges (12 spec T005 + 7 Phase-1)."
   }
 }
 

@@ -413,3 +413,146 @@ def test_versions_lock_documents_live_host_evidence() -> None:
     assert "c8fed203ed3043cba015a93ad1616f1f" in text
     assert "4755a26eedb94da69e1066d98aa820be" in text
     assert "c07321b023e944ff818fec44d8203567" in text
+
+
+# ---------- Phase 1 apply-time lessons (Step 1b, 2026-07-06) ----------
+#
+# Pinned from the live PVE 9.2.3 deploy where the WP00-minted
+# k3s-terraform@pam!tf token was used as Packer auth and Phase 1
+# surfaced six hard blockers. Each test below pins one lesson so a
+# future agent can't regress.
+
+
+def test_skill_documents_packer_local_lvm_storage_swap() -> None:
+    """Step 1b.1: SKILL.md must tell operators to retarget
+    `local-lvm` -> `data1` when the live host has no `local-lvm`
+    lvmthin pool. BigBertha only has `data1`, `data2`, `local`."""
+    text = SKILL_PATH.read_text()
+    assert "Step 1b" in text, (
+        "SKILL.md missing Step 1b (Phase 1 apply-time gotchas) section"
+    )
+    assert "local-lvm" in text, (
+        "Step 1b must explain why local-lvm is the default and why we"
+        " retarget to data1 on hosts that lack it"
+    )
+    assert "data1" in text, (
+        "Step 1b must recommend data1 as the replacement storage"
+    )
+
+
+def test_skill_documents_packer_token_bare_secret_format() -> None:
+    """Step 1b.2: Packer v1.2.x `token` is the BARE secret UUID,
+    not the concatenated `<id>=<secret>` value. The pre-2026-07-06
+    template concatenated twice and PVE rejected with 401."""
+    text = SKILL_PATH.read_text().lower()
+    assert "bare secret" in text, (
+        "Step 1b.2 must explain that Packer `token` is the BARE secret"
+    )
+    assert "double-prefixed" in text or ("401" in text and "auth" in text), (
+        "Step 1b.2 must call out the 401 double-prefix failure mode"
+    )
+
+
+def test_skill_documents_k3s_cluster_role_19_privs() -> None:
+    """Step 1b.3: The k3s-cluster role must extend from the spec
+    T005 12-priv set to 19 entries (adding Sys.Audit, VM.Audit,
+    VM.Clone, VM.Migrate, VM.Config.CDROM, VM.Config.HWType,
+    VM.Snapshot.Rollback) for Packer/Phase 1 access."""
+    text = SKILL_PATH.read_text()
+    assert (
+        "Sys.Audit" in text and "VM.Audit" in text and "VM.Clone" in text
+    ) and "VM.Config.HWType" in text, (
+        "Step 1b.3 must enumerate the 7 added privs"
+    )
+    assert "19" in text and (
+        "12 priv" in text or "12-priv" in text or "12 priv" in text
+    ), (
+        "Step 1b.3 must compare the new 19-priv total against the"
+        " original spec T005 12-priv count"
+    )
+
+
+def test_skill_documents_output_json_secret_split() -> None:
+    """Step 1b.4: bpg/proxmox v0.111.x's
+    `proxmox_user_token.<>.value` is the FULL api-token string;
+    output_json.tf must split on `=` so proxmox_token_secret
+    contains only the bare UUID (length 36)."""
+    text = SKILL_PATH.read_text()
+    assert "value" in text and (
+        "FULL" in text or "full" in text.lower()
+    ), (
+        "Step 1b.4 must explain that .value is the FULL token string"
+    )
+    assert "split" in text and "=" in text, (
+        "Step 1b.4 must mention the split-on-= approach to extract"
+        " the bare UUID"
+    )
+    assert "36" in text, (
+        "Step 1b.4 must mention the 36-char UUID length as the"
+        " success signature"
+    )
+
+
+def test_skill_documents_packer_ssh_wait_incompatibility() -> None:
+    """Step 1b.5: hashicorp/proxmox v1.2.x proxmox-clone blocks
+    on SSH-wait (5-minute timeout) which Talos installer mode
+    can never satisfy. SKILL must recommend the direct PVE API
+    clone+template bypass path."""
+    text = SKILL_PATH.read_text()
+    assert (
+        "proxmox-clone" in text or "proxmox-clone" in text
+    ), (
+        "Step 1b.5 must name the proxmox-clone builder"
+    )
+    assert "SSH" in text and (
+        "wait" in text or "timeout" in text
+    ), (
+        "Step 1b.5 must call out the SSH-wait / SSH-timeout behavior"
+    )
+    assert (
+        "/nodes/" in text and "clone" in text and "template" in text
+    ) or (
+        "PROXMOX_API_URL" in text and "clone" in text
+    ), (
+        "Step 1b.5 must give the concrete curl copy-paste for the"
+        " POST /nodes/<node>/qemu/999/clone + template bypass"
+    )
+
+
+def test_skill_documents_vmid_999_storage_preallocation() -> None:
+    """Step 1b.6: VMID 999 (talos-base) must be pre-created on
+    the same storage pool the Packer template retargets to
+    (`data1`). The ISO file name must match; the upstream
+    asset is `metal-amd64.iso`, NOT `talos-amd64.iso`."""
+    text = SKILL_PATH.read_text()
+    assert "talos-base" in text and "999" in text, (
+        "Step 1b.6 must instruct pre-creating VMID 999 named"
+        " `talos-base` with the Talos ISO attached"
+    )
+    assert "qm create 999" in text, (
+        "Step 1b.6 must give the qm create copy-paste for VMID 999"
+    )
+    assert "metal-amd64.iso" in text, (
+        "Step 1b.6 must call out the GitHub release asset name"
+        " `metal-amd64.iso` (NOT `talos-v1.10.0-amd64.iso`)"
+    )
+
+
+def test_versions_lock_documents_phase1_evidence() -> None:
+    """After the 2026-07-06 Phase 1 deploy, versions.lock.yaml
+    must record the Phase 1 cross-checks: Packer schema patches,
+    role-extension to 19 privs, output.json split, Packer-SSH
+    incompatibility, and the direct API bypass."""
+    assert VERSIONS_PATH.is_file(), f"versions.lock.yaml missing at {VERSIONS_PATH}"
+    text = VERSIONS_PATH.read_text()
+    assert "phase1_apply_against_live_host" in text
+    assert "phase1_k3s_role_privs" in text
+    assert "phase1_output_json_split" in text
+    assert "phase1_packer_schema" in text
+    assert "phase1_packer_ssh_wait" in text
+    # The 19-priv count must be present in the lock file too
+    assert "19" in text, (
+        "versions.lock.yaml must record the new 19-priv k3s-cluster role"
+    )
+    # BigBertha's storage pool is in evidence
+    assert "data1" in text and "data2" in text

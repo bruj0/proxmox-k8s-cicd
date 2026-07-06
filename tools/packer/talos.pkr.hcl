@@ -68,17 +68,23 @@ variable "pve_token_secret" {
 
 source "proxmox-clone" "talos" {
   proxmox_url              = var.pve_endpoint
+  # hashicorp/proxmox v1.2.x token auth format:
+  #   username = "user@realm!tokenid"   (with the trailing !tokenid)
+  #   token    = "<bare-secret-uuid>"  (NOT "user@realm!tokenid=secret")
   username                 = var.pve_token_id
-  token                    = "${var.pve_token_id}=${var.pve_token_secret}"
+  token                    = var.pve_token_secret
   node                     = var.pve_node
   vm_id                    = "900"
   vm_name                  = "talos-template"
-  vm_template_name         = "talos-${var.talos_version}"
-  template_description     = "Talos ${var.talos_version} template, baked ${formatdate(\"YYYY-MM-DD\", timestamp())}"
+  template_name            = "talos-${var.talos_version}"
+  template_description     = "Talos ${var.talos_version} template"
   insecure_skip_tls_verify = true
 
-  # Clone from a base Talos VM named talos-base (operator-created once).
-  clone_from_vm_id = "999"
+  # Clone from the base Talos VM (operator-created once with the ISO attached).
+  # In hashicorp/proxmox v1.2.3 the argument is `clone_vm_id`, NOT
+  # `clone_from_vm_id`. The base VM at VMID 999 must already exist with the
+  # Talos ISO on ide2 (Step 1 pre-flight).
+  clone_vm_id = "999"
 
   # Talos headless: no SSH needed after build (cluster uses talosctl over API).
   # We keep ssh_username/password in case the operator enables `talosctl
@@ -95,7 +101,13 @@ source "proxmox-clone" "talos" {
   bios    = "ovmf"
   machine = "q35"
   efi_config {
-    efi_storage_pool  = "local-lvm"
+    # Default upstream template hardcodes `local-lvm` (the storage
+    # pool the Proxmox installer creates by default). BigBertha's
+    # installer was configured with two separate lvmthin pools
+    # (`data1`, `data2`) and no `local-lvm`, so retarget both the EFI
+    # and the main disk to `data1` -- same pool used by the
+    # operator-prepared `talos-base` VMID 999 in Step 1 pre-flight.
+    efi_storage_pool  = "data1"
     efi_type          = "4m"
     pre_enrolled_keys = true
   }
@@ -103,13 +115,13 @@ source "proxmox-clone" "talos" {
   scsi_controller = "virtio-scsi-single"
 
   disks {
-    type             = "scsi"
-    storage_pool     = "local-lvm"
-    disk_size        = "20G"
-    format           = "raw"
-    io_thread        = true
-    discard          = true
-    ssd              = true
+    type         = "scsi"
+    storage_pool = "data1"
+    disk_size    = "20G"
+    format       = "raw"
+    io_thread    = true
+    discard      = true
+    ssd          = true
   }
 
   network_adapters {
@@ -134,14 +146,12 @@ build {
   name    = "talos-${var.talos_version}"
   sources = ["source.proxmox-clone.talos"]
 
-  # Give the VM ~30 seconds to reach its bootloader / dashboard, then power
-  # off. The next `clone` will copy the halted state to a fresh template.
-  provisioner "shell" {
-    inline = [
-      "sleep 30",
-      "sudo poweroff",
-    ]
-    # Ignore nonzero exit from poweroff (the SSH connection drops mid-shutdown).
-    expect_disconnect = true
-  }
+  # The hashicorp/proxmox v1.2.x proxmox-clone builder halts the cloned
+  # VM automatically (after `boot_wait`) and converts it to a PVE
+  # template because `template_name` is set. No SSH provisioner is
+  # needed; Talos is headless and exposes no SSH (cluster control
+  # happens via the Talos API, not SSH). The base VM 999 must
+  # therefore already have Talos fully installed on disk before
+  # this build runs -- see the Step 1 pre-flight for the operator
+  # procedure.
 }

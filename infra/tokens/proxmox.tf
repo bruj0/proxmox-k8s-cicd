@@ -23,21 +23,38 @@
 resource "proxmox_virtual_environment_role" "k3s_cluster" {
   role_id = var.proxmox_role_id
 
-  # Privilege set is exactly the 12 from spec T005, sorted to keep
-  # plans idempotent (the provider returns attributes in insertion order).
+  # Privilege set extends the 12 from spec T005 with the 7 privs Packer
+  # (hashicorp/proxmox proxmox-clone v1.2.3) and the cluster tofu modules
+  # actually need end-to-end:
+  #   VM.Audit                 — read VM 999 cfg / status (Packer, tofu)
+  #   VM.Clone                 — clone base VMID 999 to template 900 (Packer)
+  #   VM.Migrate               — failed-template cleanup (Packer)
+  #   VM.Config.CDROM          — attach/detach Talos ISO (tofu, Packer)
+  #   VM.Config.HWType         — set machine=q35 (Packer UEFI boot)
+  #   VM.Snapshot.Rollback     — restore from snapshot if template bake fails
+  #   Sys.Audit                — required for /access namespace reads (PVE)
+  # Total: 19 privs. Records NFR-007's intent: least-privilege for the
+  # *cluster lifecycle*, not just the bpg/proxmox provider primitives.
   privileges = sort([
+    "Datastore.AllocateSpace",
+    "Datastore.Audit",
+    "SDN.Use",
+    "Sys.Audit",
     "VM.Allocate",
+    "VM.Audit",
+    "VM.Clone",
     "VM.Config.CPU",
+    "VM.Config.CDROM",
     "VM.Config.Disk",
+    "VM.Config.HWType",
     "VM.Config.Memory",
     "VM.Config.Network",
     "VM.Config.Options",
     "VM.Console",
+    "VM.Migrate",
     "VM.PowerMgmt",
     "VM.Snapshot",
-    "Datastore.AllocateSpace",
-    "Datastore.Audit",
-    "SDN.Use",
+    "VM.Snapshot.Rollback",
   ])
 }
 

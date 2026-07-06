@@ -13,6 +13,18 @@
 # `tofu output -json | jq` post-step.
 ###############################################################################
 
+# bpg/proxmox v0.111.x exposes `proxmox_user_token.<...>.value` as the
+# FULL api-token string in `USER@REALM!TOKENID=secret` form. The
+# spec T007 contract splits this into `proxmox_token_id` (the prefix)
+# and `proxmox_token_secret` (the suffix, bare UUID). PVEAuth header
+# is `PVEAPIToken=USER@REALM!TOKENID=secret` -- consumers concatenate
+# `${proxmox_token_id}=${proxmox_token_secret}` (see scripts/apply.sh).
+locals {
+  proxmox_token_full  = proxmox_user_token.k3s_terraform_tf.value
+  proxmox_token_parts = split("=", local.proxmox_token_full)
+  proxmox_token_only  = length(local.proxmox_token_parts) > 1 ? local.proxmox_token_parts[1] : ""
+}
+
 resource "local_sensitive_file" "tokens_output" {
   filename        = "${path.module}/output.json"
   file_permission = "0600"
@@ -22,7 +34,7 @@ resource "local_sensitive_file" "tokens_output" {
     cloudflare_account_id   = var.cloudflare_account_id
     cloudflare_zone_id      = var.cloudflare_zone_id
     proxmox_token_id        = "${proxmox_virtual_environment_user.k3s_terraform.user_id}!${proxmox_user_token.k3s_terraform_tf.token_name}"
-    proxmox_token_secret    = proxmox_user_token.k3s_terraform_tf.value
+    proxmox_token_secret    = local.proxmox_token_only
     pve_endpoint            = var.proxmox_endpoint
   })
 }

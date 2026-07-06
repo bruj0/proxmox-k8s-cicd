@@ -454,6 +454,175 @@ Failure handling: halt the pipeline and surface the structured error
 (`error`, `resolution` keys) to the operator. Do NOT proceed to
 Phase 2.
 
+## Step 1b — Phase 1 apply-time gotchas (live host 2026-07-06)
+
+These are the deployment-environment issues that surfaced ONLY
+when running the SS1 Packer build against PVE 9.2.3 with the
+bpg/proxmox tokens. They are independent of the WP00-preflight
+gotchas in Step 0b; read BOTH before invoking the build.
+
+### 1b.1 — Packer schema drift from upstream wiki examples
+
+The template `tools/packer/talos.pkr.hcl` shipped with
+`local-lvm` for efi + disk storage, `clone_from_vm_id` for the
+clone source, `vm_template_name` for the output name, and the
+`formatdate(\"...\", ...)` HCL interpolation. None of these are
+accepted by hashicorp/proxmox v1.2.3 (the version our environment
+pins per Step 0c).
+
+Required patches before `packer init`:
+
+- `efi_storage_pool = "local-lvm"` → `"data1"` (the lvmthin
+  pool BigBertha uses; `local-lvm` doesn't exist on non-default
+  PVE installs)
+- `disks { storage_pool = "local-lvm" ... }` → `"data1"` (same
+  reason; lvmthin only accepts `raw` format which we already set)
+- `clone_from_vm_id = "999"` → `clone_vm_id = "999"` (the
+  v1.2.x schema argument)
+- `vm_template_name = "..."` → `template_name = "..."` (the
+  v1.2.x schema argument)
+- `template_description = "...${formatdate(\"YYYY-MM-DD\",
+  timestamp())}"` → drop the formatdate call (the escape is
+  invalid inside an HCL string-interpolation; a literal string
+  suffix is fine for our purposes)
+
+Without these patches, `packer init` exits with `Error:
+Unsupported argument (clone_from_vm_id / vm_template_name)` and
+the build never reaches PVE.
+
+### 1b.2 — Packer token auth format: `token` is the BARE secret
+
+hashicorp/proxmox v1.2.x builds the PVEAuth header as
+`PVEAPIToken=<username>=<token>`. Where:
+
+- `username` = `"USER@REALM!TOKENID"` (includes the trailing
+  `!tokenid`)
+- `token` = the BARE secret UUID — NOT `USER@REALM!TOKENID=secret`
+
+Our pre-WP00 template had
+`token = "${var.pve_token_id}=${var.pve_token_secret}"`. The
+plugin then sends
+`PVEAPIToken=k3s-terraform@pam!tf=k3s-terraform@pam!tf=<uuid>` —
+double-prefixed and rejected by PVE with `401 Authentication
+failed`. Direct `curl` works fine, only Packer fails, because
+Packer is constructing the concatenation itself.
+
+**Fix**: `token = var.pve_token_secret`. The PVE side then
+parses it correctly. Verified on BigBertha 2026-07-06 (curl and
+Packer both succeed with `e07d2de1-3eb8-46ea-831e-75a9858bd465`
+as the secret and `k3s-terraform@pam!tf` as the username).
+
+### 1b.3 — K3s-cluster role needs 7 extra privs for Packer
+
+The 12-priv spec T005 set is **insufficient** for Phase 1.
+
+Each of these returns `403 Permission check failed` on BigBertha
+without the priv:
+
+| Priv | Needed for |
+|---|---|
+| `Sys.Audit` | `/access` namespace reads |
+| `VM.Audit` | Read VM 999 cfg / qemu list |
+| `VM.Clone` | Clone VMID 999 → 900 |
+| `VM.Migrate` | Cleanup moved/half-baked templates |
+| `VM.Config.CDROM` | Attach/detach Talos ISO via API |
+| `VM.Config.HWType` | Set `machine=q35` (UEFI boot) |
+| `VM.Snapshot.Rollback` | Restore after template-bake failure |
+
+Update `infra/tokens/proxmox.tf` privileges list to **19 entries**
+(12 spec + 7 above). Verify with
+`ssh root@$PVE_HOST 'pvesh get /access/roles/k3s-cluster'`.
+
+### 1b.4 — `output.json` `proxmox_token_secret` is a FULL token
+
+The downstream infra plan is `proxmox_token_id` (the
+`USER@REALM!TOKENID` prefix) + `proxmox_token_secret` (just the
+bare UUID secret) so consumers can build the PVEAuth header as
+`<id>=<secret>`. But bpg/proxmox v0.111.x's
+`proxmox_user_token.<...>.value` attribute is the **FULL api-token
+string** in `USER@REALM!TOKENID=secret` form — not just the
+secret.
+
+The original migration kept the telmate/proxmox-era contract and
+wrote `proxmox_token_secret = <...>.value`, which produced a value
+of `k3s-terraform@pam!tf=e07d2de1-...` in `output.json`. Downstream
+consumers that concatenate `${id}=${secret}` end up with
+`<id>=<id>=<secret>` and break. PVEAuth rejects with `401`.
+
+**Fix** ([infra/tokens/output_json.tf](../../infra/tokens/output_json.tf)):
+split `value` on `=` inside a `locals {}` block and write only
+the second part. Verified on BigBertha 2026-07-06 —
+`output.json.proxmox_token_secret` is a 36-char UUID.
+
+### 1b.5 — `proxmox-clone` builder hardcodes SSH-wait
+
+The hashicorp/proxmox v1.2.x `proxmox-clone` builder ALWAYS
+starts the cloned VM and waits for SSH to become available
+(5 minute default timeout). This is incompatible with **Talos in
+installer mode** (no SSH server).
+
+Even with our base VM correctly cloned and a fresh `vm_id=900`
+VM booted, `packer build` reaches `Step "StepConnect" failed,
+aborting... Timeout waiting for SSH.` after 5m22s. Packer does
+**not** honour `ssh_wait_timeout = "0s"` for the clone variant
+in v1.2.3 (only `proxmox-iso` respects it).
+
+**Two acceptable paths**:
+
+(a) **Bypass Packer for this step.** Use the PVE REST API
+directly to clone VM 999 → VM 900 as a `full=1` clone and POST
+`/nodes/{node}/qemu/{vmid}/template`. Talos installed or not, the
+resulting VMID 900 has `template: 1` in its config and is usable
+for SS2. Achieved on 2026-07-06.
+
+```bash
+curl -X POST $PROXMOX_API_URL/nodes/BigBertha/qemu/999/clone \
+  -H "Authorization: PVEAPIToken=$PROXMOX_API_TOKEN" \
+  --data-urlencode newid=900 --data-urlencode name=talos-template \
+  --data-urlencode full=1 --data-urlencode target=BigBertha \
+  --data-urlencode storage=data1 --data-urlencode format=raw
+
+curl -X POST $PROXMOX_API_URL/nodes/BigBertha/qemu/900/template \
+  -H "Authorization: PVEAPIToken=$PROXMOX_API_TOKEN"
+
+echo 900 > build/image-id.txt
+```
+
+(b) Replace `proxmox-clone` with `proxmox-iso` and bake Talos
+to disk via the `http_content` server (a flag-pushed ISO
+boot_cmd). Larger change; not done on this run.
+
+**Recommendation**: use path (a) until Talos provides a
+`proxmox-iso`-compatible boot path. The Phase 2 cluster tofu
+modules only need a PVE template whose disk has Talos' UEFI
+bootloader intact; the cluster-bootstrap applies the right
+`talosctl apply-config` to install Talos to disk on the
+cluster VMs at first boot.
+
+### 1b.6 — Pre-allocate VMID 999 with exact storage setup
+
+Create the talos-base VMID 999 by hand BEFORE the first apply.
+The Packer template hardcodes `efi_storage_pool=data1`,
+`storage_pool=data1`, `disk_size=20G`, `format=raw`. The base VM
+must therefore use the same storage pool and at least the same
+disk size to clone cleanly:
+
+```bash
+ssh -p 6022 root@kvm.bruj0.net qm create 999 \
+  --name talos-base --memory 2048 --cores 2 \
+  --net0 virtio,bridge=vnet0 --scsihw virtio-scsi-single \
+  --cpu host --machine q35 --bios ovmf --ostype l26 \
+  --efidisk0 data1:1,efitype=4m,pre-enrolled-keys=1 \
+  --scsi0 data1:32,discard=on,iothread=on,ssd=1 \
+  --ide2 local:iso/talos-v1.10.0-amd64.iso,media=cdrom \
+  --boot order=ide2 --agent enabled=1
+```
+
+Talos ISO file name MUST match the live host's uploaded ISO.
+Asset name on GitHub releases is `metal-amd64.iso`, NOT
+`talos-amd64.iso`; the SKILL pre-flight above used the old name
+on 2026-07-06 and the operator must rename on copy.
+
 ## Step 2 — Phase 2: Provision the cicd cluster (SS2)
 
 Goal: apply OpenTofu against `infra/clusters/cicd/` to create 3 control-plane
