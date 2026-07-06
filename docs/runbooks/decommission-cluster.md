@@ -9,7 +9,7 @@ to the bring-up procedure documented in
 
 - The cluster's `~/.kube/config` context is still in place
   (`kubectl config get-contexts` lists it).
-- The cluster's `clusters/<name>/output.json` exists
+- The cluster's `infra/clusters/<name>/output.json` exists
   (otherwise `tofu destroy` cannot resolve the VMIDs).
 - The operator has read and acknowledged SC-006
   (cleanup verification).
@@ -29,7 +29,7 @@ to the bring-up procedure documented in
 2. Run the destroy:
 
    ```bash
-   cd clusters/<cluster>
+   cd infra/clusters/<cluster>
    tofu destroy -auto-approve
    ```
 
@@ -37,7 +37,7 @@ to the bring-up procedure documented in
 
    - All cluster VMs from PVE (`qm destroy` on each VMID).
    - The cluster's VIP reservation from the dnsmasq ethers file on
-     BigBertha (via a `null_resource` that runs `pvesh` over SSH).
+     the proxmox host (via a `null_resource` that runs `pvesh` over SSH).
    - The cluster's context from `~/.kube/config` (via a `null_resource`
      that runs `kubectl config delete-context <cluster>`).
 
@@ -53,7 +53,7 @@ to the bring-up procedure documented in
 4. For full state cleanup:
 
    ```bash
-   rm -rf clusters/<cluster>/
+   rm -rf infra/clusters/<cluster>/
    rm -f ~/.kube/config.tmp.<cluster>  # backup that kubeconfig_merger writes
    ```
 

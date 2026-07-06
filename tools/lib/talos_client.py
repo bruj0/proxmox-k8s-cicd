@@ -1,7 +1,7 @@
 """Talos client: thin wrapper around `talosctl` for SS3 bootstrap.
 
 This is intentionally minimal: it knows how to:
-  - read machineconfig YAML files emitted by SS2 (modules/proxmox-k3s-cluster)
+  - read machineconfig YAML files emitted by SS2 (infra/modules/proxmox-k3s-cluster)
   - apply them to each node IP
   - poll health
   - bootstrap k3s on the first healthy control-plane
@@ -36,9 +36,9 @@ def _require_bin(name: str) -> str:
 
 @dataclass(frozen=True)
 class ClusterTopology:
-    """Shape of clusters/<name>/output.json as SS2 emits it.
+    """Shape of infra/clusters/<name>/output.json as SS2 emits it.
 
-    SS2 contract (modules/proxmox-k3s-cluster/outputs.tf::local_sensitive_file
+    SS2 contract (infra/modules/proxmox-k3s-cluster/outputs.tf::local_sensitive_file
     cluster_output) emits a flat `nodes` array with role="control_plane" or
     "worker". This class splits them into the two collections the bootstrap
     script needs.

@@ -3,7 +3,7 @@
 Behaviour contract:
   - Reads the cluster admin kubeconfig via `talosctl --nodes <cp> kubeconfig /admin`
   - Writes the resulting KUBECONFIG to a per-cluster kubeconfig file
-    (clusters/<name>/kubeconfig) for repeat use.
+    (infra/clusters/<name>/kubeconfig) for repeat use.
   - Merges it into the operator's ~/.kube/config, with a timestamped
     backup of the existing ~/.kube/config before any modification.
   - All stdout from talosctl is funneled through StructuredLogger.scrub()
@@ -77,7 +77,7 @@ def _merge_into_default(cluster_name: str, kubeconfig_path: Path, home: Path) ->
 
 
 def merge(cluster_name: str, control_plane_ip: str, repo_root: Path, home: Path) -> Path:
-    cluster_dir = repo_root / "clusters" / cluster_name
+    cluster_dir = repo_root / "infra" / "clusters" / cluster_name
     cluster_dir.mkdir(parents=True, exist_ok=True)
     kubeconfig_path = cluster_dir / "kubeconfig"
     _talos_kubeconfig(cluster_name, control_plane_ip, kubeconfig_path)

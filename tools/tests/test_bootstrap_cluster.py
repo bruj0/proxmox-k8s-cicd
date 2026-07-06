@@ -46,7 +46,7 @@ def _stub_fail(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
 
 def _write_cluster(tmp_path: Path) -> Path:
     """Materialise a cluster dir in the SS2 output.json shape."""
-    cluster = tmp_path / "clusters" / "cicd"
+    cluster = tmp_path / "infra" / "clusters" / "cicd"
     cluster.mkdir(parents=True)
     # SS2 emits: cluster_name, vip, vnet_bridge, control_plane_count,
     # worker_count, talos_dir, nodes: [{role, name, ip, ...}], helm_releases.
@@ -111,7 +111,7 @@ def test_bootstrap_silent_failure_raises(tmp_path: Path, monkeypatch: pytest.Mon
     cluster = _write_cluster(tmp_path)
     monkeypatch.setattr(subprocess, "run", _stub_fail)
     with pytest.raises(BootstrapError):
-        bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent)
+        bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent.parent)
 
 
 def test_bootstrap_phase_filter_skips_later_phases(
@@ -121,7 +121,7 @@ def test_bootstrap_phase_filter_skips_later_phases(
     cluster = _write_cluster(tmp_path)
     monkeypatch.setattr(subprocess, "run", _stub_ok)
     # Should complete without touching helm/k3s phases at all.
-    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent, phases=("talos",))
+    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent.parent, phases=("talos",))
 
 
 def test_bootstrap_full_happy_path(
@@ -159,7 +159,7 @@ def test_bootstrap_full_happy_path(
     # baseline file. WP05 tests cover that phase separately.
     bootstrap(
         cluster_name="cicd",
-        repo_root=cluster.parent.parent,
+        repo_root=cluster.parent.parent.parent,
         phases=("talos", "k3s", "helm", "kubeconfig"),
     )
     # Every phase must have been invoked exactly once on the first run.
@@ -184,7 +184,7 @@ def test_bootstrap_logs_redact_secret_tokens(
     """
     cluster = _write_cluster(tmp_path)
     monkeypatch.setattr(subprocess, "run", _stub_ok)
-    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent, phases=("talos",))
+    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent.parent, phases=("talos",))
     out = capsys.readouterr().out
     # The token-shaped key is dropped entirely by _scrub (not replaced
     # with a placeholder). Inject a value via the log module directly to

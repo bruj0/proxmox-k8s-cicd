@@ -6,13 +6,13 @@
 #
 # Usage:
 #   PVE_SSH=root@10.0.0.1 PVE_SSH_PORT=6022 \
-#     ./scripts/capture_host_ports_baseline.sh clusters/cicd
+#     ./scripts/capture_host_ports_baseline.sh infra/clusters/cicd
 #
 # Writes <cluster_dir>/host_ports_baseline.txt.
 
 set -euo pipefail
 
-cluster_dir="${1:-clusters/cicd}"
+cluster_dir="${1:-infra/clusters/cicd}"
 mkdir -p "$cluster_dir"
 
 target="${PVE_SSH:-root@10.0.0.1}"

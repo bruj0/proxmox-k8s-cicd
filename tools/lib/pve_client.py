@@ -68,7 +68,7 @@ class PveClient:
                 error=str(exc),
                 resolution=(
                     "increase timeout; check PVE host reachability "
-                    "(ssh bigbertha)"
+                    "(ssh proxmox-host)"
                 ),
             )
             raise
@@ -120,7 +120,7 @@ class PveClient:
                 vmid=vmid,
                 message="qm destroy timed out — VM may still exist",
                 resolution=(
-                    "run `qm destroy 900 --skiplock --purge` manually on bigbertha"
+                    "run `qm destroy 900 --skiplock --purge` manually on the proxmox host"
                 ),
             )
 

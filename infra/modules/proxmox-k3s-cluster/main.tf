@@ -135,7 +135,7 @@ resource "proxmox_cloned_vm" "node" {
   for_each = { for n in local.nodes : n.name => n }
 
   name        = each.value.name
-  node_name   = "bigbertha"
+  node_name   = "proxmox-host"
   description = "${var.cluster_name} ${each.value.role} (Talos ${var.talos_version})"
   started     = true
 

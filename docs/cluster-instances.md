@@ -7,12 +7,12 @@ M3 ("two clusters race for the same control-plane endpoint").
 
 ## Background
 
-The `modules/proxmox-k3s-cluster` module is designed to be instantiated once per
+The `infra/modules/proxmox-k3s-cluster` module is designed to be instantiated once per
 cluster. Each instantiation creates:
 
 - N Proxmox VMs (control-plane + workers) cloned from the Talos image template
 - A Talos VIP reserved in the vnet0 dnsmasq ethers file
-- Per-VM Talos machineconfig files rendered to `clusters/<cluster_name>/talos/`
+- Per-VM Talos machineconfig files rendered to `infra/clusters/<cluster_name>/talos/`
 - An output.json with the cluster's identity, written as `0600`
 
 Two cluster instances must coexist on the same Proxmox host without colliding.
@@ -38,16 +38,16 @@ Every cluster instance must pick **disjoint values** for these seven elements:
 
 Pick a fresh `cluster_name` (e.g., `prod`, `staging`, `data`). Then pick the
 other six values that are disjoint from every existing instance. Use
-`clusters/cicd/versions.lock.yaml` and `clusters/apps/versions.lock.yaml` as
+`infra/clusters/cicd/versions.lock.yaml` and `infra/clusters/apps/versions.lock.yaml` as
 references for what's already taken.
 
 ### 2. Author the cluster root
 
-Create `clusters/<cluster_name>/` with:
+Create `infra/clusters/<cluster_name>/` with:
 
 - `main.tf` — calls `module "../../modules/proxmox-k3s-cluster"` with all 13
   inputs, reading `build/image-id.txt` and `infra/tokens/output.json` via data
-  sources (same shape as `clusters/cicd/main.tf`).
+  sources (same shape as `infra/clusters/cicd/main.tf`).
 - `variables.tf` — empty placeholder for future overrides.
 - `terraform.tfvars.example` — safe template, no secrets.
 - `.gitignore` — excludes `output.json`, `*.tfstate*`, `talos/`, etc.
@@ -60,7 +60,7 @@ Create `clusters/<cluster_name>/` with:
 ### 3. Verify
 
 ```bash
-cd clusters/<cluster_name>
+cd infra/clusters/<cluster_name>
 tofu init -backend=false
 tofu validate              # exits 0
 tofu test                  # all assertions pass (incl. M3 disjointness)
@@ -70,7 +70,7 @@ tofu test                  # all assertions pass (incl. M3 disjointness)
 
 ```bash
 # Operator-side: with live PVE credentials in env
-cd clusters/<cluster_name>
+cd infra/clusters/<cluster_name>
 tofu apply -auto-approve
 ```
 

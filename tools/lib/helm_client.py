@@ -14,7 +14,7 @@ four non-helm chart installs that follow the first two:
   - cert-manager/cert-manager (in-cluster CA only; NO ACME)
   - oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller
 plus a `kubectl apply` payload for the Traefik HelmChartConfig that
-WP02 rendered into clusters/<name>/manifests/traefik-helmchartconfig.yaml.
+WP02 rendered into infra/clusters/<name>/manifests/traefik-helmchartconfig.yaml.
 
 Demoted Traefik itself runs INSIDE k3s (via the HelmChartConfig) so
 SS3 does not call `helm upgrade --install` for it.
@@ -126,7 +126,7 @@ class ManifestApply:
     """A kubectl apply step for a pre-rendered Kubernetes manifest.
 
     Used by WP05 to apply the Traefik HelmChartConfig that
-    modules/proxmox-k3s-cluster/ rendered in WP02.
+    infra/modules/proxmox-k3s-cluster/ rendered in WP02.
     """
 
     kind: str
@@ -135,7 +135,7 @@ class ManifestApply:
 
 
 def _proxmox_region_zone(cluster: Mapping[str, object]) -> tuple[str, str]:
-    pve = str(cluster.get("pve_node") or "bigbertha")
+    pve = str(cluster.get("pve_node") or "proxmox-host")
     return pve, pve.capitalize()
 
 

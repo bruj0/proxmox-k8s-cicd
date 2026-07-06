@@ -111,7 +111,7 @@ class State:
         )
 
     def _state_file(self) -> Path:
-        return self.repo_root / "clusters" / self.cluster / "bootstrap_state.json"
+        return self.repo_root / "infra" / "clusters" / self.cluster / "bootstrap_state.json"
 
 
 def _parse_phases(raw: Iterable[str] | None) -> list[str]:
@@ -241,7 +241,7 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
         remaining, traefik_apply = remaining_releases(cluster_dict, secrets)
         client.install_or_upgrade(remaining)
         # Traefik is installed via the Talos HelmChartConfig mechanism (the
-        # SS2 module rendered the YAML into clusters/<name>/manifests/ at
+        # SS2 module rendered the YAML into infra/clusters/<name>/manifests/ at
         # apply time). SS3's job is to apply that file. If it does not
         # exist yet (first WP05 run before tofu apply re-renders), warn.
         if traefik_apply is not None:
@@ -318,7 +318,7 @@ def _run_externalname(
     leak the apps cluster's namespace layout onto cicd).
 
     No-op when the kustomization manifest is missing yet (e.g. first-run
-    before `tofu apply` has emitted clusters/apps/manifests/). The
+    before `tofu apply` has emitted infra/clusters/apps/manifests/). The
     state.json skip logic means a subsequent bootstrap run will retry
     this phase once the manifest appears.
     """
@@ -342,7 +342,7 @@ def _run_externalname(
         _LOG.warn(
             "externalname.noapply",
             message=(
-                "no kustomization under clusters/apps/manifests/cicd-system; "
+                "no kustomization under infra/clusters/apps/manifests/cicd-system; "
                 "rerun bootstrap after `tofu apply` lands the manifest"
             ),
         )
@@ -404,7 +404,7 @@ def bootstrap(
     repo_root: Path,
     phases: Sequence[str] | None = None,
 ) -> None:
-    cluster_dir = repo_root / "clusters" / cluster_name
+    cluster_dir = repo_root / "infra" / "clusters" / cluster_name
     state = State(cluster=cluster_name, repo_root=repo_root).load()
 
     requested = _parse_phases(phases)

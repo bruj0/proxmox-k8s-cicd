@@ -8,12 +8,12 @@ directions are idempotent (rerunning with the same value is a no-op).
 - The cluster is currently in a healthy state
   (`kubectl --context <cluster> get nodes` shows all nodes Ready).
 - The cluster module is already applied
-  (`cd clusters/<cluster> && tofu state list` shows
+  (`cd infra/clusters/<cluster> && tofu state list` shows
   `module.proxmox_k3s_cluster`).
 
 ## Scale up
 
-1. Edit `clusters/<cluster>/terraform.tfvars`:
+1. Edit `infra/clusters/<cluster>/terraform.tfvars`:
 
    ```hcl
    workers = {
@@ -24,7 +24,7 @@ directions are idempotent (rerunning with the same value is a no-op).
 2. Run the apply:
 
    ```bash
-   cd clusters/<cluster>
+   cd infra/clusters/<cluster>
    tofu apply -auto-approve
    ```
 
@@ -52,7 +52,7 @@ directions are idempotent (rerunning with the same value is a no-op).
 2. Run the apply:
 
    ```bash
-   cd clusters/<cluster>
+   cd infra/clusters/<cluster>
    tofu apply -auto-approve
    ```
 

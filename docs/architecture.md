@@ -18,9 +18,9 @@ flowchart TB
     Template[Proxmox template VMID 900]
   end
 
-  subgraph SS2["SS2: Cluster Provisioning (modules/proxmox-k3s-cluster)"]
-    TofuCicd[clusters/cicd/main.tf]
-    TofuApps[clusters/apps/main.tf]
+  subgraph SS2["SS2: Cluster Provisioning (infra/modules/proxmox-k3s-cluster)"]
+    TofuCicd[infra/clusters/cicd/main.tf]
+    TofuApps[infra/clusters/apps/main.tf]
     Cilium[Cilium CNI]
     KubeVip[kube-vip ARP VIP]
   end
@@ -49,7 +49,7 @@ flowchart TB
 ## Cross-cluster wiring (WP06)
 
 The `apps` cluster reaches the `cicd` cluster's primary services via
-ExternalName Services rendered into `clusters/apps/manifests/cicd-system/`
+ExternalName Services rendered into `infra/clusters/apps/manifests/cicd-system/`
 and applied by `tools/bootstrap_cluster.py --cluster apps --phases externalname`.
 
 ```mermaid
@@ -79,19 +79,19 @@ DNS resolution flow when an apps workload reaches `gitlab.cicd-system.svc.cluste
 | Subsystem | Owns | Reads from | Writes to |
 |-----------|------|------------|-----------|
 | SS1 (Image Build) | `tools/build_image.py`, `tools/packer/talos.pkr.hcl` | `versions.yaml`, `infra/tokens/output.json` | `build/image-id.txt` |
-| SS2 (Cluster Module) | `modules/proxmox-k3s-cluster/**`, `clusters/cicd/main.tf`, `clusters/apps/main.tf` | `infra/tokens/output.json`, `build/image-id.txt` | `clusters/<name>/output.json`, `clusters/<name>/manifests/` |
-| SS3 (Bootstrap) | `tools/bootstrap_cluster.py`, `tools/lib/*` | `clusters/<name>/output.json`, `clusters/<name>/manifests/`, `infra/tokens/output.json` | `~/.kube/config`, PVE nft prerouting baseline diff |
+| SS2 (Cluster Module) | `infra/modules/proxmox-k3s-cluster/**`, `infra/clusters/cicd/main.tf`, `infra/clusters/apps/main.tf` | `infra/tokens/output.json`, `build/image-id.txt` | `infra/clusters/<name>/output.json`, `infra/clusters/<name>/manifests/` |
+| SS3 (Bootstrap) | `tools/bootstrap_cluster.py`, `tools/lib/*` | `infra/clusters/<name>/output.json`, `infra/clusters/<name>/manifests/`, `infra/tokens/output.json` | `~/.kube/config`, PVE nft prerouting baseline diff |
 
 ## Cross-system contracts
 
 - **SS1 -> SS2**: `build/image-id.txt` is a single line containing the
   Proxmox template VMID. SS2 reads it via the `local_file` data source
-  in `clusters/<name>/main.tf`.
-- **SS2 -> SS3**: `clusters/<name>/output.json` is a JSON document with
+  in `infra/clusters/<name>/main.tf`.
+- **SS2 -> SS3**: `infra/clusters/<name>/output.json` is a JSON document with
   keys `cluster_name`, `vip`, `pod_cidr`, `svc_cidr`, and `nodes[]`
   (each node having `name`, `ip`, `role`). SS3 consumes this via
   `ClusterTopology.from_output_json()`.
-- **SS2 -> SS3 (manifests)**: `clusters/<name>/manifests/` contains
+- **SS2 -> SS3 (manifests)**: `infra/clusters/<name>/manifests/` contains
   pre-rendered Kubernetes manifests (e.g. the Traefik HelmChartConfig
   for the cicd cluster, the cross-cluster ExternalName kustomization
   for the apps cluster). SS3 applies these via `kubectl apply -f` /

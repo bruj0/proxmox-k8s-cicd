@@ -7,7 +7,7 @@
 # VM and convert it to a Proxmox template.
 #
 # For FIRST-TIME builds (no template exists yet) the operator must:
-#   1. Upload the Talos ISO to bigbertha's local storage (e.g. via
+#   1. Upload the Talos ISO to the proxmox host's local storage (e.g. via
 #      `scp` or the PVE UI).
 #   2. Pre-create a base Talos VM named `talos-base` at VMID 999, configured
 #      with 2GB RAM, 10GB disk, and the Talos ISO attached.
@@ -39,13 +39,13 @@ variable "talos_version" {
 
 variable "pve_endpoint" {
   type        = string
-  description = "Proxmox VE API URL (e.g. https://bigbertha:8006/api2/json)."
+  description = "Proxmox VE API URL (e.g. https://proxmox-host:8006/api2/json)."
 }
 
 variable "pve_node" {
   type        = string
-  description = "Proxmox node name (default: bigbertha)."
-  default     = "bigbertha"
+  description = "Proxmox node name (default: proxmox-host)."
+  default     = "proxmox-host"
 }
 
 variable "pve_token_id" {

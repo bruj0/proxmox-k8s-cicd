@@ -5,7 +5,7 @@ Encodes the cross-cluster wiring acceptance criteria:
   M3 (apps-cluster wiring): apps cluster exposes the four cicd services
     (gitlab / registry / minio / minio-console) as ExternalName Services
     in the cicd-system namespace, sourced from the manifest at
-    `clusters/apps/manifests/cicd-system/externalname.yaml`.
+    `infra/clusters/apps/manifests/cicd-system/externalname.yaml`.
   Acceptance: bootstrap_cluster.py --cluster apps gains a new phase
     "externalname" that applies this manifest via `kubectl apply -k`.
   Acceptance: the externalname phase is a no-op when --cluster != apps.
@@ -39,9 +39,9 @@ def _stub_fail_kubectl_apply(*args: Any, **kwargs: Any) -> subprocess.CompletedP
 
 def _write_apps_cluster(repo_root: Path) -> Path:
     """Create the minimum filesystem shape bootstrap_cluster.py expects for
-    an `apps` cluster: clusters/apps/output.json + clusters/apps/kubeconfig.
+    an `apps` cluster: infra/clusters/apps/output.json + infra/clusters/apps/kubeconfig.
     """
-    cluster_dir = repo_root / "clusters" / "apps"
+    cluster_dir = repo_root / "infra" / "clusters" / "apps"
     cluster_dir.mkdir(parents=True, exist_ok=True)
     output = {
         "cluster_name": "apps",
@@ -64,9 +64,9 @@ def _write_apps_cluster(repo_root: Path) -> Path:
 
 def _write_externalname_manifest(repo_root: Path) -> Path:
     """Author the ExternalName manifest + kustomization.yaml under
-    clusters/apps/manifests/cicd-system/.
+    infra/clusters/apps/manifests/cicd-system/.
     """
-    cicd_system = repo_root / "clusters" / "apps" / "manifests" / "cicd-system"
+    cicd_system = repo_root / "infra" / "clusters" / "apps" / "manifests" / "cicd-system"
     cicd_system.mkdir(parents=True, exist_ok=True)
     external_name_yaml = (
         "apiVersion: v1\n"
@@ -188,7 +188,7 @@ def test_externalname_phase_apps_cluster_applies_kustomization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """WP06 T003: bootstrap --cluster apps --phases externalname runs
-    `kubectl apply -k` against clusters/apps/manifests/cicd-system/."""
+    `kubectl apply -k` against infra/clusters/apps/manifests/cicd-system/."""
     _write_externalname_manifest(tmp_path)
     _write_apps_cluster(tmp_path)
     invoked: list[list[str]] = []
@@ -218,7 +218,7 @@ def test_externalname_phase_skips_for_cicd_cluster(
     """WP06 T003: the externalname phase is a no-op when --cluster != apps.
     The cicd cluster does not own the cross-cluster wiring; running the
     phase there would mistakenly apply apps manifests onto cicd."""
-    cicd_dir = tmp_path / "clusters" / "cicd"
+    cicd_dir = tmp_path / "infra" / "clusters" / "cicd"
     cicd_dir.mkdir(parents=True)
     output = {
         "cluster_name": "cicd",
@@ -296,7 +296,7 @@ def test_externalname_phase_skips_when_manifest_missing(
     # so the operator's next bootstrap run after `tofu apply` lands the
     # manifest must retry the apply. Recording 'done' here would silently
     # leave the apps cluster without the ExternalName Services.
-    state_file = tmp_path / "clusters" / "apps" / "bootstrap_state.json"
+    state_file = tmp_path / "infra" / "clusters" / "apps" / "bootstrap_state.json"
     if state_file.exists():
         data = json.loads(state_file.read_text())
         assert "externalname" not in data.get("phases_done", [])

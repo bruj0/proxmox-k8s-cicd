@@ -139,7 +139,7 @@ class BuildImage:
                 error=exc.reason,
                 resolution=(
                     "inspect Packer log; manually delete VM "
-                    f"{TEMPLATE_VMID} on bigbertha if it remains"
+                    f"{TEMPLATE_VMID} on the proxmox host if it remains"
                 ),
                 talos_version=self.talos_version,
             )
@@ -356,7 +356,7 @@ class BuildImage:
                 step="packer_timeout",
                 error=f"{PACKER_BIN} exceeded {PACKER_TIMEOUT_SECONDS}s",
                 resolution=(
-                    f"check PVE console on bigbertha; manually delete "
+                    f"check PVE console on the proxmox host; manually delete "
                     f"VM {TEMPLATE_VMID} if half-baked"
                 ),
             )
@@ -448,12 +448,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--pve-endpoint",
         required=True,
-        help="Proxmox VE API endpoint URL (e.g. https://bigbertha:8006/api2/json).",
+        help="Proxmox VE API endpoint URL (e.g. https://proxmox-host:8006/api2/json).",
     )
     parser.add_argument(
         "--pve-node",
-        default="bigbertha",
-        help="Proxmox node name (default: bigbertha).",
+        default="proxmox-host",
+        help="Proxmox node name (default: proxmox-host).",
     )
     parser.add_argument(
         "--pve-token-id",

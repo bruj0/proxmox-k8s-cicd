@@ -13,7 +13,7 @@
 
 # VIP reservation (synthetic hostname so the operator can ping by name).
 resource "proxmox_virtual_environment_hosts" "vip_reservation" {
-  node_name = "bigbertha"
+  node_name = "proxmox-host"
 
   entry {
     address   = var.vip
@@ -36,7 +36,7 @@ resource "proxmox_virtual_environment_hosts" "vip_reservation" {
 resource "proxmox_virtual_environment_hosts" "node" {
   for_each = { for n in local.nodes : n.name => n }
 
-  node_name = "bigbertha"
+  node_name = "proxmox-host"
 
   entry {
     address   = each.value.ip

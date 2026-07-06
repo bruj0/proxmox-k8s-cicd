@@ -6,7 +6,7 @@ description: Bring up two k3s clusters (cicd + apps) on a single Proxmox host us
 # Proxmox k3s Pipeline
 
 End-to-end pipeline for provisioning two Talos/k3s clusters on a single
-Proxmox host (BigBertha, 10.0.0.1). The pipeline drives five numbered
+Proxmox host. The pipeline drives five numbered
 top-level phases; the bootstrap phase (Phase 4) further decomposes
 into six ordered sub-phases (talos, k3s, helm, kubeconfig, host_ports,
 externalname). Each (sub-)phase has a single CLI entry point and
@@ -80,21 +80,21 @@ Phase 2.
 
 ## Step 2 — Phase 2: Provision the cicd cluster (SS2)
 
-Goal: apply OpenTofu against `clusters/cicd/` to create 3 control-plane
+Goal: apply OpenTofu against `infra/clusters/cicd/` to create 3 control-plane
 + N worker Talos VMs and render `output.json` +
 `manifests/traefik-helmchartconfig.yaml`.
 
 ```bash
-cd clusters/cicd
+cd infra/clusters/cicd
 tofu init
 tofu apply -auto-approve
 ```
 
 Success criteria (assert ALL before proceeding):
-1. `tofu output -json > clusters/cicd/output.json` exits 0 and
+1. `tofu output -json > infra/clusters/cicd/output.json` exits 0 and
    `output.json` parses as JSON with `cluster_name`, `vip`,
    `pod_cidr`, `svc_cidr`, `nodes[]` keys.
-2. `clusters/cicd/manifests/traefik-helmchartconfig.yaml` exists and
+2. `infra/clusters/cicd/manifests/traefik-helmchartconfig.yaml` exists and
    parses as YAML (kustomize-compatible schema).
 3. `tofu test` exits 0 (no warnings about VMID overlap with apps).
 
@@ -106,17 +106,17 @@ recreating the cluster from scratch.
 
 ```bash
 PVE_SSH=root@10.0.0.1 PVE_SSH_PORT=6022 \
-  ./scripts/capture_host_ports_baseline.sh clusters/cicd
+  ./scripts/capture_host_ports_baseline.sh infra/clusters/cicd
 ```
 
-Success criteria: `clusters/cicd/host_ports_baseline.txt` exists and
+Success criteria: `infra/clusters/cicd/host_ports_baseline.txt` exists and
 contains the literal substring `chain prerouting`.
 
 ## Step 4 — Phase 4: Bootstrap (SS3)
 
 Runs the six-phase bootstrap. Order is enforced by `PHASES` in
 `tools/bootstrap_cluster.py`. Each phase records its success in
-`clusters/<name>/bootstrap_state.json`; rerunning is a no-op for
+`infra/clusters/<name>/bootstrap_state.json`; rerunning is a no-op for
 completed phases.
 
 For the cicd cluster:
@@ -125,7 +125,7 @@ For the cicd cluster:
 python tools/bootstrap_cluster.py --cluster cicd
 ```
 
-For the apps cluster (after cicd is healthy AND `clusters/apps/`
+For the apps cluster (after cicd is healthy AND `infra/clusters/apps/`
 has been provisioned by Phase 2-equivalent):
 
 ```bash
@@ -148,7 +148,7 @@ The six phases, in order:
    ExternalName Services kustomization (WP06).
 
 Idempotency: on a rerun, the script reads
-`clusters/<name>/bootstrap_state.json` and skips phases whose name
+`infra/clusters/<name>/bootstrap_state.json` and skips phases whose name
 appears in `phases_done`. This is the canonical "convergence from
 partial state" path required by NFR-011. **Idempotency is the contract;
 the operator may safely rerun the bootstrap at any point.**

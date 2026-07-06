@@ -50,7 +50,7 @@ def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs):
     defaults = dict(
         talos_version="v1.10.0",
         pve_endpoint="https://10.0.0.1:8006/api2/json",
-        pve_node="bigbertha",
+        pve_node="proxmox-host",
         pve_token_id="terraform@pve!k3s",
         pve_token_secret="prod-token-secret",
         build_dir=tmp_path / "build",

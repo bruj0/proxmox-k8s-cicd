@@ -1,5 +1,5 @@
 # WP04 (Bootstrap Orchestration / SS3) — added 2026-07-05.
-# Mirrors modules/proxmox-k3s-cluster/versions.lock.yaml (T000 gate).
+# Mirrors infra/modules/proxmox-k3s-cluster/versions.lock.yaml (T000 gate).
 #
 # Bootstrap phase: talosctl -> k3s -> helm (Cilium + kube-vip) -> kubeconfig merge.
 # All version pins are operator-overridable via env vars; this file is the
@@ -11,7 +11,7 @@ dependencies:
     rationale: >
       Pin matches the Talos version baked into the image template
       (versions.yaml['talos']['v1.10.0']). talosctl 1.10.x is API-compatible
-      with the v1alpha1 machineconfig emitted by modules/proxmox-k3s-cluster.
+      with the v1alpha1 machineconfig emitted by infra/modules/proxmox-k3s-cluster.
     source: "context7-auto-research on 2026-07-05"
 
   - name: k3s
@@ -93,6 +93,6 @@ cross_check:
 verifier:
   no_new_host_ports:
     phase: "host_ports"
-    baseline_file: "clusters/<name>/host_ports_baseline.txt"
+    baseline_file: "infra/clusters/<name>/host_ports_baseline.txt"
     transport: "ssh -p 6022 root@10.0.0.1 nft list chain ip nat prerouting"
     raising: "HostPortsAddedError -> BootstrapError"

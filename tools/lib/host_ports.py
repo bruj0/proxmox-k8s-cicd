@@ -103,7 +103,7 @@ def verify_no_new_dnat_rules(
         baseline_path: text file containing the captured `nft list chain
             ip nat prerouting` output.
         ssh_target: PVE ssh host (`user@host`). Defaults to root@10.0.0.1
-            (BigBertha's LAN address).
+            (the proxmox host's LAN address).
         ssh_port: PVE ssh port. Defaults to 6022 (the non-default sshd port
             operators use to avoid the auto-attack surface on 22).
         on_ssh_failure: optional callable (phase_name, ssh_target, exc)

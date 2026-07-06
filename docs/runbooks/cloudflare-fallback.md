@@ -7,7 +7,7 @@ genuinely unavailable for an extended period.**
 
 ## Prerequisites
 
-- BigBertha reachable at `root@10.0.0.1` on port 6022 (the non-default
+- The proxmox host reachable at `root@10.0.0.1` on port 6022 (the non-default
   PVE ssh port).
 - The cluster module is already applied (`tofu state list` shows
   `module.proxmox_k3s_cluster.cicd`).
@@ -18,14 +18,14 @@ genuinely unavailable for an extended period.**
 1. Flip the cluster variable:
 
    ```bash
-   cd clusters/cicd
+   cd infra/clusters/cicd
    tofu apply -var="cf_publish_traefik_publicly=true"
    ```
 
    Tofu automatically re-renders the Traefik HelmChartConfig to expose
    ports 80/443 on the cluster VIP (`10.0.0.30`).
 
-2. Add the DNAT rules on BigBertha:
+2. Add the DNAT rules on the proxmox host:
 
    ```bash
    ssh root@10.0.0.1 -p 6022 nft add rule ip nat prerouting tcp dport 443 dnat to 10.0.0.30:443
@@ -36,7 +36,7 @@ genuinely unavailable for an extended period.**
 
    - Change the `*.example.com` CNAMEs (which the
      cloudflare-tunnel-ingress-controller manages) to A records
-     pointing at `151.80.34.63` (BigBertha's public IP).
+     pointing at `151.80.34.63` (the proxmox host's public IP).
    - Do this via the Cloudflare dashboard or via the
      cloudflare-tunnel-ingress-controller's pause-and-override flow.
 
@@ -62,7 +62,7 @@ The endpoint must return 200 within 5 s.
 Reverse the four steps:
 
 1. `tofu apply -var="cf_publish_traefik_publicly=false"` in
-   `clusters/cicd/`.
+   `infra/clusters/cicd/`.
 2. Delete the nft DNAT rules:
 
    ```bash
@@ -83,7 +83,7 @@ baseline is re-captured. After the rollback, run:
 
 ```bash
 PVE_SSH=root@10.0.0.1 PVE_SSH_PORT=6022 \
-  ./scripts/capture_host_ports_baseline.sh clusters/cicd
+  ./scripts/capture_host_ports_baseline.sh infra/clusters/cicd
 ```
 
 to re-baseline and bring the verifier back to green.

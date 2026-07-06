@@ -26,9 +26,9 @@ mock_provider "proxmox" {
   mock_data "proxmox_virtual_environment_vms" {
     defaults = {
       vms = [
-        { vm_id = 999, name = "talos-base",    node_name = "bigbertha", template = false, status = "stopped" },
-        { vm_id = 900, name = "talos-v1.10.0", node_name = "bigbertha", template = true,  status = "stopped" },
-        { vm_id = 110, name = "unrelated-vm",  node_name = "bigbertha", template = false, status = "running" },
+        { vm_id = 999, name = "talos-base",    node_name = "proxmox-host", template = false, status = "stopped" },
+        { vm_id = 900, name = "talos-v1.10.0", node_name = "proxmox-host", template = true,  status = "stopped" },
+        { vm_id = 110, name = "unrelated-vm",  node_name = "proxmox-host", template = false, status = "running" },
       ]
     }
   }
