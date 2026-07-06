@@ -17,6 +17,14 @@
 terraform {
   required_version = ">= 1.6.0"
 
+  # Backend: GitLab-managed Terraform state.
+  # Project: infra-state/bigbertha (project_id=84156476) at gitlab.com.
+  # Per-stack state name: infra-tokens.
+  # All connection / auth parameters are supplied at init time via
+  # scripts/gitlab_backend.sh -- backend "http" body stays empty
+  # so no credentials are ever written into this HCL.
+  backend "http" {}
+
   required_providers {
     cloudflare = {
       source  = "cloudflare/cloudflare"

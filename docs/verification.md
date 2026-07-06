@@ -55,7 +55,7 @@ gates:
 - **mypy**: `mypy --strict --explicit-package-bases -p tools` exits 0
   across all source files.
 - **ruff**: `ruff check tools/` reports zero violations.
-- **pytest**: `pytest tools/tests/` reports **69 passed** as of
+- **pytest**: `pytest tools/tests/` reports **86 passed** as of (2026-07-06)
   2026-07-06 (43 baseline WP00-WP06 + 8 WP07 acceptance + 11 Skill
   Step 0a/0b/0c/0d pins + **7 Step 1b Phase-1 pins** added on
   2026-07-06).

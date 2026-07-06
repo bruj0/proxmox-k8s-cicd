@@ -13,6 +13,13 @@
 terraform {
   required_version = ">= 1.6.0"
 
+  # NOTE: no `backend` block here. Per OpenTofu docs, a backend block in
+  # a module is silently ignored with a warning ("Any selected backend
+  # applies to the entire configuration, so OpenTofu expects provider
+  # configurations only in the root module"), and modules never carry
+  # state. State for instances of this module lives in the calling root
+  # (e.g. infra/clusters/cicd at the GitLab state name "cluster-cicd").
+
   required_providers {
     proxmox = {
       source  = "bpg/proxmox"

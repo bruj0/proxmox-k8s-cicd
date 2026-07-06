@@ -39,3 +39,7 @@ crash.*.log
 terraform.tfvars
 *.tfvars
 !*.tfvars.example
+
+# One-shot pre-migration backups of terraform.tfstate before
+# `tofu init -migrate-state` to a remote backend. Never track.
+.local-state-backup-*/
