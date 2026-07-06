@@ -60,6 +60,24 @@ to the bring-up procedure documented in
 5. Update `infra/tokens/versions.lock.yaml` to remove the cluster's
    entry from the `cross_cluster_dependencies` block (if any).
 
+6. **If decommissioning the LAST cluster AND you're done with Phase 1**
+   (no future cluster builds will happen on this host), also retire
+   the SS1 Phase-0 artefacts:
+
+   ```bash
+   # Destroy the PVE phase-1 base + template (see .agents/skills/proxmox-k3s-pipeline/SKILL.md Step 1b.6).
+   # VMID 999 is the talos-base (one per Proxmox host).
+   # VMID 900 is the cloned-and-promoted `talos-template`.
+   ssh root@$PVE_HOST 'qm stop 999 2>/dev/null; qm destroy 999 2>&1 | tail -1'
+   ssh root@$PVE_HOST 'qm stop 900 2>/dev/null; qm destroy 900 2>&1 | tail -1'
+   rm -f build/image-id.txt
+   ```
+
+   Skip this step if you plan to bring another cluster up on this
+   host -- the base VMID 999 + template VMID 900 are reused across
+   builds (the token-provisioned Packer just re-bakes the template;
+   the role+user stay).
+
 ## Verify (SC-006)
 
 ```bash

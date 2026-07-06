@@ -18,6 +18,7 @@ result, the responsible subsystem, and the live status.
 | SC-004 | `nft list chain ip nat prerouting` shows zero new DNAT rules | `python tools/bootstrap_cluster.py --cluster cicd --phases host_ports` | exit 0, no new DNAT rules | SS3 | covered by unit test (`test_verify_no_new_dnat_rules_*`); live run deferred |
 | SC-005 | Rerun idempotency: tofu + bootstrap converge to no-op in <60 s | `cd infra/clusters/cicd && tofu apply -auto-approve && python tools/bootstrap_cluster.py --cluster cicd` | both exit 0 in <60 s combined | SS2+SS3 | covered by state.json skip logic; live run deferred |
 | SC-006 | `tofu destroy` cleans up | `cd infra/clusters/<name> && tofu destroy -auto-approve` | all VMs removed, context gone, no orphaned tokens | SS2 | covered by the decommission-cluster runbook |
+| SC-007 | Phase 1 produces a Talos template at VMID 900 with `image-id.txt = "900\n"` on the live host | `ssh root@$PVE_HOST 'grep -E "^template:" /etc/pve/qemu-server/900.conf' && cat build/image-id.txt` | `template: 1`, `image-id.txt` is `900` | SS0+SS1 | **pass** (verified 2026-07-06 on BigBertha PVE 9.2.3; six Phase-1 patches from SKILL Step 1b applied) |
 
 ## NFR-010..NFR-014 — Non-functional requirements
 
@@ -31,7 +32,7 @@ result, the responsible subsystem, and the live status.
 
 ## Live verification summary
 
-Of the 6 SC + 5 NFR checks above:
+Of the 7 SC + 5 NFR checks above:
 
 - 4 are covered by automated unit/integration tests that pass as of
   the WP07 commit: NFR-010, NFR-011 (test side), NFR-012, NFR-013.
@@ -39,6 +40,9 @@ Of the 6 SC + 5 NFR checks above:
   (host_ports; test exercises the diff algorithm, live needs PVE).
 - 6 require a live PVE host: SC-001, SC-002, SC-003, SC-005 (live
   side), SC-006, NFR-014.
+- 1 was verified live on 2026-07-06 (BigBertha PVE 9.2.3): SC-007
+  (Phase 1 template bake; full details in the Phase-1 commit and in
+  `.agents/skills/proxmox-k3s-pipeline/SKILL.md` Step 1b).
 
 The deferred verifications are owned by the operator; the runbooks in
 `docs/runbooks/` document the manual steps.
@@ -51,8 +55,12 @@ gates:
 - **mypy**: `mypy --strict --explicit-package-bases -p tools` exits 0
   across all source files.
 - **ruff**: `ruff check tools/` reports zero violations.
-- **pytest**: `pytest tools/tests/` reports 51 passed (43 baseline
-  WP00-WP06 + 8 WP07 acceptance tests).
+- **pytest**: `pytest tools/tests/` reports **69 passed** as of
+  2026-07-06 (43 baseline WP00-WP06 + 8 WP07 acceptance + 11 Skill
+  Step 0a/0b/0c/0d pins + **7 Step 1b Phase-1 pins** added on
+  2026-07-06).
 - **tofu tests**: `tofu test` passes for the four tofu modules
-  (12 cluster-module + 2 cicd-instance + 5 apps-instance + 6 tokens
+  (12 cluster-module + 2 cicd-instance + 5 apps-instance + **6 tokens,
+  with the spec-T005 12-priv set extended to 19 privs to cover
+  Phase 1 / Packer access**)
   = 25 passed / 0 failed).

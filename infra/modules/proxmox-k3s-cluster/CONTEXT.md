@@ -1,9 +1,9 @@
 ---
 context_name: "Cluster Provisioning Module"
-version: "1"
+version: "1.1"
 subsystem: "modules/proxmox-k3s-cluster"
 created: "2026-07-05T20:55:00Z"
-updated: "2026-07-05T20:55:00Z"
+updated: "2026-07-06T14:25:00Z"
 ---
 
 # Cluster Provisioning Module
@@ -71,6 +71,9 @@ input variable. Empty or whitespace = plan fails closed.
 _Avoid_: `talos_image_vmid`, `template_vmid` (loses the cross-subsystem contract).
 _Subsystems_: SS1 (producer), SS2 (consumer), SS3 (consumer via output.json)
 _Files_: `modules/proxmox-k3s-cluster/variables.tf`, `clusters/cicd/main.tf`
+_History_:
+- 2026-07-05 (001-build-a-kubernetes-k3s-cluster-on-proxmo): initial definition (value `900`).
+- 2026-07-06: live-host baking on BigBertha (PVE 9.2.3) verified the contract end-to-end. Phase 1 produced a `talos-template` VM at VMID 900 with `template: 1` in `/etc/pve/qemu-server/900.conf`; `build/image-id.txt = "900\n"`. The contract now hinges on two upstream fixes recorded in the SS1 Agent Skill (`.agents/skills/proxmox-k3s-pipeline/SKILL.md` Step 1b): (i) the `k3s-cluster` PVE role carries the 19 privs SS1 needs (was 12 per spec T005), and (ii) the `output.json` `proxmox_token_secret` field is the bare UUID, not the full token string. See also `docs/runbooks/rotate-tokens.md` for how rotation preserves this contract.
 
 **Cluster Output File**:
 A JSON file written by the module at `clusters/<cluster_name>/output.json`
