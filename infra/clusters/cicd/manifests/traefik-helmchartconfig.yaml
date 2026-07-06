@@ -1,0 +1,34 @@
+###############################################################################
+# Traefik HelmChartConfig template.
+#
+# Rendered by traefik.tf into clusters/<cluster_name>/traefik-helmchartconfig.yaml.
+# Applied at k3s install time via the kube-system HelmChart controller that
+# ships with k3s.
+#
+# M2 verification:
+#   - service.type is ALWAYS ClusterIP (never LoadBalancer / NodePort).
+#   - ports.web.expose and ports.websecure.expose are false unless the operator
+#     explicitly flipped var.cf_publish_traefik_publicly=true.
+###############################################################################
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      type: ClusterIP
+    ports:
+      web:
+        port: 8000
+        expose: false
+        exposedPort: 0
+      websecure:
+        port: 8443
+        expose: false
+        exposedPort: 0
+    ingressClass:
+      enabled: true
+      isDefaultClass: false
+      name: traefik-internal

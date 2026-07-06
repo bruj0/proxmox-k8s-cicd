@@ -556,3 +556,284 @@ def test_versions_lock_documents_phase1_evidence() -> None:
     )
     # BigBertha's storage pool is in evidence
     assert "data1" in text and "data2" in text
+
+
+# ---------- Phase 2 apply-time lessons (Step 2b, 2026-07-06) ----------
+#
+# Pinned from the live PVE 9.2.3 Phase-2 apply where the k3s-cluster
+# tofu module surfaced six real-world deployment issues beyond the
+# Phase-0/Phase-1 preflight set. Each test pins one lesson.
+
+
+def test_skill_documents_cf_api_token_contract() -> None:
+    """Step 2b.1: `output.json` must expose `cf_api_token` and
+    `cf_account_id` per spec T007. The cluster root's
+    `data.local_sensitive_file` reads these keys."""
+    text = SKILL_PATH.read_text()
+    assert "Step 2b" in text, (
+        "SKILL.md missing Step 2b (Phase 2 apply-time gotchas) section"
+    )
+    assert "cf_api_token" in text and "cf_account_id" in text, (
+        "Step 2b.1 must spell out the cf_api_token / cf_account_id"
+        " contract keys that output.json must expose"
+    )
+    assert (
+        "spec-T007" in text or "spec T007" in text or "tasks.md" in text
+    ), (
+        "Step 2b.1 must reference the spec contract (tasks.md line ~106)"
+        " that mandates the cf_api_token naming convention"
+    )
+
+
+def test_skill_documents_target_datastore_fix() -> None:
+    """Step 2b.2: bpg/proxmox v0.111.x proxmox_cloned_vm needs
+    `clone.target_datastore` set to the same storage pool as the
+    source VM. Otherwise plan/apply disagrees."""
+    text = SKILL_PATH.read_text()
+    assert "target_datastore" in text, (
+        "Step 2b.2 must name the target_datastore PVE clone config"
+    )
+    assert (
+        "disk_storage_pool" in text and "var.disk_storage_pool" in text
+    ), (
+        "Step 2b.2 must introduce the disk_storage_pool module variable"
+    )
+    assert "local-lvm" in text and "data1" in text, (
+        "Step 2b.2 must explain that BigBertha lacks local-lvm and"
+        " the retarget is to data1"
+    )
+
+
+def test_skill_documents_sys_modify_requirement() -> None:
+    """Step 2b.3: the k3s-cluster role MUST extend to include
+    `Sys.Modify` (20 privs total) for proxmox_virtual_environment_hosts
+    SDN writes to be accepted by PVE 9.2.x."""
+    text = SKILL_PATH.read_text()
+    assert "Sys.Modify" in text, (
+        "Step 2b.3 must explain that Sys.Modify is required for"
+        " SDN hosts writes"
+    )
+    assert (
+        "20" in text and "12 spec T005" in text
+    ), (
+        "Step 2b.3 must compare the new 20-priv total against the"
+        " original 12-priv spec T005 count"
+    )
+
+
+def test_skill_documents_pod_svc_cidr_output() -> None:
+    """Step 2b.4: `output.json` MUST expose `pod_cidr` and
+    `svc_cidr` so tools/lib/talos_client.py can wire Talos
+    configs."""
+    text = SKILL_PATH.read_text()
+    assert "pod_cidr" in text and "svc_cidr" in text, (
+        "Step 2b.4 must call out the missing pod_cidr / svc_cidr"
+        " output.json keys and the fix"
+    )
+    assert (
+        "tools/lib/talos_client.py" in text or "talos_client.py" in text
+    ), (
+        "Step 2b.4 must reference the consumer (talos_client.py)"
+        " that needs these keys"
+    )
+
+
+def test_skill_documents_manifests_subdir_path() -> None:
+    """Step 2b.5: the module must write the Traefik HelmChartConfig
+    under `infra/clusters/<name>/manifests/`, not at the cluster
+    root."""
+    text = SKILL_PATH.read_text()
+    assert (
+        "manifests/traefik-helmchartconfig.yaml" in text
+        or "manifests/traefik" in text
+    ), (
+        "Step 2b.5 must mandate the manifests/ subdirectory"
+        " for the Traefik HelmChartConfig"
+    )
+    assert (
+        "tools/lib/helm_client.py" in text or "helm_client.py" in text
+    ), (
+        "Step 2b.5 must reference tools/lib/helm_client.py which"
+        " expects the file under manifests/"
+    )
+
+
+def test_skill_documents_path_module_double_dot_fix() -> None:
+    """Step 2b.7: the cluster module and cluster root both use
+    relative paths that broke after the layout refactor. Both
+    must use enough `..` segments to reach the repo root."""
+    text = SKILL_PATH.read_text()
+    assert "${path.module}/../../clusters" in text, (
+        "Step 2b.7 must show the corrected module-side path"
+        " pattern (two '..' segments)"
+    )
+    assert "${path.module}/../../../build" in text, (
+        "Step 2b.7 must show the corrected cluster-root-side path"
+        " pattern (three '..' segments to the build/ dir)"
+    )
+
+
+def test_versions_lock_documents_phase2_evidence() -> None:
+    """After the 2026-07-06 Phase-2 apply, versions.lock.yaml must
+    record the Phase-2 evidence."""
+    assert VERSIONS_PATH.is_file(), f"versions.lock.yaml missing at {VERSIONS_PATH}"
+    text = VERSIONS_PATH.read_text()
+    assert "phase2" in text, (
+        "versions.lock.yaml must have a Phase-2 cross_check entry"
+    )
+    # The 20-priv count must be present
+    assert "20" in text, (
+        "versions.lock.yaml must record the new 20-priv k3s-cluster role"
+    )
+
+
+# ---------- State-backend (Step 0e, 2026-07-06) ----------
+#
+# Pinned from the live 4-stack migration from local state to the
+# GitLab HTTP backend at project infra-state/bigbertha (id 84156476).
+# Each test pins one lesson so a future re-org has to update the
+# test before changing the design.
+
+
+def test_skill_documents_gitlab_backend_layout() -> None:
+    """Step 0e.2: SKILL.md must name the 4 state names and the
+    project id, and document why the module does not carry state."""
+    text = SKILL_PATH.read_text()
+    assert "Step 0e" in text, "SKILL.md missing Step 0e (state backend) section"
+    assert "infra-tokens" in text and "cluster-cicd" in text and "cluster-apps" in text, (
+        "Step 0e.2 must list the three stateful stack names"
+    )
+    assert "84156476" in text, (
+        "Step 0e.2 must document the project id (84156476)"
+    )
+    assert "proxmox-k3s-cluster-module" in text, (
+        "Step 0e.2 must reserve the module's state name even though"
+        " the module does not actually carry state"
+    )
+
+
+def test_skill_documents_gitlab_pat_requirement() -> None:
+    """Step 0e.3: SKILL.md must spell out the api-scope PAT
+    requirement and warn against the OAuth token."""
+    text = SKILL_PATH.read_text()
+    assert "api" in text and "scope" in text, (
+        "Step 0e.3 must mention the api scope requirement"
+    )
+    assert "OAuth" in text or "oauth" in text, (
+        "Step 0e.3 must warn that the glab cached OAuth token is"
+        " not suitable (it expires daily)"
+    )
+    assert "GITLAB_ACCESS_TOKEN" in text, (
+        "Step 0e.3 must show how to export GITLAB_ACCESS_TOKEN"
+        " from the .env file"
+    )
+
+
+def test_skill_documents_gitlab_backend_helper() -> None:
+    """Step 0e.4: SKILL.md must document the
+    scripts/gitlab_backend.sh helper and its three sub-commands."""
+    text = SKILL_PATH.read_text()
+    assert "scripts/gitlab_backend.sh" in text, (
+        "Step 0e.4 must name the helper script"
+    )
+    assert "init" in text and "show" in text, (
+        "Step 0e.4 must list the init + show sub-commands"
+    )
+    assert "-force-copy" in text and "-input=false" in text, (
+        "Step 0e.4 must call out the -force-copy + -input=false"
+        " flags the helper passes to make migration non-interactive"
+    )
+
+
+def test_skill_documents_force_unlock_recipe() -> None:
+    """Step 0e.5: SKILL.md must show the curl-based force-unlock
+    recipe for stuck HTTP-backend locks."""
+    text = SKILL_PATH.read_text()
+    assert "force-unlock" in text or "force_unlock" in text or "DELETE" in text, (
+        "Step 0e.5 must show a force-unlock recipe (curl DELETE)"
+    )
+    # The exact URL pattern
+    assert "/terraform/state/" in text, (
+        "Step 0e.5 must show the GitLab state-lock API path"
+    )
+
+
+def test_skill_documents_module_no_backend() -> None:
+    """Step 0e.6: SKILL.md must explain that the module does NOT
+    carry a `backend "http" {}` block, and why."""
+    text = SKILL_PATH.read_text()
+    assert "module" in text.lower() and "backend" in text.lower(), (
+        "Step 0e.6 must explain the module-vs-backend relationship"
+    )
+    # The comment in the module's versions.tf must explain this
+    module_versions_text = (ROOT / "infra/modules/proxmox-k3s-cluster/versions.tf").read_text()
+    assert 'backend "http"' not in module_versions_text, (
+        "infra/modules/proxmox-k3s-cluster/versions.tf must NOT"
+        " declare a `backend \"http\"` block (modules never"
+        " carry state)"
+    )
+    # The module versions.tf must mention why no backend block
+    assert "ignored" in module_versions_text or "silently" in module_versions_text or "warning" in module_versions_text, (
+        "infra/modules/proxmox-k3s-cluster/versions.tf must"
+        " document why no backend block is declared"
+    )
+
+
+def test_skill_documents_path_drift_expectation() -> None:
+    """Step 0e.7: SKILL.md must warn about the tokens_output_path
+    drift between mount paths."""
+    text = SKILL_PATH.read_text()
+    assert "tokens_output_path" in text, (
+        "Step 0e.7 must call out the tokens_output_path drift"
+    )
+    assert "/mnt/data/Projects" in text or "mount path" in text, (
+        "Step 0e.7 must show that the drift is between two"
+        " paths to the same physical directory"
+    )
+
+
+def test_skill_documents_refresh_only_post_migration() -> None:
+    """Step 0e.8: SKILL.md must set the expectation that post-migration
+    plan is `0 to add, N to change, 0 to destroy` (no resource
+    destruction)."""
+    text = SKILL_PATH.read_text()
+    assert "0 to add" in text and "0 to destroy" in text, (
+        "Step 0e.8 must show the expected post-migration plan shape"
+        " (`0 to add, N to change, 0 to destroy`)"
+    )
+
+
+def test_gitlab_backend_helper_script_exists() -> None:
+    """The gitlab_backend.sh helper must exist and be executable."""
+    helper = ROOT / "scripts/gitlab_backend.sh"
+    assert helper.is_file(), f"helper missing at {helper}"
+    import stat
+    mode = helper.stat().st_mode
+    assert mode & stat.S_IXUSR, "scripts/gitlab_backend.sh must be executable"
+
+
+def test_three_root_stacks_have_backend_block() -> None:
+    """infra/tokens, infra/clusters/cicd, infra/clusters/apps must
+    each declare a `backend \"http\" {}` block in their
+    `terraform { ... }`."""
+    for path in [
+        "infra/tokens/versions.tf",
+        "infra/clusters/cicd/main.tf",
+        "infra/clusters/apps/main.tf",
+    ]:
+        text = (ROOT / path).read_text()
+        assert 'backend "http"' in text, (
+            f"{path} must declare a `backend \"http\"` block to"
+            f" route state to the GitLab HTTP backend"
+        )
+
+
+def test_module_has_no_backend_block() -> None:
+    """infra/modules/proxmox-k3s-cluster must NOT declare a
+    `backend \"http\" {}` block (modules never carry state and the
+    block would trigger a warning at every init)."""
+    text = (ROOT / "infra/modules/proxmox-k3s-cluster/versions.tf").read_text()
+    assert 'backend "http"' not in text, (
+        "infra/modules/proxmox-k3s-cluster/versions.tf must NOT"
+        " declare a `backend \"http\"` block"
+    )

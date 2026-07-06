@@ -405,6 +405,129 @@ ssh root@$PVE_HOST 'pveum user token delete root@pam tf-bootstrap'
 # root@pam itself stays — needed for future admin operations
 ```
 
+## Step 0e — State backend (GitLab HTTP, 2026-07-06)
+
+All four tofu stacks (`infra/tokens`, `infra/modules/proxmox-k3s-cluster`,
+`infra/clusters/cicd`, `infra/clusters/apps`) now store state in a
+GitLab-managed Terraform state backend instead of local files.
+
+### 0e.1 — Why GitLab HTTP and not local?
+
+Local `terraform.tfstate` was acceptable during the one-operator
+dev loop, but for the multi-developer / CI-driven phase we need:
+- A single source of truth for the live cluster topology.
+- State locking that doesn't depend on the operator's laptop disk.
+- A versioned history (`serial` + `lineage`) visible in the
+  GitLab UI alongside the source code.
+
+### 0e.2 — Project layout
+
+- Project: `infra-state/bigbertha` at `gitlab.com`
+- Project ID: `84156476`
+- Per-stack state name (4 names):
+  - `infra-tokens` -> `infra/tokens/`
+  - `proxmox-k3s-cluster-module` -> `infra/modules/proxmox-k3s-cluster/`
+  - `cluster-cicd` -> `infra/clusters/cicd/`
+  - `cluster-apps` -> `infra/clusters/apps/`
+
+The three stateful stacks each get a name; the module has a name
+allocated but never carries state because modules do not store
+state. We keep the `backend "http" {}` block OUT of the module to
+avoid a noisy "backend ignored" warning at every init (see 0e.6).
+
+### 0e.3 — Required env: `GITLAB_ACCESS_TOKEN`
+
+The token MUST be a GitLab personal access token (PAT) with the
+`api` scope, owned by an infra-state/bigbertha project Owner. The
+glab CLI's cached OAuth token (auto-rotated, expires daily) is
+NOT suitable. Create one at:
+  https://gitlab.com/-/user_settings/personal_access_tokens
+
+Store it in `.env` as `GITLAB_PAT=glpat-...`. Export it as
+`GITLAB_ACCESS_TOKEN` before invoking the helper:
+```bash
+export GITLAB_ACCESS_TOKEN=$(awk -F= '$1=="GITLAB_PAT"{print $2; exit}' .env)
+```
+
+### 0e.4 — Init / migrate via `scripts/gitlab_backend.sh`
+
+The helper at `scripts/gitlab_backend.sh` wraps `tofu init` with
+the right `-backend-config=` flags for the chosen stack. Usage:
+
+```bash
+# First-time migration (local state -> GitLab):
+./scripts/gitlab_backend.sh init infra-tokens       --migrate-state
+./scripts/gitlab_backend.sh init cluster-cicd       --migrate-state
+./scripts/gitlab_backend.sh init cluster-apps       --migrate-state
+./scripts/gitlab_backend.sh init proxmox-k3s-cluster-module   # no state, plain init
+
+# Subsequent runs (re-init after a config change, e.g.):
+./scripts/gitlab_backend.sh init cluster-cicd
+
+# Audit the flags the script would use:
+./scripts/gitlab_backend.sh show cluster-cicd
+```
+
+The helper always passes `-input=false -force-copy` so it never
+blocks on an interactive "Approve state migration?" prompt. The
+GITLAB_ACCESS_TOKEN value is masked in the audit `show` output.
+
+### 0e.5 — Force-unlock recipe
+
+If a `tofu plan` or `tofu apply` is killed (SIGKILL, laptop
+suspend, network drop) the lock leaks. The HTTP backend has no
+auto-expiry. To unlock a stuck state, hit the GitLab API:
+
+```bash
+GITLAB_PAT=$(awk -F= '$1=="GITLAB_PAT"{print $2; exit}' .env)
+curl -X DELETE -H "PRIVATE-TOKEN: $GITLAB_PAT" \
+  "https://gitlab.com/api/v4/projects/84156476/terraform/state/<state-name>/lock"
+```
+
+This is safe: if the lock is no longer held, GitLab returns 204
+silently.
+
+### 0e.6 — Gotcha: `backend` block in modules is ignored with warning
+
+Per OpenTofu docs, a `terraform { backend "http" {} }` block in
+a module is silently ignored with a warning ("Any selected backend
+applies to the entire configuration, so OpenTofu expects provider
+configurations only in the root module"). State for instances of
+the module lives in the calling root. We therefore omit the
+`backend "http" {}` block from
+`infra/modules/proxmox-k3s-cluster/versions.tf` and document the
+design intent in that file's comments.
+
+### 0e.7 — Path-drift expected after migration
+
+The `output "tokens_output_path"` in `infra/tokens/outputs.tf`
+computes `abspath(local_sensitive_file.tokens_output.filename)`.
+This embeds the absolute path of the workspace at apply time. The
+state was originally applied from a different mount path (some
+operators have `/mnt/data/Projects/proxmox-k8s-cicd` and
+`/home/bruj0/projects/proxmox-k8s-cicd` pointing at the same
+physical directory via different paths). On the first plan after
+migration you will see a `~ tokens_output_path` update from the
+old path to the current path. This is cosmetic; the value still
+points at the same `output.json` file.
+
+### 0e.8 — In-place refresh-only updates after migration
+
+`tofu plan` against the cicd and apps roots after migration shows
+`Plan: 0 to add, 5 to change, 0 to destroy` (cicd) and
+`0 to add, 2 to change, 0 to destroy` (apps). The "changes" are
+all in-place refreshes of:
+- `terraform_data.cluster_name_unique` and
+  `terraform_data.vmid_overlap` (re-evaluate preconditions)
+- `proxmox_virtual_environment_hosts.node[*]` and
+  `proxmox_virtual_environment_hosts.vip_reservation`
+  (re-write SDN hosts entries to match the new role's effective
+  `Sys.Modify` privilege - no VM lifecycle impact)
+
+No resources are created or destroyed. Apply these refresh-only
+updates once to align state with the live host's current role
+privilege set.
+
 ## Step 1 — Phase 1: Build the VM image (SS1)
 
 Goal: bake a Talos Linux golden image into a Proxmox template
@@ -630,18 +753,122 @@ Goal: apply OpenTofu against `infra/clusters/cicd/` to create 3 control-plane
 `manifests/traefik-helmchartconfig.yaml`.
 
 ```bash
+unset $(env | grep -E "^TF_VAR_" | cut -d= -f1)
+TOKEN_ID=$(jq -r .proxmox_token_id infra/tokens/output.json)
+SECRET=$(jq -r .proxmox_token_secret infra/tokens/output.json)
+ENDPOINT=$(jq -r .pve_endpoint infra/tokens/output.json)
+export PROXMOX_VE_API_TOKEN="${TOKEN_ID}=${SECRET}"
+export PROXMOX_VE_ENDPOINT="${ENDPOINT}"
+
 cd infra/clusters/cicd
-tofu init
-tofu apply -auto-approve
+tofu init -input=false
+tofu apply -auto-approve -input=false
 ```
 
 Success criteria (assert ALL before proceeding):
-1. `tofu output -json > infra/clusters/cicd/output.json` exits 0 and
-   `output.json` parses as JSON with `cluster_name`, `vip`,
-   `pod_cidr`, `svc_cidr`, `nodes[]` keys.
+1. `tofu apply` exits 0 and `infra/clusters/cicd/output.json`
+   exists and parses as JSON with `cluster_name`, `vip`,
+   `pod_cidr`, `svc_cidr`, and `nodes[]` keys.
 2. `infra/clusters/cicd/manifests/traefik-helmchartconfig.yaml` exists and
    parses as YAML (kustomize-compatible schema).
 3. `tofu test` exits 0 (no warnings about VMID overlap with apps).
+
+## Step 2b — Phase 2 apply-time gotchas (live host 2026-07-06)
+
+Six more deployment-environment issues surfaced during the BigBertha
+Phase-2 apply (PVE 9.2.3, k3s-terraform role, bpg/proxmox
+proxmox_cloned_vm). These are independent of Step 0b / Step 1b.
+
+### 2b.1 — `output.json` must carry the spec-T007 cluster-root keys
+
+The cluster root (`infra/clusters/cicd/main.tf`) reads
+`cf_api_token` and `cf_account_id` from
+`infra/tokens/output.json` (per `specs/.../tasks.md:106`). The
+post-refactor `infra/tokens/output_json.tf` was emitting
+`cloudflare_scoped_token` / `cloudflare_account_id` instead;
+`jsondecode(...)` returned `null` and tofu rejected the cluster
+module at apply with "argument must not be null". Fix: emit
+**both** the canonical `cf_*` keys and the legacy `cloudflare_*`
+aliases. Verified 2026-07-06 — `jq -r '.cf_api_token, .cf_account_id'
+output.json` returns non-null. Pinned by
+`tools/tests/test_agent_skill.py::test_skill_documents_output_json_secret_split`
+and the new `test_skill_documents_cf_api_token_contract` in Step 2b.
+
+### 2b.2 — `bpg/proxmox` proxmox_cloned_vm needs explicit `target_datastore`
+
+`disk.scsi0.datastore_id = "local-lvm"` is hardcoded in the
+upstream module template. BigBertha has no `local-lvm` lvmthin
+pool, and the bpg/proxmox v0.111.x provider stored
+`local-lvm` in plan but the cloned VM ended up on `data1`
+(cloned-from storage), causing `Provider produced inconsistent
+result after apply`. Two-fold fix:
+- module `main.tf`: pin the clone `target_datastore` to a new
+  `var.disk_storage_pool` (default `data1`).
+- cluster root: pass `disk_storage_pool = "data1"`.
+
+### 2b.3 — `k3s-cluster` role needs `Sys.Modify` for SDN writes
+
+The cluster module calls `proxmox_virtual_environment_hosts` to
+write the vnet0 hosts file (static DHCP reservations + VIP).
+PVE 9.2.x rejects the write with
+`403 Permission check failed (/nodes/<node>, Sys.Modify)`
+unless the role carries `Sys.Modify` — `SDN.Use` alone is
+insufficient. Add `Sys.Modify` to the privileges list (now
+**20 privs** total: 12 spec T005 + 7 Phase-1 + 1 Phase-2). Apply
+via `scripts/apply.sh`, then re-apply the cluster roots.
+
+### 2b.4 — `output.json` MUST expose `pod_cidr` and `svc_cidr`
+
+The cluster root's SC says `output.json` keys include `pod_cidr`
+and `svc_cidr` (consumed by `tools/lib/talos_client.py` to wire
+`--skip-rbac=false --network-cidr=` for the per-node Talos
+configs). The module originally wrote them only to tofu
+*outputs*, NOT to the `local_sensitive_file.cluster_output`
+body. Fix: add `pod_cidr = var.pod_cidr` /
+`svc_cidr = var.svc_cidr` keys to the `jsonencode` in
+`infra/modules/proxmox-k3s-cluster/outputs.tf`. Verified 2026-07-06.
+
+### 2b.5 — `manifests/` subdirectory required by `tools/lib/helm_client.py`
+
+`tools/lib/helm_client.py:208` reads
+`infra/clusters/<name>/manifests/traefik-helmchartconfig.yaml`,
+not the cluster-root file. The module originally wrote the
+traefik config to the cluster root. Fix: module writes under
+`${path.module}/../../clusters/<name>/manifests/traefik-...`.
+The operator must pre-create `infra/clusters/<name>/manifests/`
+or tofu errors with "parent directory does not exist".
+
+### 2b.6 — Sibling-cluster collator must tolerate non-JSON siblings
+
+The cluster root's `data.local_file.sibling_outputs` globs
+`${path.module}/../*/output.json` and unconditionally
+`jsondecode`s the content of each match. At plan time the live
+host's `build/image-id.txt` may match the glob (the tofu test
+mock's default content `"900\n"` also doesn't parse). Fix: wrap
+`jsondecode` in `try(...)` and filter out unparseable siblings,
+so the sibling-collision precondition only considers real
+`output.json` files. Verified 2026-07-06.
+
+### 2b.7 — Module `${path.module}/../clusters/<name>` paths break post-refactor
+
+The 2026-07-05 file-layout refactor moved the module from
+`clusters/<name>/modules/proxmox-k3s-cluster/` to
+`infra/modules/proxmox-k3s-cluster/`. Three files were missed:
+- `outputs.tf::cluster_output.filename`
+- `outputs.tf::talos_dir`
+- `outputs.tf::talos_machineconfig.filename`
+- `traefik.tf::traefik_chartconfig.filename`
+- `talos.tf::talos_machineconfig.filename`
+
+All had `path.module/../clusters/<name>/...` which resolved to
+`infra/modules/clusters/<name>/...` (a non-existent path).
+Fix: `${path.module}/../../clusters/<name>/...` (which has two
+`..` segments under path.module). Apply the same patch for the
+cluster-root's `data.local_file.image_id` — change
+`${path.module}/../../build/image-id.txt` to
+`${path.module}/../../../build/image-id.txt` (three `..`
+segments, since the cluster root is one level deeper than the
+module). Verified 2026-07-06.
 
 ## Step 3 — Phase 3: Capture host-ports baseline (M2 setup)
 

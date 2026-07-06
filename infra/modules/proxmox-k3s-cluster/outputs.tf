@@ -47,7 +47,7 @@ output "worker_count" {
 
 output "talos_dir" {
   description = "Directory containing per-VM Talos machineconfig YAML files."
-  value       = "${path.module}/../clusters/${var.cluster_name}/talos"
+  value       = "${path.module}/../../clusters/${var.cluster_name}/talos"
 }
 
 output "nodes" {
@@ -79,7 +79,13 @@ output "helm_releases" {
 }
 
 resource "local_sensitive_file" "cluster_output" {
-  filename        = "${path.module}/../clusters/${var.cluster_name}/output.json"
+  # Module lives at infra/modules/proxmox-k3s-cluster/; cluster root
+  # at infra/clusters/<name>/. So `../../clusters/<name>/output.json`
+  # is two levels up (== `infra/`), then into clusters/<name>/.
+  # Pre-refactor this was `../clusters/<name>/...` because the
+  # module lived next to the cluster root under
+  # clusters/<name>/modules/proxmox-k3s-cluster/. Updated 2026-07-06.
+  filename        = "${path.module}/../../clusters/${var.cluster_name}/output.json"
   file_permission = "0600"
 
   content = jsonencode({
@@ -88,7 +94,14 @@ resource "local_sensitive_file" "cluster_output" {
     vnet_bridge         = var.vnet_bridge
     control_plane_count = var.control_plane.count
     worker_count        = var.workers.count
-    talos_dir           = "${path.module}/../clusters/${var.cluster_name}/talos"
+    # Skill Step 2 success-criterion contract: cicd|apps output.json
+    # MUST expose pod_cidr + svc_cidr (tools/lib/talos_client.py reads
+    # these). Added 2026-07-06 -- they were missing from the
+    # local_sensitive_file body, so the SS3 ClusterTopology loader
+    # couldn't reconcile the cluster's network map.
+    pod_cidr            = var.pod_cidr
+    svc_cidr            = var.svc_cidr
+    talos_dir           = "${path.module}/../../clusters/${var.cluster_name}/talos"
     nodes               = local.nodes
     helm_releases       = [
       "cilium",

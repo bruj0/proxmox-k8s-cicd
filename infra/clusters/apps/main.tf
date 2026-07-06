@@ -23,6 +23,12 @@
 terraform {
   required_version = ">= 1.6.0"
 
+  # Backend: GitLab-managed Terraform state.
+  # Project: infra-state/bigbertha (project_id=84156476) at gitlab.com.
+  # Per-stack state name: cluster-apps.
+  # Connection parameters supplied at init time via scripts/gitlab_backend.sh.
+  backend "http" {}
+
   required_providers {
     proxmox = {
       source  = "bpg/proxmox"
@@ -44,11 +50,11 @@ terraform {
 # ---------------------------------------------------------------------------
 
 data "local_file" "image_id" {
-  filename = "${path.module}/../../build/image-id.txt"
+  filename = "${path.module}/../../../build/image-id.txt"
 }
 
 data "local_sensitive_file" "tokens_output" {
-  filename = "${path.module}/../../infra/tokens/output.json"
+  filename = "${path.module}/../../../infra/tokens/output.json"
 }
 
 # ---------------------------------------------------------------------------
@@ -74,12 +80,18 @@ data "local_file" "sibling_outputs" {
 resource "terraform_data" "cluster_name_unique" {
   input = {
     cluster_name     = "apps"
-    sibling_clusters = [for f in data.local_file.sibling_outputs : jsondecode(f.content).cluster_name]
+    # Ignore sibling outputs that don't parse as JSON (live
+    # hosts may have transient files such as build/image-id.txt
+    # if the glob pattern inadvertently catches them, and the
+    # tofu-test mock provider returns a primitive number by
+    # default). Try/jsondecode returns "unknown" for unparseable
+    # siblings and those are filtered out below.
+    sibling_clusters = [for f in data.local_file.sibling_outputs : try(jsondecode(f.content).cluster_name, null) if try(jsondecode(f.content).cluster_name, null) != null]
   }
 
   lifecycle {
     precondition {
-      condition     = !contains([for f in data.local_file.sibling_outputs : jsondecode(f.content).cluster_name], "apps")
+      condition     = !contains([for f in data.local_file.sibling_outputs : try(jsondecode(f.content).cluster_name, null) if try(jsondecode(f.content).cluster_name, null) != null], "apps")
       error_message = "cluster_name 'apps' collides with an existing sibling Cluster's output.json."
     }
   }
@@ -124,6 +136,11 @@ module "apps" {
   cf_tunnel_name              = "apps"
   cf_ingress_class            = "cloudflare-tunnel"
   cf_publish_traefik_publicly = false
+
+  # Live-host pin: BigBertha's only lvmthin pool with the
+  # Phase-1-baked disk image is data1. See SKILL.md Step 1b.1 + 1b.7
+  # and infra/modules/proxmox-k3s-cluster/variables.tf::disk_storage_pool.
+  disk_storage_pool             = "data1"
 
   control_plane = {
     count   = 1

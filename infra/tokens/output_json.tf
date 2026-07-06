@@ -29,12 +29,25 @@ resource "local_sensitive_file" "tokens_output" {
   filename        = "${path.module}/output.json"
   file_permission = "0600"
 
+  # Spec T007 contract keys (per specs/.../tasks.md:106):
+  #   cf_api_token, cf_account_id, proxmox_token_id, proxmox_token_secret,
+  #   pve_endpoint, cloudflare_zone_id.
+  # We ALSO emit the human-readable aliases used by our runbooks
+  # (`cloudflare_scoped_token`, `cloudflare_account_id`,
+  # `cloudflare_zone_id`) so the WP00-RUNBOOK documentation
+  # (`jq -r .cloudflare_scoped_token.value output.json`) keeps
+  # working. Downstream clusters MUST read `cf_api_token` /
+  # `cf_account_id`; the aliases are convenience only.
   content = jsonencode({
+    # spec-T007 canonical keys
+    cf_api_token           = cloudflare_api_token.k3s_scoped.value
+    cf_account_id          = var.cloudflare_account_id
+    proxmox_token_id       = "${proxmox_virtual_environment_user.k3s_terraform.user_id}!${proxmox_user_token.k3s_terraform_tf.token_name}"
+    proxmox_token_secret   = local.proxmox_token_only
+    pve_endpoint           = var.proxmox_endpoint
+    cloudflare_zone_id     = var.cloudflare_zone_id
+    # convenience aliases
     cloudflare_scoped_token = cloudflare_api_token.k3s_scoped.value
     cloudflare_account_id   = var.cloudflare_account_id
-    cloudflare_zone_id      = var.cloudflare_zone_id
-    proxmox_token_id        = "${proxmox_virtual_environment_user.k3s_terraform.user_id}!${proxmox_user_token.k3s_terraform_tf.token_name}"
-    proxmox_token_secret    = local.proxmox_token_only
-    pve_endpoint            = var.proxmox_endpoint
   })
 }

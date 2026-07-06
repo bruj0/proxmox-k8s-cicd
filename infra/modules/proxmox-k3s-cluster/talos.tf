@@ -13,7 +13,9 @@
 resource "local_sensitive_file" "talos_machineconfig" {
   for_each = { for n in local.nodes : n.name => n }
 
-  filename        = "${path.module}/../clusters/${var.cluster_name}/talos/${each.value.talos_hostname}.yaml"
+  # Two `..` because module is at infra/modules/proxmox-k3s-cluster/;
+  # cluster root at infra/clusters/<name>/.
+  filename        = "${path.module}/../../clusters/${var.cluster_name}/talos/${each.value.talos_hostname}.yaml"
   file_permission = "0600"
 
   content = templatefile("${path.module}/templates/talos-machineconfig.yaml.tftpl", {

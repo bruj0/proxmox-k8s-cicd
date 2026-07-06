@@ -117,3 +117,16 @@ variable "talos_version" {
   default     = "v1.10.0"
   description = "Talos version baked into the image template. Used for the per-VM Talos machineconfig."
 }
+
+variable "disk_storage_pool" {
+  type        = string
+  default     = "data1"
+  description = <<-EOT
+    PVE storage pool to put the cloned VM's root disk on. Live-host
+    default is `data1` (BigBertha's only lvmthin pool with the disk
+    image baked by SS1). Cleanroom defaults used `local-lvm`, which
+    doesn't exist on hosts installed with separate lvmthin pools.
+    Pinned 2026-07-06 after the Step-2 apply surfaced "Provider
+    produced inconsistent result" on datastore_id.
+  EOT
+}

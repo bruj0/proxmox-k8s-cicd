@@ -153,16 +153,19 @@ run "proxmox_role_has_spec_t005_privileges" {
         "VM.Config.CDROM",
         "VM.Config.HWType",
         "VM.Snapshot.Rollback",
+        # Phase-2 extensions (1 priv added 2026-07-06 for
+        # proxmox_virtual_environment_hosts SDN writes).
+        "Sys.Modify",
       ] :
       contains(proxmox_virtual_environment_role.k3s_cluster.privileges, p)
     ])
     error_message = "Proxmox role k3s-cluster is missing one or more spec T005 or Phase-1 privileges."
   }
 
-  # Total: 12 spec + 7 phase-1 = 19 privs.
+  # Total: 12 spec + 7 phase-1 + 1 phase-2 = 20 privs.
   assert {
-    condition     = length(proxmox_virtual_environment_role.k3s_cluster.privileges) == 19
-    error_message = "Proxmox role k3s-cluster must have exactly 19 privileges (12 spec T005 + 7 Phase-1)."
+    condition     = length(proxmox_virtual_environment_role.k3s_cluster.privileges) == 20
+    error_message = "Proxmox role k3s-cluster must have exactly 20 privileges (12 spec T005 + 7 Phase-1 + 1 Phase-2)."
   }
 }
 

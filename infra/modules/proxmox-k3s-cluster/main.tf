@@ -140,8 +140,16 @@ resource "proxmox_cloned_vm" "node" {
   started     = true
 
   clone = {
-    source_vm_id = tonumber(var.image_id)
-    full         = true
+    source_vm_id    = tonumber(var.image_id)
+    full            = true
+    # Live-host fix 2026-07-06: explicitly pin the clone target
+    # datastore to data1 (BigBertha has no local-lvm lvmthin pool).
+    # Without this, the bpg/proxmox provider plan-vs-apply diff
+    # blows up with 'inconsistent result: datastore_id was
+    # local-lvm but now data1' -- it stored the configured value
+    # in plan but the clone copy defaults to wherever the
+    # source-VM disk happens to live.
+    target_datastore = var.disk_storage_pool
   }
 
   cpu = {
@@ -155,7 +163,7 @@ resource "proxmox_cloned_vm" "node" {
 
   disk = {
     scsi0 = {
-      datastore_id = "local-lvm"
+      datastore_id = var.disk_storage_pool
       size_gb      = each.value.role == "control_plane" ? var.control_plane.disk_gb : var.workers.disk_gb
     }
   }

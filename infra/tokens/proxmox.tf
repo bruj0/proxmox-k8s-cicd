@@ -23,7 +23,7 @@
 resource "proxmox_virtual_environment_role" "k3s_cluster" {
   role_id = var.proxmox_role_id
 
-  # Privilege set extends the 12 from spec T005 with the 7 privs Packer
+  # Privilege set extends the 12 from spec T005 with the 8 privs Packer
   # (hashicorp/proxmox proxmox-clone v1.2.3) and the cluster tofu modules
   # actually need end-to-end:
   #   VM.Audit                 — read VM 999 cfg / status (Packer, tofu)
@@ -33,13 +33,18 @@ resource "proxmox_virtual_environment_role" "k3s_cluster" {
   #   VM.Config.HWType         — set machine=q35 (Packer UEFI boot)
   #   VM.Snapshot.Rollback     — restore from snapshot if template bake fails
   #   Sys.Audit                — required for /access namespace reads (PVE)
-  # Total: 19 privs. Records NFR-007's intent: least-privilege for the
+  #   Sys.Modify               — required for /cluster/sdn/vnets writes
+  #                              (proxmox_virtual_environment_hosts writes
+  #                               the vnet0 hosts file; PVE 9.2.x rejects
+  #                               without Sys.Modify, even with SDN.Use).
+  # Total: 20 privs. Records NFR-007's intent: least-privilege for the
   # *cluster lifecycle*, not just the bpg/proxmox provider primitives.
   privileges = sort([
     "Datastore.AllocateSpace",
     "Datastore.Audit",
     "SDN.Use",
     "Sys.Audit",
+    "Sys.Modify",
     "VM.Allocate",
     "VM.Audit",
     "VM.Clone",

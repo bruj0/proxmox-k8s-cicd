@@ -23,7 +23,11 @@ locals {
 }
 
 resource "local_file" "traefik_chartconfig" {
-  filename        = "${path.module}/../clusters/${var.cluster_name}/traefik-helmchartconfig.yaml"
+  # Two `..` because module is at infra/modules/proxmox-k3s-cluster/;
+  # cluster root at infra/clusters/<name>/. The traefik config lives
+  # under manifests/ (skill/plan contract) so bootstrap_cluster.py
+  # can find it via tools/lib/helm_client.py:208.
+  filename        = "${path.module}/../../clusters/${var.cluster_name}/manifests/traefik-helmchartconfig.yaml"
   file_permission = "0644"
 
   content = templatefile("${path.module}/traefik-chartconfig.yaml.tftpl", {
