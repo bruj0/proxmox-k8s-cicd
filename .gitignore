@@ -34,3 +34,8 @@ __pycache__/
 crash.log
 crash.*.log
 .tofu-test-history
+
+# Local tfvars (secrets-bearing; never tracked)
+terraform.tfvars
+*.tfvars
+!*.tfvars.example

@@ -2,11 +2,25 @@ variable "cloudflare_admin_token" {
   description = "Cloudflare admin API token used to mint the scoped child token. Must be supplied via the CLOUDFLARE_TOKEN_CREATOR environment variable (sourced from .env at the repo root). Never commit or echo this value."
   type        = string
   sensitive   = true
+  default     = null
 
   validation {
-    condition     = length(var.cloudflare_admin_token) >= 40
+    condition     = var.cloudflare_admin_token == null || length(var.cloudflare_admin_token) >= 40
     error_message = "CLOUDFLARE_TOKEN_CREATOR must be at least 40 characters; received value is too short to be a valid Cloudflare API token."
   }
+}
+
+variable "cloudflare_global_api_key" {
+  description = "Cloudflare Global API Key (account-level). Required to create child API tokens; supplied via CLOUDFLARE_GLOBAL_API_KEY in .env. Never echo this value."
+  type        = string
+  sensitive   = true
+  default     = null
+}
+
+variable "cloudflare_global_api_email" {
+  description = "Email tied to CLOUDFLARE_GLOBAL_API_KEY; supplied via CLOUDFLARE_GLOBAL_API_EMAIL in .env."
+  type        = string
+  default     = null
 }
 
 variable "cloudflare_account_id" {

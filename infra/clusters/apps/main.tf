@@ -109,10 +109,12 @@ resource "terraform_data" "image_id_present" {
 module "apps" {
   source = "../../modules/proxmox-k3s-cluster"
 
+  pve_node = "BigBertha"
+
   cluster_name                = "apps"
   vip                         = "10.0.0.40"
   vmid_start                  = 210
-  ip_start                    = "10.0.1.0/24"   # Place apps nodes in a distinct /24 (10.0.1.0/24) so per-node IPs do not collide with cicd's 10.0.0.0/24. (cidrhost treats the IP portion as the network address, so 10.0.1.0/24 yields 10.0.1.0, 10.0.1.1.)
+  ip_start                    = "10.0.2.0/24"   # apps nodes in 10.0.2.0/24 (cicd is in 10.0.1.0/24). Both host vnet0 = 10.0.0.1/8 routes these. (cidrhost on 10.0.2.0/24 yields 10.0.2.0, 10.0.2.1.)
   image_id                    = length(data.local_file.image_id.content) > 0 ? chomp(data.local_file.image_id.content) : ""
   vnet_bridge                 = "vnet0"
   pod_cidr                    = "10.44.0.0/16"

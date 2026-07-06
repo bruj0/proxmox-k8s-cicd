@@ -98,10 +98,11 @@ resource "terraform_data" "image_id_present" {
 module "cicd" {
   source = "../../modules/proxmox-k3s-cluster"
 
+  pve_node                    = "BigBertha"
   cluster_name                = "cicd"
   vip                         = "10.0.0.30"
   vmid_start                  = 200
-  ip_start                    = "10.0.0.201/24"
+  ip_start                    = "10.0.1.0/24"
   image_id                    = length(data.local_file.image_id.content) > 0 ? chomp(data.local_file.image_id.content) : ""
   vnet_bridge                 = "vnet0"
   pod_cidr                    = "10.42.0.0/16"

@@ -7,6 +7,12 @@
 # runtime expressions which can't be in variable `validation` blocks).
 ###############################################################################
 
+variable "pve_node" {
+  type        = string
+  default     = "proxmox-host"
+  description = "Name of the Proxmox node (cluster member) where VMs are cloned and SDN hosts entries are written. Defaults to 'proxmox-host'; override in cluster root tfvars when the host has a different name."
+}
+
 variable "cluster_name" {
   type        = string
   description = "Globally-unique name for this Cluster. Used in Talos cert prefix, dnsmasq hostnames, and output.json."

@@ -59,6 +59,19 @@ export TF_VAR_cloudflare_account_id="${CLOUDFLARE_ACCOUNT_ID}"
 export TF_VAR_proxmox_api_url="${PROXMOX_API_URL}"
 export TF_VAR_proxmox_endpoint="${PROXMOX_API_URL}"
 
+# Cloudflare Global API Key (preferred over scoped cfat for child-token creation).
+if [[ -n "${CLOUDFLARE_GLOBAL_API_KEY:-}" ]]; then
+  export TF_VAR_cloudflare_global_api_key="${CLOUDFLARE_GLOBAL_API_KEY}"
+  export TF_VAR_cloudflare_global_api_email="${CLOUDFLARE_GLOBAL_API_EMAIL:-}"
+fi
+# Optional scoped admin token (fallback if no global key).
+if [[ -n "${CLOUDFLARE_TOKEN_CREATOR:-}" ]]; then
+  export TF_VAR_cloudflare_admin_token="${CLOUDFLARE_TOKEN_CREATOR}"
+fi
+if [[ -n "${CLOUDFLARE_ZONE_ID:-}" ]]; then
+  export TF_VAR_cloudflare_zone_id="${CLOUDFLARE_ZONE_ID}"
+fi
+
 # PROXMOX_API_TOKEN is the canonical env-var read by the bpg/proxmox
 # provider itself, so we forward it unchanged. We also split it into the
 # TF_VAR_proxmox_api_token_id / _secret pair so variables.tf stays in sync.
