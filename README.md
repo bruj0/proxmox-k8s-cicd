@@ -6,6 +6,7 @@ Cloudflare Tunnel** (no host open ports) and **apps -> cicd
 cross-cluster Service consumption via ExternalName**.
 
 ```mermaid
+%%{ init: { 'flowchart': { 'curve': 'linear' } } }%%
 flowchart TB
   Operator["Operator laptop<br/>runs the skill"]
   Internet["Public internet<br/>end users hit your apps"]
