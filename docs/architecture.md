@@ -6,94 +6,87 @@ End-to-end architecture for the proxmox-k8s-cicd pipeline. Cross-links:
 - Plan: [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/plan.md`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/plan.md)
 - Misfit decomposition: [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/decomposition.md`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/decomposition.md)
 - Research log: [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research.md)
+- Agent skill: [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](../.agents/skills/proxmox-k3s-pipeline/SKILL.md)
 - Cluster instances: [`docs/cluster-instances.md`](cluster-instances.md)
 - Verification matrix: [`docs/verification.md`](verification.md)
+- Serial-capture debug recipe: [`docs/proxmox-serial-capture.md`](proxmox-serial-capture.md)
 
 ## Subsystems
 
 ```mermaid
 flowchart TB
   subgraph SS0["SS0: Token Provisioning (infra/tokens)"]
-    TofuTokens["tofu apply (scripts/apply.sh)"]
-    Role19["k3s-cluster role (19 privs)"]
+    TofuTokens["tofu apply (scripts/apply_tofu.py tokens)"]
+    Role20["k3s-cluster role (20 privs)"]
     OutputJson["infra/tokens/output.json (mode 0600)"]
   end
 
-  subgraph SS1["SS1: Image Build (tools/build_image.py)"]
-    TalosBase["VMID 999 talos-base (data1, ISO)"]
-    Packer["Packer (hashicorp/proxmox v1.2.x) OR direct PVE API clone+template"]
-    Template[Proxmox template VMID 900]
+  subgraph SS1["SS1: Image Build (tools/build_image)"]
+    CloudImage["noble-server-cloudimg-amd64.img"]
+    VirtCustomize["virt-customize (libguestfs-tools) --install qemu-guest-agent"]
+    QmCreate["qm create 900 (q35, OVMF, agent, serial)"]
+    QmImportdisk["qm importdisk + qm resize 32G"]
+    CloudInitDrive["qm set --ide2 data1:cloudinit (native drive)"]
+    Template["Proxmox template VMID 900"]
   end
 
   subgraph SS2["SS2: Cluster Provisioning (infra/modules/proxmox-k3s-cluster)"]
-    TofuCicd[infra/clusters/cicd/main.tf]
-    TofuApps[infra/clusters/apps/main.tf]
-    Cilium[Cilium CNI]
-    KubeVip[kube-vip ARP VIP]
+    TofuCicd["infra/clusters/cicd/main.tf"]
+    TofuApps["infra/clusters/apps/main.tf"]
+    BpgProvider["bpg/proxmox proxmox_cloned_vm"]
+    CloneVm["clone VMID 900 -> 111-114 (cicd-cp-1, cicd-w-1, apps-cp-1, apps-w-1)"]
   end
 
   subgraph SS3["SS3: Bootstrap Orchestration (tools/bootstrap_cluster.py)"]
-    Talos[Talos Linux apply-config]
-    HelmFirstTwo[Helm: Cilium + kube-vip]
-    HelmRemaining[Helm: proxmox-ccm, proxmox-csi, cloudflare-tunnel, cert-manager]
-    HostPorts[host_ports verifier]
-    Kubeconfig[kubeconfig merge to ~/.kube/config]
-    ExternalName[ExternalName Services apps only]
+    Cloudinit["sub-phase 1: cloudinit (NoCloud seed)"]
+    K3s["sub-phase 2: k3s install (curl -sfL https://get.k3s.io)"]
+    Helm["sub-phase 3: helm (Cilium, kube-vip, proxmox-ccm, proxmox-csi, traefik, cert-manager, cloudflare-tunnel)"]
+    Kubeconfig["sub-phase 4: kubeconfig merge"]
+    HostPorts["sub-phase 5: host-ports baseline diff"]
+    ExternalName["sub-phase 6: ExternalName Services (apps -> cicd)"]
   end
 
-  TofuTokens --> OutputJson
-  TofuTokens --> Role19
-  OutputJson --> Packer
-  Role19 --> Packer
-  TalosBase --> Packer
-  Packer --> Template
+  CloudImage --> VirtCustomize
+  VirtCustomize --> QmCreate
+  QmCreate --> QmImportdisk
+  QmImportdisk --> CloudInitDrive
+  CloudInitDrive --> Template
   Template --> TofuCicd
   Template --> TofuApps
-  TofuCicd --> Talos
-  TofuApps --> Talos
-  Talos --> HelmFirstTwo
-  HelmFirstTwo --> HelmRemaining
-  HelmRemaining --> HostPorts
-  HostPorts --> Kubeconfig
-  Kubeconfig --> ExternalName
+  TofuCicd --> BpgProvider
+  TofuApps --> BpgProvider
+  BpgProvider --> CloneVm
+  CloneVm --> Cloudinit
+  Cloudinit --> K3s
+  K3s --> Helm
+  Helm --> Kubeconfig
+  Kubeconfig --> HostPorts
+  HostPorts --> ExternalName
+  TofuTokens --> OutputJson
+  TofuTokens --> Role20
+  OutputJson --> VirtCustomize
+  Role20 --> CloneVm
 ```
 
-> **Live-host note (2026-07-06, BigBertha PVE 9.2.3)**: Phase 1
-> surfaced six deployment-environment gotchas captured in
-> `.agents/skills/proxmox-k3s-pipeline/SKILL.md` Step 1b:
->
-> 1. `talos.pkr.hcl` schema drift (`local-lvm` → `data1`,
->    `clone_from_vm_id` → `clone_vm_id`, `vm_template_name` →
->    `template_name`, dropped invalid `formatdate()` call).
-> 2. Packer v1.2.x `token` is the **bare** secret UUID, not the
->    pre-concatenated `<id>=<secret>` value.
-> 3. `k3s-cluster` role extends from spec T005's 12 privs to **19**
->    (added `Sys.Audit`, `VM.Audit`, `VM.Clone`, `VM.Migrate`,
->    `VM.Config.CDROM`, `VM.Config.HWType`, `VM.Snapshot.Rollback`)
->    so Packer can clone VMID 999 → 900.
-> 4. `output_json.tf` splits bpg/proxmox v0.111.x's
->    `proxmox_user_token.value` on `=` so `proxmox_token_secret`
->    is the 36-char bare UUID (not the full token string).
-> 5. Packer `proxmox-clone` v1.2.x blocks on a 5-minute SSH-wait
->    that Talos installer mode can never satisfy. The skill
->    recommends bypassing Packer for Phase 1 entirely on live
->    hosts (use direct `POST /nodes/<node>/qemu/999/clone` +
->    `/qemu/900/template`); the Phase 2 cluster tofu installs
->    Talos to disk on cluster VMs at first-boot via
->    `talosctl apply-config`.
-> 6. VMID 999 must be pre-created on the same storage pool
->    (`data1` on BigBertha); the Talos ISO asset on GitHub is
->    `metal-amd64.iso`, not `talos-amd64.iso`.
->
-> All six are pinned by `tools/tests/test_agent_skill.py` and
-> recorded in `.agents/skills/proxmox-k3s-pipeline/versions.lock.yaml`
-> under `live_host_evidence.phase1_*`.
+> **Live-host note (2026-07-07, BigBertha PVE 9.2.3)**: Phase 1
+> was rewritten to the canonical Proxmox+Ubuntu recipe. The
+> previous Talos / Sidero Image Factory / Packer / custom NoCloud
+> seed ISO flow is gone. The new flow bakes qemu-guest-agent into
+> the cloud image with `virt-customize` BEFORE the VM is created,
+> so the agent is guaranteed to be up at first boot (no race with
+> cloud-init, no SSH-into-VM customize step). Proxmox's native
+> cloud-init drive (`--ide2 data1:cloudinit`) replaces the custom
+> NoCloud seed ISO. The full live-host state is in
+> `.agents/skills/proxmox-k3s-pipeline/versions.lock.yaml` under
+> `live_host_evidence.phase1_v2_canonical_recipe` and pinned by
+> `tools/tests/test_agent_skill.py`.
 
 ## Cross-cluster wiring (WP06)
 
 The `apps` cluster reaches the `cicd` cluster's primary services via
 ExternalName Services rendered into `infra/clusters/apps/manifests/cicd-system/`
-and applied by `tools/bootstrap_cluster.py --cluster apps --phases externalname`.
+and applied by `tools/bootstrap_cluster.py --cluster apps --phases externalname`
+.
 
 ```mermaid
 flowchart LR
@@ -122,9 +115,9 @@ DNS resolution flow when an apps workload reaches `gitlab.cicd-system.svc.cluste
 | Subsystem | Owns | Reads from | Writes to |
 |-----------|------|------------|-----------|
 | SS0 (Tokens) | `infra/tokens/main.tf`, `infra/tokens/proxmox.tf`, `infra/tokens/cloudflare.tf` | `.env` (`PROXMOX_API_TOKEN`, `CLOUDFLARE_GLOBAL_API_KEY`, ...) | `infra/tokens/output.json` (mode 0600), PVE role + user + token, Cloudflare scoped token |
-| SS1 (Image Build) | `tools/build_image.py`, `tools/packer/talos.pkr.hcl` | `versions.yaml`, `infra/tokens/output.json`, live PVE `/nodes/<node>/qemu/999` | `build/image-id.txt`, Proxmox template `talos-template` at VMID 900 |
-| SS2 (Cluster Module) | `infra/modules/proxmox-k3s-cluster/**`, `infra/clusters/cicd/main.tf`, `infra/clusters/apps/main.tf` | `infra/tokens/output.json`, `build/image-id.txt` | `infra/clusters/<name>/output.json`, `infra/clusters/<name>/manifests/` |
-| SS3 (Bootstrap) | `tools/bootstrap_cluster.py`, `tools/lib/*` | `infra/clusters/<name>/output.json`, `infra/clusters/<name>/manifests/`, `infra/tokens/output.json` | `~/.kube/config`, PVE nft prerouting baseline diff |
+| SS1 (Image Build) | `tools/build_image/__init__.py`, `tools/lib/pve_client.py` | `versions.yaml`, live PVE over SSH | `build/image-id.txt`, Proxmox template `ubuntu-noble-template` at VMID 900 |
+| SS2 (Cluster Module) | `infra/modules/proxmox-k3s-cluster/**`, `infra/clusters/cicd/main.tf`, `infra/clusters/apps/main.tf` | `infra/tokens/output.json`, `build/image-id.txt` | `infra/clusters/<name>/output.json`, `infra/clusters/<name>/manifests/`, Proxmox VMs 111-114 |
+| SS3 (Bootstrap) | `tools/bootstrap_cluster.py`, `tools/lib/*` | `infra/clusters/<name>/output.json`, `infra/clusters/<name>/manifests/`, `infra/tokens/output.json` | `~/.kube/config`, k3s systemd units on each node, PVE nft prerouting baseline diff |
 
 ## Cross-system contracts
 

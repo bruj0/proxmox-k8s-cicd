@@ -10,10 +10,9 @@ M3 ("two clusters race for the same control-plane endpoint").
 The `infra/modules/proxmox-k3s-cluster` module is designed to be instantiated once per
 cluster. Each instantiation creates:
 
-- N Proxmox VMs (control-plane + workers) cloned from the Talos image template
-- A Talos VIP reserved in the vnet0 dnsmasq ethers file
-- Per-VM Talos machineconfig files rendered to `infra/clusters/<cluster_name>/talos/`
-- An output.json with the cluster's identity, written as `0600`
+- N Proxmox VMs (control-plane + workers) cloned from the Ubuntu+k3s image template (VMID 900)
+- A kube-vip VIP reserved in the vnet0 dnsmasq ethers file
+- Per-VM output.json with the cluster's identity, written as `0600`
 
 Two cluster instances must coexist on the same Proxmox host without colliding.
 This document enforces the contract that makes coexistence safe.
@@ -24,7 +23,7 @@ Every cluster instance must pick **disjoint values** for these seven elements:
 
 | # | Element | Disjointness rule | Reason |
 |---|---|---|---|
-| 1 | `cluster_name` | Unique across all instances | Identifies the cluster in Talos certs, dnsmasq, output.json. The cluster root has a `terraform_data.cluster_name_unique` precondition that fires if any sibling's `output.json` already uses this name. |
+| 1 | `cluster_name` | Unique across all instances | Identifies the cluster in k3s certs, dnsmasq, output.json. The cluster root has a `terraform_data.cluster_name_unique` precondition that fires if any sibling's `output.json` already uses this name. |
 | 2 | `vip` | Unique across all instances | kube-vip binds the active control-plane to this IP. Two clusters with the same VIP would race for the kube-apiserver endpoint. |
 | 3 | `vmid_start` | Range `[vmid_start .. vmid_start + total - 1]` must not overlap any other cluster's range; recommended 4-gate buffer between ranges | Proxmox VMIDs are unique across the host. The module's `terraform_data.vmid_overlap` precondition checks against the live PVE VM list. |
 | 4 | `ip_start` | Distinct `/24` from any other cluster's `ip_start` | cidrhost treats the IP portion of the CIDR as the network address, so `10.0.0.0/24` yields `10.0.0.0`, `10.0.0.1`, ... Two clusters with the same /24 will produce identical per-node IPs at the same host positions, causing L3 collisions. **Pick a fresh /24 — not just a fresh host number.** |
@@ -75,8 +74,9 @@ tofu apply -auto-approve
 ```
 
 This provisions the N VMs, reserves the VIP in dnsmasq, and writes the cluster's
-`output.json`. The bootstrap agent (SS3) consumes `output.json` to drive
-`talosctl apply-config`.
+`output.json`. The bootstrap agent (SS3 / `tools/bootstrap_cluster.py`)
+consumes `output.json` to drive the `cloudinit, k3s, helm, kubeconfig,
+host_ports, externalname` sub-phases.
 
 ## Common Mistakes
 

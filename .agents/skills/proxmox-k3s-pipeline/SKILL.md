@@ -1,22 +1,27 @@
 ---
 name: proxmox-k3s-pipeline
-description: Bring up two k3s clusters (cicd + apps) on a single Proxmox host using OpenTofu, the Talos Image Factory, and an Agent-driven bootstrap. Use when the user says "bring up both clusters", "deploy the pipeline", "run spec 001", "bootstrap a cluster", "scale workers", "decommission a cluster", "fix the cloudflare fallback", "rebuild the talos image", or "sync DNS to SDN". Outputs a fully bootstrapped cluster pair with public HTTPS via Cloudflare Tunnel (no host open ports) and apps->cicd cross-cluster Service consumption via ExternalName.
+description: Bring up two k3s clusters (cicd + apps) on a single Proxmox host using OpenTofu, an Ubuntu 24.04 LTS + k3s golden template, and an Agent-driven bootstrap. Use when the user says "bring up both clusters", "deploy the pipeline", "run spec 001", "bootstrap a cluster", "scale workers", "decommission a cluster", "fix the cloudflare fallback", "rebuild the ubuntu template", or "sync DNS to SDN". Outputs a fully bootstrapped cluster pair with public HTTPS via Cloudflare Tunnel (no host open ports) and apps->cicd cross-cluster Service consumption via ExternalName.
 ---
 
 # Proxmox k3s Pipeline
 
-End-to-end pipeline for provisioning two Talos/k3s clusters on a single
-Proxmox host. The pipeline drives five numbered top-level phases; the
-bootstrap phase (Phase 4) further decomposes into six ordered
-sub-phases (talos, k3s, helm, kubeconfig, host_ports, externalname).
-Each (sub-)phase has a single CLI entry point and explicit success
-criteria that the agent MUST assert before proceeding.
+End-to-end pipeline for provisioning two Ubuntu+k3s clusters on a
+single Proxmox host. The pipeline drives five numbered top-level
+phases; the bootstrap phase (Phase 4) further decomposes into six
+ordered sub-phases (cloudinit, k3s, helm, kubeconfig, host_ports,
+externalname). Each (sub-)phase has a single CLI entry point and
+explicit success criteria that the agent MUST assert before
+proceeding.
 
 **Pipeline state: 2026-07-07 -- Phases 0-2 verified end-to-end on
-kvm.bruj0.net (BigBertha, PVE 9.2.3, Talos v1.13.5, k3s pending
-bootstrap).** Phases 3-5 are documented from the original spec and
-have NOT been re-run since the Phase-1 refactor (Talos v1.10 -> v1.13,
-Packer -> Python/Image-Factory).
+kvm.bruj0.net (BigBertha, PVE 9.2.3, Ubuntu 24.04 LTS Noble +
+k3s v1.34.x golden template at VMID 900).** All four cluster VMs
+(cicd-cp-1, cicd-w-1, apps-cp-1, apps-w-1) are cloned, running,
+and have a working qemu-guest-agent. Phase 3 (host-ports
+baseline) and Phase 4 (cluster bootstrap) are the active next
+steps. Phases 3-5 are documented from the original spec; the
+Phase-4 sub-phases were renamed from `talos` to `cloudinit` when
+the OS pivot landed (2026-07-07).
 
 ## When to load this skill
 
@@ -255,12 +260,12 @@ in the operator's reply before invoking the library:
 | `bpg/proxmox` (OpenTofu provider) | `0.111.1` | rationale: latest stable that exposes `proxmox_cloned_vm`; v0.111.1 introduces the `host` attribute that the WP02 module uses |
 | `pan-net/powerdns` (OpenTofu provider) | `1.5.0` | rationale: pan-net 1.5.x is the first version that supports the `rrsets` PATCH endpoint with `changetype: REPLACE`, which we use for idempotent record updates |
 | `STRRL/cloudflare-tunnel-ingress-controller` (Helm chart) | `0.0.23` | rationale: only stable version on the strrl chart repo as of 2026-07; pinned because the upstream CRDs are still alpha |
-| `cilium` (Helm chart) | `1.16.x` | rationale: matches the Talos 1.13.x kernel constraint and supports `gatewayAPI.enabled` plus eBPF host routing |
+| `cilium` (Helm chart) | `1.16.x` | rationale: matches the Ubuntu 24.04 HWE kernel (6.8) shipped with the cloud image; supports `gatewayAPI.enabled` plus eBPF host routing |
 | `sergelogvinov/proxmox-cloud-controller-manager` (Helm chart) | `0.14.0` | rationale: latest stable; required for `topology.kubernetes.io/region` + `zone` labels on the apps cluster nodes |
 | `sergelogvinov/proxmox-csi-plugin` (Helm chart) | `0.5.9` | rationale: chart 0.5.9 supports PVE 9.x and lvm-thin on `data1/data2` |
-| `talosctl` | `1.13.x` | rationale: matches the Talos image baked by SS1 (v1.13.5); required for `talosctl apply-config --install-image` and `talosctl kubeconfig` |
 | `k3s` | `1.34.x` | rationale: matches the Cilium + kube-vip versions; no known CVEs |
 | `helm` | `3.x` | rationale: required for `helm upgrade --install`; matches what k3s 1.34 ships |
+| Ubuntu cloud image (noble) | `noble-24.04.x` | rationale: LTS through 2029; cloud image ships with `qemu-guest-agent` package (no sideloading required); cloud-init NoCloud datasource auto-discovers seeded ISOs |
 
 Document each library's rationale in the operator's reply **before**
 calling the library.
@@ -381,10 +386,12 @@ versions cause silent API differences.
 | Tool | Required | Notes |
 |---|---|---|
 | `tofu` (OpenTofu) | `>= 1.6.0` | `-chdir=` syntax requires 1.6+ |
-| `talosctl` | `1.13.x` | Matches the Talos image baked by SS1 (v1.13.5) |
 | `helm` | `3.x` | Matches what k3s 1.34 ships |
 | `kubectl` | `>= 1.30` | For bootstrap phase verification |
-| `packer` | NOT USED | The pipeline does NOT use Packer -- see `Step 1` for the canonical Sidero factory flow |
+| `qm` (PVE CLI) | shipped | VM lifecycle (`qm clone`, `qm set`, `qm start`) |
+| `socat` | shipped on PVE | Used by `scripts/capture_serial.py` to read `/var/run/qemu-server/<vmid>.serial0` |
+| `packer` | NOT USED | Pipeline pivoted off Packer 2026-07-07; see `Step 1` for the Python+cloud-image flow |
+| `talosctl` | NOT USED | Pipeline pivoted off Talos 2026-07-07; k3s runs under `systemd` on Ubuntu |
 
 ## Step 0d -- Phase 0: Token provisioning (SS0 / WP00)
 
@@ -556,73 +563,130 @@ updates once to align state with the live host's current state.
 
 ## Step 1 -- Phase 1: Build the VM image (SS1)
 
-Goal: bake a Talos Linux golden image into a Proxmox template
-(VMID 900). One-shot; idempotent on rerun (image-id.txt already
-exists -> no-op).
+Goal: bake an Ubuntu 24.04 LTS + qemu-guest-agent + cloud-init
+golden image into a Proxmox template (current VMID **900**,
+written to `build/image-id.txt`). One-shot; idempotent on rerun
+(the build's preflight step destroys any pre-existing template at
+the target VMID before recreating it).
 
-**Important: the pipeline does NOT use Packer.** The 2026-07-07
-build flow uses the canonical Sidero Image Factory + qm importdisk
-+ talosctl apply-config --install-image path. Any Packer recipes
-left in the tree (none after the 2026-07-07 refactor) are
-obsolete and MUST NOT be re-enabled.
+**Why Ubuntu + k3s and not Talos?** The 2026-07-07 OS pivot
+moved the pipeline off Talos Linux. The Talos + Sidero Image
+Factory flow was hard to debug on the serial console, and the
+cloud-init + systemd story on Ubuntu Noble is well-trodden. The
+serial-console capture recipe we needed for Talos is no longer
+needed for the build itself (Ubuntu cloud images boot cleanly
+through OVMF and report agent-ready within ~10 s), but
+`scripts/capture_serial.py` is kept as a debug fallback for
+post-mortem diagnostics.
 
-### 1.1 -- Sidero Image Factory schematic
+**Important: the pipeline does NOT use Packer, Talos, the
+Sidero Image Factory, qemu-nbd, losetup, or a custom NoCloud
+seed ISO.** The build flow is now the canonical Proxmox+Ubuntu
+recipe (see `docs/proxmox-serial-capture.md`'s neighbors and
+the operator-skill runbook at the bottom of this document):
 
-We use a fixed, operator-curated schematic ID rather than letting
-the agent compose one at runtime. This pins the exact set of
-system extensions baked into the rootfs:
+  1. Download the upstream cloud image.
+  2. Bake qemu-guest-agent + openssh-server + cloud-init into
+     the image with `virt-customize` (libguestfs-tools) on the
+     PVE host.
+  3. `qm create` an OVMF/q35 VM with the agent channel enabled
+     and a serial console.
+  4. `qm importdisk` + `qm resize` to attach the cloud image as
+     scsi0 and grow it to 32 GB.
+  5. `qm set --ide2 data1:cloudinit` -- Proxmox's *native*
+     cloud-init drive (NOT a custom ISO).
+  6. `qm set --ciuser ubuntu --sshkeys <file> --ipconfig0 ip=dhcp`
+     -- Proxmox regenerates the cloud-init drive on every
+     `qm start` from these values.
+  7. `qm start` + `qm agent ping` + `qm agent network-get-interfaces`
+     to verify the VM has DHCP'd.
+  8. `qm shutdown` + `qm template`.
 
-```
-ab5430f4aef7985d19988502c97f5a15d309963d664456d8ba5394156dbe524a
-```
+The cluster's Phase 2 clones (per-VM cloud-init seeds) inherit
+the template's `--ciuser ubuntu --sshkeys <file> --ipconfig0 ip=dhcp`
+and re-apply them with per-VM overrides.
 
-Extensions: `siderolabs/cloudflared`, `siderolabs/ctr`,
-`siderolabs/fuse3`, `siderolabs/glibc`, `siderolabs/iscsi-tools`,
-`siderolabs/qemu-guest-agent`, `siderolabs/util-linux-tools`.
+### 1.1 -- Image source
 
-Image URLs (auto-resolved by `build_image.py`):
+| Component | Source | Version pin |
+|---|---|---|
+| Cloud image | `https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img` | `noble-24.04.x` (SHA256SUMS-pinned daily) |
+| OVMF firmware | `/usr/share/pve-edk2-firmware/OVMF_CODE_4M.secboot.fd` (PVE default) | shipped with PVE 9.2.3 |
+| k3s | `https://get.k3s.io` (`INSTALL_K3S_CHANNEL=stable`) | `1.34.x` |
+| `libguestfs-tools` (virt-customize) | Debian apt on PVE | installed on first build if missing |
 
-- ISO: `https://factory.talos.dev/image/<schematic>/<version>/metal-amd64.iso`
-- Installer image: `factory.talos.dev/installer/<schematic>:<version>`
+The cloud image does NOT ship `qemu-guest-agent` (a known gap
+of Ubuntu 24.04 LTS cloud images). The build's `virt-customize`
+step installs it BEFORE the VM is created, so the agent is
+guaranteed to be up by the time `qm agent ping` returns.
 
-### 1.2 -- What `build_image.py` does (SS1 orchestrator)
+### 1.2 -- What `tools/build_image` does (SS1 orchestrator)
 
 The orchestrator at `tools/build_image/__init__.py` is a single
 Python entry point. It drives the full flow end-to-end:
 
-1. Download the Talos ISO from the Image Factory if not already
-   present in `/var/lib/vz/template/iso/talos-<ver>-custom.iso`.
-2. Create a non-template VM 900 (`qm create`) with:
-   - `q35` machine, OVMF BIOS, `efitype=4m` (no `pre-enrolled-keys=1`
-     -- see `Step 1.5.1` for why)
-   - `boot: order=ide2` (boot the ISO first)
-   - `agent: enabled=1` (qemu-guest-agent channel)
-   - `serial0: socket`, `vga: serial0` (Talos console + serial log
-     capture)
-3. Attach the Talos ISO to `ide2`, start the VM, and wait for the
-   Talos `apid` (port 50000) to come up on the SDN-allocated IP.
-4. Generate a minimal controlplane machineconfig via
-   `talosctl gen config` (with `--force` so re-runs work), push it
-   to PVE over SSH stdin (`cat > /tmp/controlplane.yaml`), and
-   `talosctl apply-config --insecure --install-image <factory-url>`.
-   The `--install-image` flag is the load-bearing piece: it tells
-   Talos to install itself to `/dev/sda` (scsi0) using the
-   factory URL on the next reboot, baking the schematic
-   extensions into the rootfs.
-5. `qm shutdown 900` with a 10s grace, then `wait_for_vm_stopped`
-   with a 30s timeout. If the graceful shutdown does not finish
-   (Talos installer mode can ignore ACPI), fall back to
-   `qm stop` (hard kill) with another 10s wait. The
-   `Popen.communicate(timeout=...)` refactor in
-   `tools/lib/pve_client.py` captures partial stderr on the
-   timeout so the operator can see *why* PVE hung (lock contention,
-   etc.).
-6. **`qm set 900 --boot order=scsi0`** (this is the load-bearing
-   step that was missing in the v1.10.0 build -- see `Step 1.5.2`).
-7. `qm template 900` -- convert to a PVE template.
-8. Write `build/image-id.txt` containing `900\n`. The
-   `terraform_data.image_id_present` precondition in
-   `infra/clusters/{cicd,apps}/main.tf` reads this file.
+1. **Preflight** -- destroy any pre-existing template at
+   `TEMPLATE_VMID` (= 900). Idempotent: re-running with the
+   same VMID simply destroys + rebuilds. The build does NOT
+   touch VMID 950 (it has a stuck LV from an earlier Packer
+   run; pinned in `versions.lock.yaml::vmid_950_stuck_lv`).
+2. **Cloud-image acquisition** -- download the Noble cloud image
+   to `/tmp/noble-server-cloudimg-amd64.img` (cached on the
+   operator host; SHA256-verified against
+   `cloud-images.ubuntu.com/noble/current/SHA256SUMS`).
+3. **Stage + `virt_customize`** -- scp the image to
+   `/var/lib/vz/template/iso/` on PVE, then run
+   `virt-customize -a ... --install qemu-guest-agent,openssh-server,cloud-init
+   --run-command 'systemctl enable qemu-guest-agent ssh'
+   --run-command 'systemctl mask getty@tty1.service'
+   --run-command 'update-initramfs -u' --truncate /etc/machine-id`.
+   The agent is baked into the image before any VM is created,
+   so there is no race between cloud-init and the agent.
+4. **`qm create 900`** with the canonical Proxmox recipe:
+   - `machine q35`, `bios ovmf`, `efidisk0 data1:1,efitype=4m,pre-enrolled-keys=0`
+     (no Secure Boot; Ubuntu's shim works either way but
+     `pre-enrolled-keys=0` avoids the OVMF-DB-surprise class of
+     bug and matches the canonical Proxmox community guide).
+   - `scsihw virtio-scsi-single`, `boot: order=scsi0` (cloud
+     image IS the disk; no ISO boot).
+   - `agent enabled=1` (qemu-guest-agent channel).
+   - `serial0 socket`, `vga serial0` (canonical Proxmox recipe;
+     serial console available for diagnostics).
+5. **Disk import** -- `qm importdisk 900 <image> data1 -format
+   raw -target-disk scsi0`, then `qm resize 900 scsi0 32G` to
+   grow the LV from the cloud image's ~3.5 GB to a 32 GB
+   thin-LV, then `qm set --scsi0 data1:vm-900-disk-1,discard=on,
+   iothread=1` to attach the new disk.
+6. **Attach Proxmox's NATIVE cloud-init drive** -- `qm set 900
+   --ide2 data1:cloudinit`. The build does NOT generate a
+   NoCloud seed ISO; Proxmox owns the cloud-init drive and
+   regenerates it on every `qm start` from the stored config.
+7. **Configure cloud-init defaults** -- `qm set 900 --ciuser
+   ubuntu --sshkeys <file> --ipconfig0 ip=dhcp`. The cluster
+   Phase 2 overrides `--ipconfig0` per-VM and (optionally)
+   `--sshkeys` with per-cluster or per-VM keys.
+8. **First boot + agent verification** -- `qm start 900` then
+   poll `qm agent 900 ping` for up to 240 s. Once the agent
+   responds, `qm agent 900 network-get-interfaces` returns the
+   DHCP-allocated IP (10.0.0.x from the SDN dnsmasq). No
+   SSH-into-VM customize is needed -- virt-customize already
+   baked the agent in.
+9. **Graceful shutdown + template conversion**:
+   - `qm shutdown 900` (10 s grace) -> `wait_for_vm_stopped`
+     (90 s) -> `qm stop` (10 s) if needed.
+   - `qm template 900` -- convert to a PVE template. PVE
+     renames `vm-900-disk-1` to `base-900-disk-1` and
+     `vm-900-disk-0` to `base-900-disk-0` automatically.
+10. **Write `build/image-id.txt`** containing `900\n`. The
+    `terraform_data.image_id_present` precondition in
+    `infra/clusters/{cicd,apps}/main.tf` reads this file.
+
+The build writes a JSONL audit log to
+`logs/build-image_<UTC>.log` (and a `latest-build-image.log`
+symlink). Each step logs `step=<name>` plus structured fields
+(`vmid`, `size_bytes`, `attempt`, etc.) and a `resolution`
+string on failure so the operator can re-run without guessing
+the next action.
 
 ### 1.3 -- Apply
 
@@ -631,32 +695,40 @@ SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
 PVE_TOKEN_ID='k3s-terraform@pam!tf' \
 PVE_TOKEN_SECRET='<secret-uuid>' \
 python -m tools.build_image \
-  --talos-version v1.13.5 \
   --pve-endpoint https://kvm.bruj0.net:8006/api2/json \
   --pve-node BigBertha \
   --pve-ssh-host kvm.bruj0.net --pve-ssh-port 6022 \
+  --ssh-pubkey-path ~/.ssh/kvm.bruj0.net.pub \
+  --ubuntu-image-version noble \
+  --k3s-channel stable \
   --log-dir ./logs
 ```
+
+(`PVE_TOKEN_ID` / `PVE_TOKEN_SECRET` are accepted for parity
+with `scripts/apply_tofu.py` but are not used by the build --
+everything goes over SSH. They are kept so a single .env works
+for both build and apply.)
 
 Equivalent shortcut once `.env` is set up:
 
 ```bash
-make build-image TALOS_VERSION=v1.13.5
+make build-image UBUNTU_VERSION=noble K3S_CHANNEL=stable
 ```
 
 Success criteria (assert ALL before proceeding):
-1. `qm list | grep -w 900` returns a single row with `template`
-   column equal to `1`, `boot: order=scsi0`, NO `ide2` line,
-   `scsi0: data1:base-900-disk-1,...,size=32G`,
-   `efidisk0: data1:base-900-disk-0,efitype=4m` (NO
-   `pre-enrolled-keys=1`).
-2. `cat build/image-id.txt` returns exactly `900` followed by
+1. `qm list | grep -w 900` returns a single row with `status
+   stopped` and `BOOTDISK(GB) = 32.00`.
+2. `grep '^template:' /etc/pve/qemu-server/900.conf` returns
+   `template: 1`.
+3. `grep '^ide2:' /etc/pve/qemu-server/900.conf` shows
+   `ide2: data1:vm-900-cloudinit,media=cdrom`.
+4. `cat build/image-id.txt` returns exactly `900` followed by
    newline.
-3. `qm start 900 && sleep 5 && qm guest cmd 900 ping` returns
-   success within 30s of boot. This proves the qemu-guest-agent
-   from the schematic is alive and Talos is installed to disk.
-4. `qm guest cmd 900 network-get-interfaces` reports `ens18`
-   with a `10.0.0.x` IP -- the SDN DHCP allocation worked.
+5. `qm start 900 && sleep 8 && qm agent 900 ping` returns
+   success within 30 s of boot. This proves the qemu-guest-agent
+   is alive and cloud-init finished its first-boot module set.
+6. `qm agent 900 network-get-interfaces` reports `eth0` with a
+   `10.0.0.x` IP -- the SDN DHCP allocation worked.
 
 Failure handling: halt the pipeline and surface the structured
 error (`error`, `resolution` keys) to the operator. Do NOT proceed
@@ -664,97 +736,106 @@ to Phase 2.
 
 ### 1.4 -- Logs
 
-The build writes two streams under `--log-dir` (default `./logs/`):
+The build writes one stream under `--log-dir` (default
+`./logs/`):
 
 - `build-image_<UTC>.log` -- JSONL audit log, one event per line.
-- `vm-900-serial-<UTC>.log` -- serial console capture, streamed
-  via `ssh ... timeout N cat /var/run/qemu-server/900.serial0`.
+- `latest-build-image.log` -- symlink at the most recent audit log.
 
-A `latest-build-image.log` symlink points at the most recent
-audit log. A failed build leaves the VM 900 in a known state --
-either stopped (good, retry-safe) or running (agent can be
-re-applied with a fresh config; see `Step 1.5.2` recovery).
+A failed build leaves VM 900 in a known state -- either stopped
+(good, retry-safe; the preflight destroys + recreates) or running
+(rare, the preflight will force-stop and destroy on the next run).
 
 ### 1.5 -- Phase 1 apply-time gotchas (live host 2026-07-07)
 
-These are the deployment-environment issues that surfaced ONLY
-when running the SS1 build against PVE 9.2.3 with Talos v1.13.5.
-Each was a hard blocker; all are now resolved and pinned below.
+These are the deployment-environment issues that surfaced while
+building the Ubuntu+k3s template against PVE 9.2.3. Each was a
+hard blocker; all are now resolved and pinned in
+`versions.lock.yaml::cross_check`. The canonical Proxmox+Ubuntu
+recipe (virt-customize + native cloudinit drive) avoided the
+entire class of "no qemu-guest-agent on first boot" + "serial
+console capture" + "initramfs EXT4 journal" issues that plagued
+the earlier Packer + NoCloud-seed-ISO flow.
 
-#### 1.5.1 -- `pre-enrolled-keys=1` blocks Talos v1.13.5 Secure Boot
+#### 1.5.1 -- Serial console capture is now debug-only (not part of the build)
 
-Talos v1.13.5 ships `systemd-boot 259.5` whose UKI signature
-is NOT in the OVMF `OVMF_CODE_4M.secboot.fd` pre-enrolled DB.
-PVE 9.2.3's default `efidisk0 data1:1,efitype=4m,pre-enrolled-keys=1`
-turns on Secure Boot, which then rejects the Talos UKI with
-`Access Denied` and the VM hangs in the OVMF Boot Manager.
+`scripts/capture_serial.py` is kept as a **standalone debug
+helper** for post-mortem diagnostics when a build fails
+mysteriously. The build orchestrator does NOT launch it; we
+verified on 2026-07-07 that `qm agent <vmid> ping` returns
+within ~10 s of `qm start` and the agent channel is the
+authoritative signal that the VM is healthy.
 
-**Fix**: drop `pre-enrolled-keys=1` from the
-`create_template_shell` call. The resulting
-`efidisk0 data1:1,efitype=4m` is non-Secure-Boot but Talos boots
-fine. Verified 2026-07-07 against PVE 9.2.3 + Talos v1.13.5.
-
-#### 1.5.2 -- Template boot order must be `scsi0`, not `ide2`
-
-`create_template_shell` sets `boot: order=ide2` so the build
-itself can boot the ISO. After Talos is installed to `scsi0`,
-the template MUST be flipped to `boot: order=scsi0` BEFORE
-`qm template 900` -- otherwise every clone boots the ISO
-indefinitely and Talos never starts from the installed disk.
-The build_image step at index 6 (`Step 1.2`) handles this.
-
-**Recovery if you forgot**: the template and existing clones can
-be patched in place without a full rebuild:
+If you need to capture the serial console for diagnostics:
 
 ```bash
-SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
-  ssh -p 6022 root@kvm.bruj0.net 'for vmid in 900 111 112 113 114; do
-    qm set $vmid --boot order=scsi0; done'
-# then reboot each clone so the new boot order takes effect
+SSH_AUTH_SOCK=... scp scripts/capture_serial.py \
+  root@kvm.bruj0.net:/tmp/capture_serial.py
+SSH_AUTH_SOCK=... ssh -p 6022 root@kvm.bruj0.net \
+  'python3 /tmp/capture_serial.py --vmid 900 --out /tmp/900-serial.log --duration 60'
 ```
 
-#### 1.5.3 -- `qm shutdown` does not work in Talos installer mode
+The full pty-wrapped recipe (socat over pty.openpty, with
+auto-respawn when PVE recycles the chardev) is documented in
+`docs/proxmox-serial-capture.md` for historical reference.
 
-Talos running in installer mode (booted from ISO) does not
-respond to ACPI shutdown. The `qm shutdown 900` call returns
-immediately but the VM keeps running until the call times out.
-The build flow uses `stop_vm` (graceful) -> `wait_for_vm_stopped`
-(30s) -> `stop_vm_forcible` (hard `qm stop`, 10s) as a fail-safe.
-The `Popen.communicate(timeout=...)` refactor in
-`tools/lib/pve_client.py` captures partial stderr on timeout,
-so the operator can see whether PVE hung on a lock or on
-`qemu-img` cleanup.
+#### 1.5.2 -- VMID 950 has a stuck LV (do NOT use)
 
-#### 1.5.4 -- `--force` on `talosctl gen config`
+VMID 950 has a stuck LV (`vm-950-disk-1`) on `data1` from the
+earlier Packer-based Talos build (2026-07-06); the open handle
+from `dmeventd`/`kvm-pit` prevents `lvremove` even with
+`dmsetup wipe_table`. The canonical Ubuntu+k3s build therefore
+uses **VMID 900** and will not collide. If you ever want to
+free VMID 950:
 
-`talosctl gen config` refuses to overwrite existing
-`talos/controlplane.yaml` and `talos/worker.yaml` files. The
-build uses `talosctl gen config ... --force` so re-runs (and
-the `image-id.txt` shortcut path) work idempotently.
+```bash
+SSH_AUTH_SOCK=... ssh -p 6022 root@kvm.bruj0.net \
+  'dmsetup remove /dev/data1/vm--950--disk--1 || true;
+   lvremove -f /dev/data1/vm-950-disk-1 || true;
+   qm destroy 950'
+```
 
-#### 1.5.5 -- Pushing the machineconfig over SSH stdin
+#### 1.5.3 -- `qemu-img resize` after `qm importdisk`
 
-`build_image.py` writes the rendered controlplane YAML to
-PVE via `ssh ... cat > /tmp/controlplane.yaml` (no scp). The
-helper method `ssh_run_stdin` was added to
-`tools/lib/pve_client.py` to feed stdin directly to a remote
-command. `--install-image <factory-url>` is passed to
-`talosctl apply-config` so Talos downloads and installs the
-schematic-baked image to `scsi0` on the next reboot.
+A naive `qm set --scsi0 ... size=32G` does NOT grow the disk --
+it only updates the metadata to the disk's current size. The
+canonical Proxmox recipe uses an explicit `qm resize <vmid>
+scsi0 32G` to grow the LV. The build does this after
+`qm importdisk` so the clone rootfs has room for k3s + workloads.
 
-#### 1.5.6 -- OVMF `loader/entries/*.conf` is missing in v1.13 ISO
+#### 1.5.4 -- EXT4 journal corruption: avoided by `virt-customize`
 
-Talos v1.13.5 ISO's EFI partition contains
-`EFI/BOOT/BOOTX64.EFI` (systemd-boot) and
-`EFI/Linux/Talos-v1.13.5.efi` (UKI), but NO
-`loader/entries/*.conf`. The UKI is the boot entry, picked
-up automatically. Do NOT add a `loader/entries/` directory.
+The first Ubuntu+k3s build (2026-07-07) had a recurring class of
+boot failure where the imported cloud image's first boot dropped
+to `initramfs` with `LABEL=cloudimg-rootfs doesn't exit` and
+`/dev/sda1: UNEXPECTED INCONSISTENCY; RUN fsck MANUALLY`. Root
+cause: `qemu-img rebase -b /dev/null` (or any other backing-chain
+rewrite) marks the rootfs dirty; without `e2fsck` in the
+initramfs the kernel cannot self-heal.
+
+The v2 cleanup (this revision) avoids the class of bug entirely:
+`virt-customize --run-command 'update-initramfs -u'` runs
+INSIDE the image BEFORE the VM is created, so the initramfs
+carries `e2fsck` from the start. No more `chroot $MNT
+update-initramfs -u -k all` dance; no more initramfs shell on
+first boot. Pinned in
+`versions.lock.yaml::initramfs_e2fsck_fix`.
+
+### 1.6 -- Reference docs
+
+- `docs/proxmox-serial-capture.md` -- **historical** write-up of
+  the serial-capture recipe. Kept because the underlying PVE
+  chardev quirks are non-obvious and may surface again on
+  future Talos or non-cloud-image builds.
+- `scripts/capture_serial.py` -- standalone debug helper (see
+  Step 1.5.1). NOT invoked by `tools/build_image`.
 
 ## Step 2 -- Phase 2: Provision the clusters (SS2)
 
 Apply OpenTofu against `infra/clusters/cicd/` and
-`infra/clusters/apps/` to create the Talos VMs and render the
-manifests.
+`infra/clusters/apps/` to clone the Ubuntu+k3s template (VMID
+**900**) into per-cluster VMs (1 control-plane + 1 worker per
+cluster today; scale up via the runbook).
 
 ### 2.1 -- Apply
 
@@ -768,12 +849,15 @@ SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
 The wrapper reads `.env`, sets `TF_VAR_proxmox_*`, opens the
 PowerDNS SSH tunnel (LXC 101, `10.0.0.3:8081` tunneled to
 `127.0.0.1:8081`), and runs `tofu init -backend=false && tofu
-plan && tofu apply -auto-approve`.
+plan && tofu apply -auto-approve`. The `image_id` data source
+reads `build/image-id.txt` (currently `900`), so the cluster
+roots automatically pick up the new Ubuntu template without any
+HCL change.
 
 Success criteria (assert ALL before proceeding):
 1. Both `tofu apply` calls exit 0. `qm list` shows 4 new VMs
-   (111, 112, 113, 114) with `template=0`, 32GB scsi0, RAM
-   4096 (cp) / 8192 (w), running, `boot: order=scsi0`.
+   (111, 112, 113, 114) with `status running`, 32 GB scsi0,
+   RAM 4096 (cp) / 8192 (w), `boot: order=scsi0`.
 2. `infra/clusters/cicd/output.json` and
    `infra/clusters/apps/output.json` both exist and parse as
    JSON with `cluster_name`, `vip`, `pod_cidr`, `svc_cidr`,
@@ -781,10 +865,13 @@ Success criteria (assert ALL before proceeding):
 3. `infra/clusters/cicd/manifests/traefik-helmchartconfig.yaml`
    exists and parses as YAML.
 4. `qm agent <vmid> ping` returns success for all 4 VMs within
-   30s of boot. This proves the qemu-guest-agent baked into
-   the schematic is alive.
-5. `qm agent <vmid> network-get-interfaces` reports `ens18`
-   with a `10.0.0.x` IP per VM.
+   30 s of boot. This proves the qemu-guest-agent baked into the
+   cloud image is alive.
+5. `qm agent <vmid> network-get-interfaces` reports `eth0`
+   with a `10.0.0.x` IP per VM (allocated by the SDN dnsmasq
+   from the `10.0.0.50-200` pool).
+6. `qm guest exec <vmid> -- cloud-init status` returns
+   `status: done` for all 4 VMs within 120 s of first boot.
 
 ### 2.2 -- Phase 2 apply-time gotchas (live host 2026-07-07)
 
@@ -810,7 +897,7 @@ apply`. Two-fold fix:
   `var.disk_storage_pool` (default `data1`).
 - cluster root: pass `disk_storage_pool = "data1"`.
 
-#### 2.2.3 -- `k3s-cluster` role needs 7 extra privs for VM lifecycle
+#### 2.2.3 -- `k3s-cluster` role needs the full VM lifecycle priv set
 
 The spec T005 12-priv set is **insufficient** for Phase 2. Each
 of these returns `403 Permission check failed` on BigBertha
@@ -822,11 +909,14 @@ without the priv:
 | `VM.Audit` | Read VM cfg / qemu list |
 | `VM.Clone` | Clone VMID 900 to 111-114 |
 | `VM.Migrate` | Cleanup moved/half-baked templates |
-| `VM.Config.CDROM` | Attach/detach Talos ISO during build |
+| `VM.Config.CDROM` | Attach/detach cloud-init drive |
 | `VM.Config.HWType` | Set `machine=q35` (UEFI boot) |
 | `VM.Snapshot.Rollback` | Restore after template-bake failure |
 
-Total: **19 privs** (12 spec + 7 above). Verify with
+Total: **20 privs** (12 spec + 8 above). The 20th is
+`Sys.Modify`, required for `proxmox_virtual_environment_hosts`
+SDN writes (PVE 9.2.x rejects without it even when SDN.Use is
+present). Verify with
 `ssh root@$PVE_HOST 'pvesh get /access/roles/k3s-cluster'`.
 
 #### 2.2.4 -- `output.json` `proxmox_token_secret` is a BARE secret
@@ -842,9 +932,10 @@ second part to `output.json.proxmox_token_secret`. Verified
 
 The cluster root's spec says `output.json` keys include
 `pod_cidr` and `svc_cidr` (consumed by
-`tools/lib/talos_client.py` to wire `--skip-rbac=false
---network-cidr=` for the per-node Talos configs). The module
-writes them via `jsonencode` in
+`tools/bootstrap_cluster.py` to wire `--cluster-cidr` for the
+per-node k3s systemd unit and to render Cilium's
+`clusterPoolIPv4PodCIDR`). The module writes them via
+`jsonencode` in
 `infra/modules/proxmox-k3s-cluster/outputs.tf`. Verified
 2026-07-06.
 
@@ -864,24 +955,21 @@ This is the load-bearing gotcha of Phase 2. The module's
 apps) is fed to `cidrhost()` to produce the IPs that
 **PowerDNS records** should point at. But PVE's SDN IPAM
 auto-allocates from the DHCP pool (`10.0.0.50-200`) and
-gives the VMs addresses like `10.0.0.61-64`. The module's
-records are therefore WRONG on first apply:
+gives the VMs addresses like `10.0.0.64-67`. The module's
+records are therefore WRONG on first apply. Concrete example
+from the 2026-07-07 live-host run:
 
-| Host | Record (wrong) | Actual VM IP |
+| Host | PowerDNS A record (wrong) | Actual VM IP |
 |---|---|---|
-| `cicd-cp-1.intranet.local` | `10.0.1.0` | `10.0.0.61` |
-| `cicd-w-1.intranet.local` | `10.0.1.1` | `10.0.0.62` |
-| `apps-cp-1.intranet.local` | `10.0.0.63` | `10.0.0.63` (lucky) |
-| `apps-w-1.intranet.local` | `10.0.2.1` | `10.0.0.64` |
+| `cicd-cp-1.intranet.local` | `10.0.1.0` | `10.0.0.65` |
+| `cicd-w-1.intranet.local` | `10.0.1.1` | `10.0.0.64` |
+| `apps-cp-1.intranet.local` | `10.0.2.0` | `10.0.0.67` |
+| `apps-w-1.intranet.local` | `10.0.2.1` | `10.0.0.66` |
 
 **Fix**: after every successful `apply_tofu.py cicd` and
 `apply_tofu.py apps`, run `scripts/sync_dns_to_sdn.py` to
 read the actual VM IPs via the qemu-guest-agent and
-PATCH the PowerDNS records. Then manually delete the
-stale PTRs left over from the wrong-IP records (the script
-will create new PTRs at the correct names; the stale ones
-have to be cleaned by hand because PowerDNS does not
-auto-deduplicate by FQDN-vs-relative-name).
+PATCH the PowerDNS records.
 
 ## Step 2.3 -- Sync DNS to SDN
 
@@ -963,8 +1051,8 @@ completed phases.
 
 **Prerequisite: Phase 2 must be complete AND `sync_dns_to_sdn.py` must
 have run successfully.** Bootstrap reads the cluster VIP / node FQDNs
-from PowerDNS; if the records are wrong, `talosctl apply-config`
-will target the wrong IPs.
+from PowerDNS; if the records are wrong, the per-VM NoCloud cloud-init
+user-data will resolve to the wrong peers and k3s join will hang.
 
 For the cicd cluster:
 
@@ -981,14 +1069,26 @@ python tools/bootstrap_cluster.py --cluster apps
 
 The six phases, in order:
 
-1. `talos` -- `talosctl apply-config` on every node, wait for
-   healthy, bootstrap k3s.
-2. `k3s` -- verify `/healthz` returns `ok`.
-3. `helm` -- install Cilium + kube-vip (WP04) and the remaining four
-   releases (proxmox-ccm, proxmox-csi, cloudflare-tunnel,
-   cert-manager, WP05) + apply the rendered Traefik HelmChartConfig.
-4. `kubeconfig` -- pull admin kubeconfig, merge into
-   `~/.kube/config`.
+1. `cloudinit` -- for each clone VM, generate a per-VM NoCloud seed
+   ISO containing `user-data` (cloud-init runcmd that installs
+   `k3s` via `curl -sfL https://get.k3s.io | INSTALL_K3S_... sh -`
+   + writes `--node-ip`, `--node-external-ip`, `--flannel-backend=none`
+   for control-plane, `--server https://<vip>:6443` for workers,
+   and an optional `--kubelet-arg=cloud-provider=external` for
+   proxmox-ccm) + `meta-data` (`instance-id`, `local-hostname`)
+   + `network-config` (DHCP on ens18). Attach via
+   `qm set <vmid> --ide2 local:iso/<seed>.iso,media=cdrom` and
+   reboot. Wait for cloud-init to finish (probe the agent's
+   `cloud-init status --wait --long` via `qm agent exec`).
+2. `k3s` -- verify `/healthz` returns `ok` on the VIP (for
+   control-plane nodes) and that workers have a `Ready` kubelet
+   (`kubectl --context <cluster> get nodes`).
+3. `helm` -- install Cilium (kube-proxy replacement) + the four
+   remaining releases (proxmox-ccm, proxmox-csi,
+   cloudflare-tunnel, cert-manager, WP05) + apply the rendered
+   Traefik HelmChartConfig.
+4. `kubeconfig` -- pull admin kubeconfig from the VIP, merge into
+   `~/.kube/config` with `--context <cluster>`.
 5. `host_ports` -- assert no new DNAT rules have been added to the
    PVE nft prerouting chain (M2 misfit verifier).
 6. `externalname` -- apps-cluster only: apply the cross-cluster
@@ -1004,8 +1104,10 @@ Success criteria (assert ALL before proceeding):
 1. `kubectl --context cicd get nodes` shows all control-plane +
    worker nodes in `Ready` state.
 2. `kubectl --context cicd -n kube-system get pods --all-namespaces`
-   shows Cilium + kube-vip + proxmox-ccm + proxmox-csi +
-   cloudflare-tunnel + cert-manager pods `Running`.
+   shows Cilium + proxmox-ccm + proxmox-csi + cloudflare-tunnel +
+   cert-manager pods `Running` (no `kube-vip` static pod -- on
+   Ubuntu+k3s the API VIP is owned by `kube-vip`'s userspace
+   daemon, not a Talos static pod manifest).
 3. `python tools/bootstrap_cluster.py --cluster cicd --phases all`
    exits 0 in <60 seconds (idempotent rerun).
 
@@ -1033,6 +1135,41 @@ NFRs verified at this phase:
   (asserted at the cluster module level).
 - **NFR-014**: each new worker Ready in <5 min (asserted by the
   scale-workers runbook).
+
+## Phase 1 -> Phase 4 history (Talos -> Ubuntu pivot, then v2 cleanup)
+
+The pipeline was originally built around Talos Linux (v1.10.0 in
+2026-07-05, then v1.13.5 in 2026-07-07 via Sidero Image Factory).
+On 2026-07-07 the operator decided to pivot to Ubuntu 24.04 LTS
++ k3s because the Talos serial-console debug cycle was too painful
+on this host. After the first pivot the build used a custom
+NoCloud seed ISO baked on the operator host -- that still required
+a post-create `apt install qemu-guest-agent` step inside the VM
+that failed silently, leaving all clones without the agent.
+
+The **2026-07-07 v2 cleanup** replaced the custom NoCloud flow
+with the canonical Proxmox+Ubuntu recipe (virt-customize +
+native cloud-init drive) and moved the template to VMID 900. The
+second pivot removed the entire class of "no qemu-guest-agent on
+first boot" + "serial console capture" + "initramfs EXT4 journal"
+issues that plagued the first Ubuntu build.
+
+| Layer | Before (Talos) | First Ubuntu pivot (2026-07-07) | Canonical Ubuntu+k3s v2 (2026-07-07) |
+|---|---|---|---|
+| Golden image | Sidero Image Factory schematic | Noble cloud image + custom NoCloud seed ISO | Noble cloud image + `virt-customize` (qemu-guest-agent baked in) + Proxmox's native cloud-init drive |
+| VMID | 900 | 952 (950/951 stuck) | 900 |
+| Template conversion | `qm template 900` | `qm template 952` + NoCloud seed detach | `qm template 900` (native drive stays, regenerated from `--ciuser/--sshkeys/--ipconfig0` on every `qm start`) |
+| First-boot customize | n/a (Talos installer) | `apt install qemu-guest-agent` (silently failed) | n/a (qemu-guest-agent is in the image from the start) |
+| Cluster bootstrap | `talosctl apply-config` | cloud-init NoCloud seed ISO per VM; k3s installer runs as `runcmd` | Same: cloud-init runcmd installs k3s, but driven by Proxmox's native drive |
+| API VIP | kube-vip in Talos machineconfig | kube-vip userspace (`kube-vip-cloud-provider` static pod) installed by the `cloudinit` phase | Same |
+| Capture recipe | `ssh ... timeout N cat /var/run/qemu-server/<vmid>.serial0` | `scripts/capture_serial.py` (build-time, mandatory) | `scripts/capture_serial.py` (debug-only, see Step 1.5.1) |
+| `--flannel-backend` | n/a | `none` (Cilium takes over) | `none` (Cilium takes over) |
+
+The Phase 0/2/3/5 plumbing (tokens, tofu cluster module, host-ports
+baseline, final verification) is unchanged because it was already
+OS-agnostic. The Phase 4 sub-phases are
+`cloudinit, k3s, helm, kubeconfig, host_ports, externalname` --
+renamed from `talos` to `cloudinit` when the OS pivot landed.
 
 ## How to invoke
 
