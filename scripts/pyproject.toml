@@ -1,0 +1,15 @@
+[project]
+name = "proxmox-k8s-cicd-scripts"
+version = "0.1.0"
+description = "Operational scripts for the proxmox-k8s-cicd repo"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
+
+# Inline PEP 723 metadata so `uv run scripts/apply_cluster.py` works without
+# this pyproject being parsed as a workspace member. The block is treated as
+# a no-op when uv reads via PEP 723; the [project] block above is what `uv
+# sync` would use if someone ever wanted a real package.
+# (PEP 723 inline metadata keys: [run] requires = [...])
