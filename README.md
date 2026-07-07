@@ -5,6 +5,48 @@ End-to-end pipeline that provisions **two k3s clusters** (`cicd` and
 Cloudflare Tunnel** (no host open ports) and **apps -> cicd
 cross-cluster Service consumption via ExternalName**.
 
+```mermaid
+flowchart TB
+  Operator["Operator laptop<br/>runs the skill"]
+  Internet["Public internet<br/>end users visit apps"]
+  CF["Cloudflare<br/>authoritative DNS<br/>and HTTPS edge"]
+  GitLab["GitLab<br/>stores the OpenTofu state"]
+  PDNS["PowerDNS<br/>resolves internal hostnames"]
+  PVE["Proxmox VE host<br/>runs the VMs"]
+  SDN["Virtual network<br/>DHCP and routing"]
+  Template["Ubuntu template<br/>golden image"]
+  Cicd["cicd cluster<br/>runs the CI/CD workloads"]
+  Apps["apps cluster<br/>runs the user-facing apps"]
+
+  Operator -->|"applies tofu,<br/>builds image,<br/>bootstraps"| PVE
+  Operator -->|"reads/writes state"| GitLab
+  Operator -->|"records DNS"| PDNS
+  Operator -->|"provisions DNS<br/>and HTTPS edge"| CF
+
+  PVE -->|"clones from"| Template
+  PVE -->|"hosts VMs on"| SDN
+  SDN -->|"leases IPs to"| Cicd
+  SDN -->|"leases IPs to"| Apps
+
+  Apps -->|"resolves cicd DNS"| PDNS
+
+  Apps -->|"serves HTTPS"| Internet
+  CF -->|"tunnels traffic to"| Apps
+  Internet -->|"HTTPS request"| CF
+
+  classDef operator fill:#dbeafe,stroke:#1e40af,color:#0f172a
+  classDef external fill:#fef3c7,stroke:#a16207,color:#0f172a
+  classDef pve fill:#e9d5ff,stroke:#6b21a8,color:#0f172a
+  classDef cluster fill:#dcfce7,stroke:#166534,color:#0f172a
+  classDef internet fill:#fee2e2,stroke:#991b1b,color:#0f172a
+
+  class Operator operator
+  class CF,GitLab,PDNS external
+  class PVE,SDN,Template pve
+  class Cicd,Apps cluster
+  class Internet internet
+```
+
 The pipeline is driven by a single
 [agentskills.io](https://agentskills.io)-format skill at
 [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md)
