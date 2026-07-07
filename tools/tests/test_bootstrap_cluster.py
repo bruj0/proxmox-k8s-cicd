@@ -1,16 +1,23 @@
 """WP04 acceptance tests.
 
 These tests are red-first: they were written before
-tools/bootstrap_cluster.py and tools/lib/{talos,helm,kubeconfig}_client.py
+tools/bootstrap_cluster.py and tools/lib/{helm,kubeconfig}_client.py
 existed. They encode the four M4 + M7 acceptance criteria from the WP04 spec:
 
   M4 acceptance: phases must surface non-zero exits (no silent failure).
-  M4 acceptance: re-running with `--phases talos` skips later phases
+  M4 acceptance: re-running with `--phases cloudinit` skips later phases
                  (idempotent restart from earlier phase).
-  M4 acceptance: missing output.json fails the "talos" phase with a
+  M4 acceptance: missing output.json fails the "cloudinit" phase with a
                  clear, machine-readable error (not a stack trace).
   M7 acceptance: tokens are never logged at any level (scrub) - applies
                  to both bootstrap_cluster.py and its delegates.
+
+OS-pivot note (2026-07-07): the `talos` phase was renamed to `cloudinit`.
+The Talos-phase test fixtures (talos_dir, *.yaml) are still created in
+_write_cluster because lib.talos_client.ClusterTopology.from_output_json
+accepts the field for backwards-compatibility. They are not consumed by
+_run_cloudinit (which is a Python-side no-op; the actual k3s install
+happens at VM first boot via cloud-init runcmd in the NoCloud seed ISO).
 
 Side-effect guarantee: tests use `tmp_path` and monkeypatch subprocess.
 No real network calls. No real PVE calls.
@@ -49,7 +56,7 @@ def _write_cluster(tmp_path: Path) -> Path:
     cluster = tmp_path / "infra" / "clusters" / "cicd"
     cluster.mkdir(parents=True)
     # SS2 emits: cluster_name, vip, vnet_bridge, control_plane_count,
-    # worker_count, talos_dir, nodes: [{role, name, ip, ...}], helm_releases.
+    # worker_count, nodes: [{role, name, ip, ...}], helm_releases.
     # We omit pod_cidr/svc_cidr to exercise the SS3 default fallback.
     (cluster / "output.json").write_text(
         json.dumps(
@@ -66,7 +73,6 @@ def _write_cluster(tmp_path: Path) -> Path:
                 ],
                 "helm_releases": [
                     "cilium",
-                    "kube-vip",
                     "proxmox-cloud-controller-manager",
                     "proxmox-csi-plugin",
                     "traefik",
@@ -76,6 +82,10 @@ def _write_cluster(tmp_path: Path) -> Path:
             }
         )
     )
+    # Backwards-compat: lib.talos_client.ClusterTopology still references a
+    # talos_dir key for audit. On the Ubuntu+k3s path this directory is not
+    # read by the bootstrap script; the test fixture keeps it so the import
+    # path remains valid.
     talos_dir = cluster / "talos"
     talos_dir.mkdir()
     for name in ("cp1", "cp2", "w1"):
@@ -84,9 +94,9 @@ def _write_cluster(tmp_path: Path) -> Path:
 
 
 def test_list_phases_returns_all_six() -> None:
-    """Acceptance: phases enum is [talos, k3s, helm, kubeconfig, host_ports, externalname]."""
+    """Acceptance: phases enum is [cloudinit, k3s, helm, kubeconfig, host_ports, externalname]."""
     assert list_phases() == [
-        "talos",
+        "cloudinit",
         "k3s",
         "helm",
         "kubeconfig",
@@ -117,11 +127,11 @@ def test_bootstrap_silent_failure_raises(tmp_path: Path, monkeypatch: pytest.Mon
 def test_bootstrap_phase_filter_skips_later_phases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """M4 acceptance: re-running with --phases talos skips later phases."""
+    """M4 acceptance: re-running with --phases cloudinit skips later phases."""
     cluster = _write_cluster(tmp_path)
     monkeypatch.setattr(subprocess, "run", _stub_ok)
     # Should complete without touching helm/k3s phases at all.
-    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent.parent, phases=("talos",))
+    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent.parent, phases=("cloudinit",))
 
 
 def test_bootstrap_full_happy_path(
@@ -130,8 +140,8 @@ def test_bootstrap_full_happy_path(
     """Acceptance: running all phases in order completes without raising.
 
     Exercises the canonical operator flow:
-      talos -> k3s -> helm -> kubeconfig (host_ports skipped because the
-      baseline file does not exist in the temp dir).
+      cloudinit -> k3s -> helm -> kubeconfig (host_ports skipped because
+      the baseline file does not exist in the temp dir).
     Without this test, a structural bug (e.g. helm phase referencing a
     kubeconfig file that the kubeconfig phase hasn't written yet) could
     pass every other test and still break in production.
@@ -160,14 +170,17 @@ def test_bootstrap_full_happy_path(
     bootstrap(
         cluster_name="cicd",
         repo_root=cluster.parent.parent.parent,
-        phases=("talos", "k3s", "helm", "kubeconfig"),
+        phases=("cloudinit", "k3s", "helm", "kubeconfig"),
     )
     # Every phase must have been invoked exactly once on the first run.
+    # On the Ubuntu+k3s path the kubeconfig is pulled via scp from
+    # /etc/rancher/k3s/k3s.yaml, not talosctl. The cloudinit phase is a
+    # no-op on the Python side (the actual k3s install happens at first
+    # boot via cloud-init runcmd), so it doesn't emit subprocess calls.
     cmds = [" ".join(c) for c in calls]
-    assert any(c.startswith("talosctl apply-config") for c in cmds)
     assert any(c.startswith("kubectl") and "/healthz" in c for c in cmds)
     assert any(c.startswith("helm upgrade") for c in cmds)
-    assert any(c.startswith("kubectl config view") or c.startswith("talosctl kubeconfig") for c in cmds)
+    assert any(c.startswith("kubectl config view") or c.startswith("scp") for c in cmds)
 
 
 def test_bootstrap_logs_redact_secret_tokens(
@@ -184,7 +197,7 @@ def test_bootstrap_logs_redact_secret_tokens(
     """
     cluster = _write_cluster(tmp_path)
     monkeypatch.setattr(subprocess, "run", _stub_ok)
-    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent.parent, phases=("talos",))
+    bootstrap(cluster_name="cicd", repo_root=cluster.parent.parent.parent, phases=("cloudinit",))
     out = capsys.readouterr().out
     # The token-shaped key is dropped entirely by _scrub (not replaced
     # with a placeholder). Inject a value via the log module directly to

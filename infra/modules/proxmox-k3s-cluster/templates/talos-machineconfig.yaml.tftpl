@@ -9,7 +9,18 @@
 # What we ship here is the bare-cluster bootstrap config.
 ###############################################################################
 version: "v1alpha1"
-debug: false
+# Live-host fix 2026-07-07: enable Talos verbose logging to the serial
+# console. Per the v1.13 MachineConfig reference, `debug: true` makes
+# "All system containers logs flow into serial console" -- without this,
+# only the kernel ring buffer surfaces on ttyS0, and even that is filtered
+# by Talos' default syslog destination. Combined with the
+# `extraKernelArgs: console=ttyS0` below (which adds console=ttyS0 to
+# the kernel cmdline), this routes the full Talos log to the PVE
+# `serial0: socket` at /var/run/qemu-server/<vmid>.serial0 so the
+# operator can `ssh -p 6022 root@kvm.bruj0.net 'cat
+# /var/run/qemu-server/<vmid>.serial0'` (via socat/nc) to debug boot,
+# kubelet, or apid issues without depending on qemu-guest-agent.
+debug: true
 persist: true
 reboot: false
 
@@ -26,6 +37,20 @@ machine:
     key: ""
   certSANs:
     - "${vip}"
+  # Install the Proxmox guest agent at first boot so PVE sees live IP /
+  # hostname / shutdown events. The extension image is pinned to a known-good
+  # release pair with Talos ${talos_version} (qemu-guest-agent 11.0.1 ->
+  # Talos 1.10.x). Live-host fix 2026-07-06.
+  install:
+    extensions:
+      - image: ghcr.io/siderolabs/qemu-guest-agent:11.0.1
+    # Live-host fix 2026-07-07: force console=ttyS0 onto the kernel cmdline
+    # so kernel ring buffer messages also land on the PVE serial0 socket.
+    # `console=tty0` stays in the default args (so VGA console still works),
+    # but we ADD `console=ttyS0` which makes printk tee to BOTH.
+    extraKernelArgs:
+      - console=ttyS0,115200
+      - talos.dashboard.disabled=1
   kubelet:
     image: ghcr.io/siderolabs/kubelet:v1.34.1
     extraArgs:

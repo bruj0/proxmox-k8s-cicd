@@ -51,6 +51,14 @@ mock_provider "helm" {
   }
 }
 
+mock_provider "powerdns" {
+  mock_resource "powerdns_record" {
+    defaults = {
+      id = "test.intranet.local.:::A"
+    }
+  }
+}
+
 # ---------------------------------------------------------------------------
 # M3 baseline identity check: apps uses distinct VIP / VMID / CIDR from cicd.
 # ---------------------------------------------------------------------------

@@ -5,46 +5,11 @@
 # is started. The VIP is a single shared entry; each node's own IP gets a
 # separate entry too.
 #
-# The bpg/proxmox virtual_environment_hosts resource writes to the
-# Proxmox SDN hosts file via the /cluster/sdn/vnets API. The depends_on chain
-# on terraform_data.vip_in_dhcp_range ensures we fail validation before
-# touching the live PVE host.
+# Authoritative DNS for this host is PowerDNS (see powerdns.tf). The
+# proxmox_virtual_environment_hosts resources that used to live here were
+# a no-op against PVE's local hosts file (PowerDNS overrides them) and
+# produced persistent drift on every plan. They have been removed.
+#
+# The depends_on chain on terraform_data.vip_in_dhcp_range ensures we fail
+# validation before touching the live PVE host.
 ###############################################################################
-
-# VIP reservation (synthetic hostname so the operator can ping by name).
-resource "proxmox_virtual_environment_hosts" "vip_reservation" {
-  node_name = var.pve_node
-
-  entry {
-    address   = var.vip
-    hostnames = ["${var.cluster_name}-vip"]
-  }
-
-  lifecycle {
-    precondition {
-      condition     = !contains(local.nodes[*].ip, var.vip)
-      error_message = "vip ${var.vip} overlaps a node IP; cannot reserve."
-    }
-  }
-
-  depends_on = [
-    terraform_data.vip_in_dhcp_range,
-  ]
-}
-
-# Per-node entries.
-resource "proxmox_virtual_environment_hosts" "node" {
-  for_each = { for n in local.nodes : n.name => n }
-
-  node_name = var.pve_node
-
-  entry {
-    address   = each.value.ip
-    hostnames = [each.value.talos_hostname]
-  }
-
-  depends_on = [
-    proxmox_virtual_environment_hosts.vip_reservation,
-    terraform_data.vip_in_dhcp_range,
-  ]
-}

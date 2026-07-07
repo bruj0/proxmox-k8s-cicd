@@ -117,28 +117,40 @@ def test_skill_md_mentions_every_external_library_with_version() -> None:
 
 
 def test_skill_md_excludes_obsolete_hashicorp_proxmox_packer() -> None:
-    """2026-07-07 refactor: the pipeline no longer uses Packer. The skill
-    must NOT pin hashicorp/proxmox Packer plugin or recommend Packer for
-    Phase 1. The skill MUST call out the canonical Sidero Image Factory
-    + qm importdisk + talosctl --install-image path instead."""
+    """2026-07-07 v2 cleanup: the pipeline no longer uses Packer OR
+    Sidero Image Factory. The skill must NOT pin hashicorp/proxmox
+    Packer plugin OR recommend Image Factory for Phase 1. The skill
+    MUST call out the canonical Proxmox+Ubuntu recipe
+    (virt-customize + qm + native cloud-init drive) instead."""
     text = SKILL_PATH.read_text().lower()
     # The OLD library table pinned hashicorp/proxmox 1.2.3 (Packer plugin).
     # It should be gone now -- we don't use Packer.
     assert "hashicorp/proxmox 1.2.3" not in text, (
         "SKILL.md still references the Packer plugin hashicorp/proxmox 1.2.3;"
-        " Phase 1 was rewritten to use the canonical Sidero Image Factory"
-        " flow in 2026-07-07 -- remove the obsolete pin."
+        " Phase 1 was rewritten to use the canonical Proxmox+Ubuntu recipe"
+        " in 2026-07-07 -- remove the obsolete pin."
     )
-    # The canonical flow MUST be documented.
-    assert "image factory" in text or "image_factory" in text or (
-        "factory.talos.dev" in text
+    # The canonical Proxmox+Ubuntu recipe MUST be documented.
+    assert "virt-customize" in text, (
+        "SKILL.md must document virt-customize (libguestfs-tools) as"
+        " the load-bearing step that bakes qemu-guest-agent into the"
+        " cloud image BEFORE the VM is created."
+    )
+    assert "native cloud-init drive" in text or "cloudinit drive" in text or (
+        "ide2 data1:cloudinit" in text
     ), (
-        "SKILL.md must document the Sidero Image Factory URL pattern"
-        " (factory.talos.dev/...) as the canonical Phase 1 source."
+        "SKILL.md must document Proxmox's native cloud-init drive"
+        " (--ide2 data1:cloudinit) as the seed mechanism, NOT a custom"
+        " NoCloud seed ISO."
     )
-    assert "--install-image" in text, (
-        "SKILL.md must document the talosctl apply-config --install-image"
-        " flag (load-bearing for installing the schematic to scsi0)."
+    # The old Image Factory / talosctl --install-image path is gone.
+    assert "factory.talos.dev" not in text, (
+        "SKILL.md must not reference the Sidero Image Factory anymore;"
+        " the v2 cleanup pivoted to vanilla Ubuntu+k3s."
+    )
+    assert "--install-image" not in text, (
+        "SKILL.md must not reference talosctl --install-image anymore;"
+        " the v2 cleanup pivoted to vanilla Ubuntu+k3s."
     )
 
 
@@ -255,32 +267,48 @@ def test_versions_lock_documents_live_host_evidence() -> None:
     assert "c07321b023e944ff818fec44d8203567" in text
 
 
-# ---------- 2026-07-07 Phase 1 contracts (Talos v1.13 + Image Factory) ----------
+# ---------- 2026-07-07 Phase 1 contracts (Ubuntu+k3s pivot) ----------
 
 
-def test_skill_documents_sidero_image_factory_schematic() -> None:
-    """Step 1.1: SKILL.md must pin the operator-curated Sidero Image
-    Factory schematic ID and the seven extensions it contains.
-    The schematic ID is the single source of truth for the rootfs
+def test_skill_documents_ubuntu_cloud_image_source() -> None:
+    """Step 1.1 (Ubuntu+k3s, 2026-07-07): SKILL.md must pin the
+    Ubuntu cloud image URL and the four components shipped by default.
+    The cloud image URL is the single source of truth for the rootfs
     composition; if it changes, the build will produce a different
-    image and Phase 2 clones will have different extension sets."""
+    image and Phase 2 clones will have different package sets."""
     text = SKILL_PATH.read_text()
     assert (
-        "ab5430f4aef7985d19988502c97f5a15d309963d664456d8ba5394156dbe524a" in text
+        "noble-server-cloudimg-amd64.img" in text
+        and "cloud-images.ubuntu.com" in text
     ), (
-        "SKILL.md must pin the Sidero Image Factory schematic ID"
-        " (ab5430f4aef7985d19988502c97f5a15d309963d664456d8ba5394156dbe524a)"
+        "SKILL.md must pin the Ubuntu cloud image URL"
+        " (noble-server-cloudimg-amd64.img on cloud-images.ubuntu.com)"
         " so future agents cannot drift to a different rootfs composition."
     )
-    # The seven extensions in the schematic
-    for ext in [
-        "cloudflared", "ctr", "fuse3", "glibc",
-        "iscsi-tools", "qemu-guest-agent", "util-linux-tools",
+    # The components shipped by the cloud image (apt-installable but
+    # already present) and the runtime prerequisites the build verifies.
+    for component in [
+        "qemu-guest-agent",
+        "cloud-init",
+        "openssh-server",
     ]:
-        assert ext in text, (
-            f"SKILL.md must list the {ext} extension as part of the"
-            f" canonical schematic composition."
+        assert component in text, (
+            f"SKILL.md must mention {component} as part of the canonical"
+            f" Ubuntu cloud image composition / build prerequisites."
         )
+
+
+def test_skill_documents_sidero_schematic_deprecated_marker() -> None:
+    """OS pivot (2026-07-07): the canonical pipeline is now Ubuntu+k3s,
+    not Talos + Sidero Image Factory. The old Sidero schematic ID
+    (ab5430f4...) is kept in versions.yaml for audit but MUST be marked
+    deprecated in the live skill so future operators don't re-enable it."""
+    text = SKILL_PATH.read_text()
+    assert "deprecated" in text.lower() or "no longer" in text.lower(), (
+        "SKILL.md must call out the OS pivot from Talos to Ubuntu+k3s"
+        " (2026-07-07) so future operators / agents do not re-enable"
+        " the Sidero Image Factory schematic."
+    )
 
 
 def test_skill_documents_build_image_py_entry_point() -> None:
@@ -326,9 +354,10 @@ def test_skill_documents_pre_enrolled_keys_secure_boot_fix() -> None:
 
 
 def test_skill_documents_template_boot_order_flip() -> None:
-    """Step 1.5.2: SKILL.md must explain that the template's boot order
-    MUST be flipped from ide2 to scsi0 BEFORE `qm template 900`,
-    otherwise every clone boots the ISO forever."""
+    """Step 1: SKILL.md must document that the template's boot order
+    MUST be set to scsi0 (so clones boot from disk, NOT from the
+    cloud-init drive or any leftover ISO). The boot order is set
+    at `qm create` time in the canonical Proxmox+Ubuntu recipe."""
     text = SKILL_PATH.read_text()
     assert "boot order" in text.lower() or "boot: order" in text, (
         "SKILL.md must explain the template boot order requirement."
@@ -336,39 +365,42 @@ def test_skill_documents_template_boot_order_flip() -> None:
     assert "order=scsi0" in text, (
         "SKILL.md must show the corrected boot order: order=scsi0."
     )
-    # The recovery path for a forgotten boot-order flip
-    assert "qm set" in text and "boot order=scsi0" in text, (
-        "SKILL.md must give the recovery command (qm set ... --boot order=scsi0)"
-        " for when the boot-order flip is forgotten."
+    # The recovery path / the qm command that sets the order
+    assert "qm set" in text or "qm create" in text, (
+        "SKILL.md must reference the qm command that pins"
+        " --boot order=scsi0 (either at qm create or via qm set)."
     )
 
 
-def test_skill_documents_installer_mode_shutdown_fallback() -> None:
-    """Step 1.5.3: SKILL.md must explain that Talos in installer mode
-    ignores ACPI shutdown, and that the build uses stop_vm (graceful)
-    -> wait_for_vm_stopped (30s) -> stop_vm_forcible (qm stop, 10s)
-    as a fail-safe."""
+def test_skill_documents_graceful_then_force_stop_fallback() -> None:
+    """Step 1.5.5 (Ubuntu+k3s, 2026-07-07): SKILL.md must explain that the
+    build uses stop_vm (graceful, 10s) -> wait_for_vm_stopped (30s) ->
+    stop_vm_forcible (qm stop, 10s) as a fail-safe when cloud-init /
+    qemu-guest-agent / systemd graceful shutdown hangs."""
     text = SKILL_PATH.read_text()
-    assert "installer mode" in text.lower() or "installer-mode" in text, (
-        "SKILL.md must explain that Talos installer mode (booted from"
-        " ISO) does not respond to ACPI shutdown."
-    )
     assert "stop_vm_forcible" in text or "qm stop" in text, (
         "SKILL.md must document the force-stop fallback (stop_vm_forcible"
         " or qm stop) used when graceful shutdown hangs."
     )
 
 
-def test_skill_documents_talos_force_gen_config() -> None:
-    """Step 1.5.4: SKILL.md must warn that `talosctl gen config` refuses
-    to overwrite existing files; the build uses --force for idempotency."""
+def test_skill_documents_initramfs_e2fsck_fix() -> None:
+    """v2 cleanup: the canonical Proxmox+Ubuntu recipe handles the
+    EXT4 journal corruption risk by running `update-initramfs -u`
+    INSIDE the image via `virt-customize --run-command` (not via the
+    chroot-on-mounted-disk dance the first Ubuntu build used). The
+    skill must document that path."""
     text = SKILL_PATH.read_text()
-    assert "talosctl gen config" in text, (
-        "SKILL.md must mention talosctl gen config as the machineconfig"
-        " generator."
+    # The new build path: virt-customize --run-command 'update-initramfs -u'
+    assert "virt-customize" in text and "update-initramfs" in text, (
+        "SKILL.md must document the virt-customize path that runs"
+        " update-initramfs -u inside the image BEFORE the VM is created."
     )
-    assert "--force" in text, (
-        "SKILL.md must document the --force flag (so re-runs work)."
+    # The historical rationale (e2fsck / fsck) is still useful context.
+    assert "e2fsck" in text or "fsck" in text, (
+        "SKILL.md must still mention e2fsck/fsck as the rationale for"
+        " the initramfs regeneration step (carry-over from the first"
+        " Ubuntu build's debug history)."
     )
 
 
@@ -431,10 +463,17 @@ def test_skill_documents_sdn_ipam_dhcp_allocation() -> None:
         "SKILL.md must reference the scripts/sync_dns_to_sdn.py file"
         " (either by literal path in the body or by file presence)."
     )
-    # The wrong-IP record table
-    assert "10.0.1.0" in text and "10.0.0.61" in text, (
-        "SKILL.md must show the concrete wrong-IP vs actual-IP table"
-        " from Step 2.2.7."
+    # The wrong-IP record table — must show a cidrhost-rendered IP
+    # (10.0.1.0, 10.0.1.1, 10.0.2.0, 10.0.2.1) and an SDN-DHCP-allocated
+    # IP (10.0.0.50-200) in the same table.
+    assert "10.0.1.0" in text, (
+        "SKILL.md must show the wrong-IP record (cidrhost-rendered 10.0.1.0)"
+    )
+    import re as _re
+    sdn_dhcp_ips = _re.findall(r"10\.0\.0\.(?:[5-9][0-9]|1[0-9]{2})", text)
+    assert sdn_dhcp_ips, (
+        "SKILL.md must show concrete SDN-DHCP-allocated IPs"
+        " (10.0.0.50-200) in the wrong-vs-actual table."
     )
 
 
@@ -833,18 +872,19 @@ def test_skill_documents_target_datastore_fix() -> None:
 
 
 def test_skill_documents_pod_svc_cidr_output() -> None:
-    """Step 2.2.5: `output.json` MUST expose `pod_cidr` and
-    `svc_cidr` so tools/lib/talos_client.py can wire Talos
-    configs."""
+    """Step 2.2.5 (Ubuntu+k3s, 2026-07-07): `output.json` MUST expose
+    `pod_cidr` and `svc_cidr` so tools/bootstrap_cluster.py can wire
+    the per-VM k3s install flags (`--cluster-cidr` for the control
+    plane, Cilium's clusterPoolIPv4PodCIDR for the CNI)."""
     text = SKILL_PATH.read_text()
     assert "pod_cidr" in text and "svc_cidr" in text, (
         "Step 2.2.5 must call out the missing pod_cidr / svc_cidr"
         " output.json keys and the fix"
     )
     assert (
-        "tools/lib/talos_client.py" in text or "talos_client.py" in text
+        "tools/bootstrap_cluster.py" in text or "bootstrap_cluster.py" in text
     ), (
-        "Step 2.2.5 must reference the consumer (talos_client.py)"
+        "Step 2.2.5 must reference the consumer (bootstrap_cluster.py)"
         " that needs these keys"
     )
 

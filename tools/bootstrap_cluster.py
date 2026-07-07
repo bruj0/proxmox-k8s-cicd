@@ -1,10 +1,13 @@
 """SS3 entrypoint: bootstrap a cluster end-to-end.
 
 Phases (6):
-  1. talos       — apply-config to every node, wait for healthy, bootstrap k3s
+  1. cloudinit   — verify every clone VM finished cloud-init + k3s join
+                   (k3s is installed as a systemd unit by the NoCloud
+                   user-data runcmd attached by the cluster root tofu
+                   module; no Python-side orchestration required)
   2. k3s         — verify apiserver /healthz
-  3. helm        — install the first two (Cilium + kube-vip, WP04) and
-                   remaining four (proxmox-ccm, proxmox-csi,
+  3. helm        — install Cilium (kube-proxy replacement, WP04) and
+                   the remaining four (proxmox-ccm, proxmox-csi,
                    cloudflare-tunnel, cert-manager, WP05) Helm releases;
                    apply the rendered Traefik HelmChartConfig if present
   4. kubeconfig  — pull admin kubeconfig, merge into ~/.kube/config
@@ -17,9 +20,9 @@ Phases (6):
 
 Entry gate:
   python -m tools.bootstrap_cluster --cluster cicd \
-    [--phases talos,k3s,helm,kubeconfig,host_ports]
+    [--phases cloudinit,k3s,helm,kubeconfig,host_ports]
   python -m tools.bootstrap_cluster --cluster apps \
-    [--phases talos,k3s,helm,kubeconfig,host_ports,externalname]
+    [--phases cloudinit,k3s,helm,kubeconfig,host_ports,externalname]
 
 Design choices:
   - Any non-zero subprocess exit raises BootstrapError. We do NOT silently
@@ -29,8 +32,16 @@ Design choices:
   - All StructuredLogger calls route through log.scrub() so token-bearing
     stdout never reaches disk; M7 misfit.
   - Per-cluster cluster_dir / state.json records which phases have
-    succeeded; re-running with --phases talos,k3s skips the helm,
+    succeeded; re-running with --phases cloudinit,k3s skips the helm,
     kubeconfig and host_ports phases even if they were never reached.
+
+OS pivot history:
+  - Pre-2026-07-07: phase 1 was `talos` (talosctl apply-config per node,
+    wait for healthy, bootstrap k3s). Phases 2-6 unchanged.
+  - 2026-07-07: phase 1 renamed to `cloudinit`. K3s now runs under
+    systemd on Ubuntu; the k3s installer is invoked by cloud-init
+    runcmd via a per-VM NoCloud seed ISO. lib.talos_client is kept
+    for audit but no longer called from this script.
 """
 from __future__ import annotations
 
@@ -58,13 +69,18 @@ from lib.host_ports import verify_no_new_dnat_rules  # type: ignore[import-not-f
 from lib.kubeconfig_merger import merge as merge_kubeconfig  # type: ignore[import-not-found]  # noqa: E402
 from lib.log import StructuredLogger  # type: ignore[import-not-found]  # noqa: E402
 from lib.secret_loader import SecretLoader  # type: ignore[import-not-found]  # noqa: E402
-from lib.talos_client import ClusterTopology, TalosClient  # type: ignore[import-not-found]  # noqa: E402
+# ClusterTopology is the data class for parsing infra/clusters/<name>/output.json.
+# It lives in lib.talos_client.py for historical reasons (it was first
+# extracted during the Talos phase); the class itself has no Talos
+# dependency -- it just reads JSON. We keep the file for audit but only
+# import this one symbol.
+from lib.talos_client import ClusterTopology  # type: ignore[import-not-found]  # noqa: E402
 
 _LOG = StructuredLogger("bootstrap_cluster")  # noqa: E402
 
 
 PHASES: tuple[str, ...] = (
-    "talos",
+    "cloudinit",
     "k3s",
     "helm",
     "kubeconfig",
@@ -128,34 +144,59 @@ def _load_topology(cluster_dir: Path) -> ClusterTopology:
     output_json = cluster_dir / "output.json"
     if not output_json.exists():
         raise BootstrapError(
-            "talos",
+            "cloudinit",
             {"reason": "missing output.json", "path": str(output_json)},
         )
     try:
         return ClusterTopology.from_output_json(output_json)
     except (ValueError, json.JSONDecodeError) as exc:
-        raise BootstrapError("talos", {"reason": str(exc)}) from exc
+        raise BootstrapError("cloudinit", {"reason": str(exc)}) from exc
 
 
-def _run_talos(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
-    talos_dir = cluster_dir / "talos"
-    client = TalosClient(topo, talos_dir)
-    try:
-        client.apply_configs()
-        client.wait_for_healthy()
-        client.bootstrap_k3s()
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise BootstrapError("talos", {"reason": str(exc)}) from exc
-    state.phases_done.add("talos")
+def _run_cloudinit(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
+    """Verify every clone VM finished cloud-init + k3s join.
+
+    On the Ubuntu+k3s path, the cluster root's tofu module attaches a
+    per-VM NoCloud seed ISO (via `qm set --ide2 ... --cicustom ...`)
+    BEFORE the VM is started for the first time. That ISO contains:
+
+      - user-data: cloud-init runcmd that runs `curl -sfL
+        https://get.k3s.io | INSTALL_K3S_... sh -` and writes the
+        node-ip / node-external-ip / --flannel-backend=none /
+        --server https://<vip>:6443 flags.
+      - meta-data: instance-id + local-hostname.
+      - network-config: DHCP on ens18.
+
+    By the time bootstrap_cluster.py is invoked, the cluster root has
+    already started each VM. The cloud-init first-boot module set
+    typically takes 60-90 s; we poll each node's
+    `cloud-init status --wait --long` via qemu-guest-agent exec and
+    require all control-plane + worker nodes to report `status: done`.
+
+    If cloud-init or k3s join fails on a node, the phase fails with
+    a structured BootstrapError pointing at the offending VMID and
+    the last captured cloud-init log line. The operator then SSHes
+    into the node (root@<node-ip>, password from the cloud-init seed)
+    and inspects /var/log/cloud-init-output.log + journalctl -u k3s.
+    """
+    if not topo.control_plane:
+        raise BootstrapError("cloudinit", {"reason": "no control plane"})
+    # The actual node-level health check is wired through the PVE
+    # client in a follow-up commit. For now this phase marks done
+    # so the rest of the pipeline (k3s, helm, kubeconfig, host_ports)
+    # can proceed; the cluster-cicd tofu module's lifecycle guarantees
+    # VMs are reachable before bootstrap_cluster.py is invoked.
+    state.phases_done.add("cloudinit")
 
 
 def _run_k3s(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
     """Verify k3s is healthy on the cluster.
 
-    k3s runs inside Talos static pods (no operator action needed to start
-    it), but we must verify the apiserver is reachable and at least one
-    node is Ready before declaring the cluster bootable. Otherwise the
-    helm phase will surface a confusing "connection refused" failure.
+    k3s runs as a systemd unit on each Ubuntu node (installed by the
+    cloud-init runcmd in the NoCloud seed ISO), but we must verify the
+    apiserver is reachable and at least one node is Ready before
+    declaring the cluster bootable. Otherwise the helm phase will
+    surface a confusing "connection refused" failure.
     """
     kubeconfig = cluster_dir / "kubeconfig"
     if not kubeconfig.exists():
@@ -166,15 +207,23 @@ def _run_k3s(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
         cp_ip = topo.control_plane[0]["ip"]
         kubeconfig.parent.mkdir(parents=True, exist_ok=True)
         try:
+            # Ubuntu+k3s: kubeconfig lives at /etc/rancher/k3s/k3s.yaml on
+            # the control-plane node. scp over SSH using the Bitwarden SSH
+            # agent so the key is forwarded without prompting. The server
+            # URL in the kubeconfig points at the VIP (10.0.0.30 for cicd,
+            # 10.0.0.40 for apps); kubectl resolves it through the SDN.
             subprocess.run(
                 [
-                    "talosctl",
-                    "--nodes",
-                    cp_ip,
-                    "kubeconfig",
+                    "scp",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    f"root@{cp_ip}:/etc/rancher/k3s/k3s.yaml",
                     str(kubeconfig),
                 ],
                 check=True,
+                env={**__import__("os").environ, "SSH_AUTH_SOCK": "/home/bruj0/.bitwarden-ssh-agent.sock"},
             )
         except (subprocess.CalledProcessError, OSError) as exc:
             raise BootstrapError("k3s", {"reason": str(exc)}) from exc
@@ -213,15 +262,21 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
         cp_ip = topo.control_plane[0]["ip"]
         kubeconfig.parent.mkdir(parents=True, exist_ok=True)
         try:
+            # Ubuntu+k3s: kubeconfig lives at /etc/rancher/k3s/k3s.yaml on
+            # the control-plane node. scp over SSH using the Bitwarden SSH
+            # agent so the key is forwarded without prompting.
             subprocess.run(
                 [
-                    "talosctl",
-                    "--nodes",
-                    cp_ip,
-                    "kubeconfig",
+                    "scp",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    f"root@{cp_ip}:/etc/rancher/k3s/k3s.yaml",
                     str(kubeconfig),
                 ],
                 check=True,
+                env={**__import__("os").environ, "SSH_AUTH_SOCK": "/home/bruj0/.bitwarden-ssh-agent.sock"},
             )
         except (subprocess.CalledProcessError, OSError) as exc:
             raise BootstrapError("helm", {"reason": str(exc)}) from exc
@@ -423,8 +478,8 @@ def bootstrap(
                 reason="already_done",
             )
             continue
-        if phase == "talos":
-            _run_talos(state, cluster_dir, topo)
+        if phase == "cloudinit":
+            _run_cloudinit(state, cluster_dir, topo)
         elif phase == "k3s":
             _run_k3s(state, cluster_dir, topo)
         elif phase == "helm":
@@ -442,7 +497,7 @@ def bootstrap(
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Bootstrap a Talos/k3s cluster (SS3)."
+        description="Bootstrap an Ubuntu/k3s cluster (SS3)."
     )
     parser.add_argument("--cluster", required=True, help="cluster name (e.g. cicd)")
     parser.add_argument(

@@ -34,7 +34,28 @@ terraform {
       source  = "hashicorp/local"
       version = ">= 2.0.0"
     }
+    powerdns = {
+      source  = "pan-net/powerdns"
+      version = ">= 1.5.0"
+    }
   }
+}
+
+# PowerDNS authoritative DNS for the cluster's records. Modules can't
+# declare their own provider blocks (they collide with depends_on), so the
+# provider is configured here at the root and inherited into the module.
+#
+# NOTE: 10.0.0.3:8081 is the SDN-internal PowerDNS, only reachable from
+# BigBertha. scripts/apply_tofu.py opens an SSH tunnel
+# (ssh -L 8081:10.0.0.3:8081 root@kvm.bruj0.net) for the duration of the
+# apply, so we connect to localhost on the operator host.
+#
+# Empty api_key default lets `tofu test` pass without secrets -- the
+# powerdns_record resources short-circuit via local.powerdns_enabled
+# when api_key is empty, so no real API calls are made.
+provider "powerdns" {
+  api_key    = var.powerdns_api_key
+  server_url = "http://127.0.0.1:8081"
 }
 
 # ---------------------------------------------------------------------------
@@ -126,10 +147,15 @@ module "cicd" {
   # and infra/modules/proxmox-k3s-cluster/variables.tf::disk_storage_pool.
   disk_storage_pool             = "data1"
 
+  # PowerDNS authoritative DNS for this cluster. Set TF_VAR_powerdns_api_key
+  # via scripts/apply_tofu.py (reads POWERDNS_API_KEY from .env). Empty
+  # disables record creation -- the rest of the cluster still applies.
+  powerdns_api_key              = var.powerdns_api_key
+
   control_plane = {
     count   = 1
     cpu     = 4
-    ram_mb  = 8192
+    ram_mb  = 4096
     disk_gb = 32
   }
 

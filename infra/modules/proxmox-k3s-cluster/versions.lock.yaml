@@ -59,3 +59,16 @@ dependencies:
       the chartconfig template we render must be compatible with the v3 line
       (service.type=ClusterIP, ingressClass.name=traefik-internal).
     source: "context7-auto-research on 2026-07-05"
+
+  - name: pan-net/powerdns
+    version: ">= 1.5.0"
+    rationale: >
+      Authoritative DNS provider for the cluster on this host. PVE 9.x
+      configures PowerDNS via /cluster/sdn/dns (pdns @ 10.0.0.3:8081, zone
+      intranet.local., reverse zone 10.in-addr.arpa.). The bpg provider's
+      `proxmox_virtual_environment_hosts` resource writes to PVE's local
+      hosts file -- which PowerDNS overrides -- so it was a no-op that
+      produced persistent drift on every plan. pan-net/powerdns creates the
+      cluster A + PTR records directly so tofu state matches what resolvers
+      actually answer.
+    source: "live-host discovery 2026-07-06 (PowerDNS at 10.0.0.3:8081, key in /etc/pve/sdn/dns.cfg)"

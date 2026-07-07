@@ -22,18 +22,70 @@ talos:
     notes: >
       Known-good combo on bigbertha: PVE 9.2.3, kernel 7.0.6-2-pve,
       Talos v1.10.0, k3s v1.34.x, Cilium 1.16.x. Validated 2026-07-05.
+      NO LONGER USED -- pipeline pivoted to Ubuntu+k3s on 2026-07-07.
+  "v1.13.5":
+    pve_kernel_min: "6.8"
+    k3s_max: "v1.34.x"
+    cilium_max: "1.16.x"
+    notes: >
+      Operator-curated schematic ab5430f4... baked via canonical Sidero
+      flow (ISO + talosctl apply-config --install-image). Carries
+      siderolabs/qemu-guest-agent. Validated 2026-07-06.
+      NO LONGER USED -- pipeline pivoted to Ubuntu+k3s on 2026-07-07.
 
-# Packer / plugin compatibility. pinned separately from Talos because these
-# change less often.
-packer:
-  version: ">= 1.10.0"
-  source: "context7-auto-research on 2026-07-05"
-  rationale: "stable; proxmox-iso builder supports Talos ISO boot"
+# Ubuntu + k3s compatibility matrix. Replaces the Talos block as the
+# primary image-build compatibility surface on 2026-07-07.
+ubuntu:
+  "noble-24.04":
+    pve_kernel_min: "6.8"
+    cloud_image_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    k3s_max: "v1.34.x"
+    cilium_max: "1.16.x"
+    lts_through: "2029-04"
+    notes: >
+      Current golden-image combo on bigbertha: PVE 9.2.3, kernel 7.0.6-2-pve,
+      Ubuntu 24.04 LTS Noble cloud image, k3s v1.34.x (stable channel),
+      Cilium 1.16.x. VMID 952 is the current template (bumped from 950 to
+      dodge a stuck LVM handle on vm-950-disk-1). Cloud image ships with
+      qemu-guest-agent and cloud-init pre-installed. Validated 2026-07-07.
+    sources:
+      - "context7-auto-research on 2026-07-07"
+      - "https://cloud-images.ubuntu.com/noble/"
 
-hashicorp_proxmox_packer_plugin:
-  version: ">= 1.2.3"
-  source: "context7-auto-research on 2026-07-05"
-  rationale: "stable; ships the proxmox-iso builder we need"
+k3s:
+  "v1.34.x":
+    install_url: "https://get.k3s.io"
+    channel: "stable"
+    install_args_default:
+      control_plane:
+        - "--flannel-backend=none"
+        - "--disable=traefik"
+        - "--disable=servicelb"
+        - "--disable=local-storage"
+        - "--disable=metrics-server"
+      agent:
+        - "--flannel-backend=none"
+    notes: >
+      Standard k3s install with CNI disabled (Cilium takes over). Traefik
+      and servicelb disabled because we deploy the cloudflare-tunnel
+      ingress path on the apps cluster. metrics-server disabled because
+      proxmox-ccm + kube-state-metrics ship their own scraper.
+
+# Sidero Image Factory schematic history (kept for provenance; no longer
+# used by the active pipeline). Recorded so the audit trail survives the
+# 2026-07-07 OS pivot.
+sidero_factory_schematic:
+  "ab5430f4aef7985d19988502c97f5a15d309963d664456d8ba5394156dbe524a":
+    talos_versions: ["v1.10.0", "v1.13.5"]
+    extensions:
+      - "siderolabs/cloudflared"
+      - "siderolabs/ctr"
+      - "siderolabs/fuse3"
+      - "siderolabs/glibc"
+      - "siderolabs/iscsi-tools"
+      - "siderolabs/qemu-guest-agent"
+      - "siderolabs/util-linux-tools"
+    status: "deprecated -- pipeline pivoted to Ubuntu+k3s on 2026-07-07"
 
 # Pinned toolchain. Excluded from strict --strict mypy pass in test files.
 pinned_toolchain:

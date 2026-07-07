@@ -33,5 +33,14 @@ terraform {
       source  = "hashicorp/local"
       version = ">= 2.0.0"
     }
+    # pan-net/powerdns >= 1.5.x — manages A + PTR records in the cluster's
+    # authoritative DNS zone (intranet.local. forward, 10.in-addr.arpa.
+    # reverse). Proxmox's proxmox_virtual_environment_hosts resource only
+    # touches the local PVE hosts file, which is overridden by PowerDNS
+    # anyway on this host. So DNS lives in PowerDNS as the source of truth.
+    powerdns = {
+      source  = "pan-net/powerdns"
+      version = ">= 1.5.0"
+    }
   }
 }

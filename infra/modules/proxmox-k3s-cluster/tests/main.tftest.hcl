@@ -56,6 +56,17 @@ mock_provider "helm" {
   }
 }
 
+# PowerDNS provider is required by powerdns.tf. Default mocks accept empty
+# strings for the required args (api_key, server_url); tofu test passes
+# because powerdns_record resources short-circuit when api_key is empty.
+mock_provider "powerdns" {
+  mock_resource "powerdns_record" {
+    defaults = {
+      id = "test.intranet.local.:::A"
+    }
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Common variables (used as defaults for most runs).
 # ---------------------------------------------------------------------------

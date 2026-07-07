@@ -158,7 +158,16 @@ resource "proxmox_cloned_vm" "node" {
   }
 
   memory = {
-    dedicated = each.value.role == "control_plane" ? var.control_plane.ram_mb : var.workers.ram_mb
+    # Live-host fix 2026-07-06: bpg/proxmox 0.111.x `proxmox_cloned_vm.memory`
+    # exposes `size` (total RAM) and `balloon` (min guaranteed). The previous
+    # `dedicated` key is the OLD `proxmox_virtual_environment_vm` schema -- it
+    # is silently ignored here, leaving clones at the template's inherited
+    # memory (2048 MiB on the current talos-template) instead of the
+    # control_plane.ram_mb / workers.ram_mb the cluster root asks for.
+    # `balloon = 0` disables the balloon driver so size is a hard RAM cap,
+    # matching the WP02 `--memory 8192` semantics.
+    size    = each.value.role == "control_plane" ? var.control_plane.ram_mb : var.workers.ram_mb
+    balloon = 0
   }
 
   disk = {

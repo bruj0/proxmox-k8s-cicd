@@ -130,3 +130,47 @@ variable "disk_storage_pool" {
     produced inconsistent result" on datastore_id.
   EOT
 }
+
+# ---------------------------------------------------------------------------
+# PowerDNS authoritative-DNS variables.
+#
+# The cluster's authoritative DNS is PowerDNS (pdns @ 10.0.0.3:8081, zone
+# intranet.local. forward + 10.in-addr.arpa. reverse) -- not PVE's local
+# hosts file. The pan-net/powerdns provider writes A + PTR records for
+# every node + the cluster VIP here. Records use the same SDN subnet IPs
+# that the Talos machineconfig binds, so a name lookup matches the
+# routable address.
+#
+# powerdns_api_key defaults to "" which skips record creation entirely --
+# `tofu test` and CI runs that don't have the secret can still plan.
+# ---------------------------------------------------------------------------
+
+variable "powerdns_endpoint" {
+  type        = string
+  default     = "http://10.0.0.3:8081"
+  description = "PowerDNS API base URL. Default matches the SDN `pdns` instance on this host (PVE-managed at 10.0.0.3:8081)."
+}
+
+variable "powerdns_api_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = <<-EOT
+    PowerDNS API key. Sourced from PowerDNS_API_KEY env (translated to
+    TF_VAR_powerdns_api_key by scripts/apply_tofu.py) or set in the root
+    tfvars for a one-shot apply. Empty string disables DNS record
+    creation entirely -- the rest of the module still applies.
+  EOT
+}
+
+variable "powerdns_forward_zone" {
+  type        = string
+  default     = "intranet.local."
+  description = "PowerDNS forward zone suffix. Records are emitted as `<host>.<cluster_name>.intranet.local.` (FQDN with trailing dot). Live-host default matches PVE /cluster/sdn/zones intranet zone."
+}
+
+variable "powerdns_reverse_zone" {
+  type        = string
+  default     = "10.in-addr.arpa."
+  description = "PowerDNS reverse zone suffix. PTR records use cidrhost(num) split into octets. Live-host default matches PVE SDN reversedns=pdns config."
+}

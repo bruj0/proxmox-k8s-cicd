@@ -8,3 +8,10 @@
 
 # Intentionally empty for now. Future WPs may add per-root overrides
 # (e.g. production vs staging might pin different cf_tunnel_name).
+
+variable "powerdns_api_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "PowerDNS API key. Sourced from TF_VAR_powerdns_api_key (set by scripts/apply_tofu.py from POWERDNS_API_KEY in .env). Empty disables DNS record creation -- the rest of the cluster still applies."
+}

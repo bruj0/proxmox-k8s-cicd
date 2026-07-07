@@ -44,6 +44,14 @@ mock_provider "helm" {
   }
 }
 
+mock_provider "powerdns" {
+  mock_resource "powerdns_record" {
+    defaults = {
+      id = "test.intranet.local.:::A"
+    }
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Root-level sanity checks.
 # ---------------------------------------------------------------------------
