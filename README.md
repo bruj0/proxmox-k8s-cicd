@@ -27,20 +27,20 @@ flowchart TB
   Operator -->|"provisions DNS<br/>and HTTPS edge"| CF
   Operator -->|"records internal<br/>hostnames"| PDNS
 
-  Template -. "cloned into" .-> VMcicdcp
-  Template -. "cloned into" .-> VMcicdw
-  Template -. "cloned into" .-> VMappscp
-  Template -. "cloned into" .-> VMappsw
+  Template -. "cloned from" .-> VMcicdcp
+  Template -. "cloned from" .-> VMcicdw
+  Template -. "cloned from" .-> VMappscp
+  Template -. "cloned from" .-> VMappsw
 
-  Storage ---|"disk on"| VMcicdcp
-  Storage ---|"disk on"| VMcicdw
-  Storage ---|"disk on"| VMappscp
-  Storage ---|"disk on"| VMappsw
+  Storage ---|"uses"| VMcicdcp
+  Storage ---|"uses"| VMcicdw
+  Storage ---|"uses"| VMappscp
+  Storage ---|"uses"| VMappsw
 
-  SDN ---|"NIC attached to"| VMcicdcp
-  SDN ---|"NIC attached to"| VMcicdw
-  SDN ---|"NIC attached to"| VMappscp
-  SDN ---|"NIC attached to"| VMappsw
+  SDN ---|"uses"| VMcicdcp
+  SDN ---|"uses"| VMcicdw
+  SDN ---|"uses"| VMappscp
+  SDN ---|"uses"| VMappsw
 
   VMappsw -->|"serves HTTPS"| Internet
   CF -->|"tunnels traffic to"| VMappsw
