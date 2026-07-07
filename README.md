@@ -30,7 +30,7 @@ flowchart TB
   PDNS["PowerDNS<br/>resolves internal<br/>hostnames"]
 
   subgraph PVE["Proxmox VE host"]
-    direction LR
+    direction TB
     subgraph PRIMS[" "]
       direction TB
       Template["Template VM<br/>Ubuntu 24.04"]
