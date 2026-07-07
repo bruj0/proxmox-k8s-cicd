@@ -13,8 +13,8 @@ flowchart TB
 
   subgraph PVE["Proxmox VE host"]
     direction TB
-    Storage["Storage 'data1'<br/>holds every VM disk"]
     Template["Template VM<br/>Ubuntu 24.04<br/>cloned into every node"]
+    Storage["Storage 'data1'<br/>holds every VM disk"]
     SDN["Virtual network 'vnet0'<br/>SDN zone 'intranet'<br/>DHCP gives every VM an IP"]
     VMcicdcp["VM 'cicd-cp-1'<br/>k3s control-plane"]
     VMcicdw["VM 'cicd-w-1'<br/>k3s worker"]
@@ -44,15 +44,19 @@ flowchart TB
   CF -->|"tunnels traffic to"| VMappsw
   Internet -->|"HTTPS request"| CF
 
-  classDef operator fill:#dbeafe,stroke:#1e40af,color:#0f172a
-  classDef external fill:#fef3c7,stroke:#a16207,color:#0f172a
-  classDef pve fill:#e9d5ff,stroke:#6b21a8,color:#0f172a
+  classDef operator fill:#1e3a8a,stroke:#1e40af,color:#ffffff
+  classDef external fill:#b45309,stroke:#a16207,color:#ffffff
+  classDef template fill:#7c3aed,stroke:#6b21a8,color:#ffffff
+  classDef storage fill:#0e7490,stroke:#155e75,color:#ffffff
+  classDef network fill:#be185d,stroke:#9d174d,color:#ffffff
   classDef vm fill:#dcfce7,stroke:#166534,color:#0f172a
   classDef internet fill:#fee2e2,stroke:#991b1b,color:#0f172a
 
   class Operator operator
   class CF external
-  class PVE,Storage,Template,SDN pve
+  class Template template
+  class Storage storage
+  class SDN network
   class VMcicdcp,VMcicdw,VMappscp,VMappsw vm
   class Internet internet
 ```
