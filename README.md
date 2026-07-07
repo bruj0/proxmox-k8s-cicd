@@ -8,42 +8,52 @@ cross-cluster Service consumption via ExternalName**.
 ```mermaid
 flowchart TB
   Operator["Operator laptop<br/>runs the skill"]
-  Internet["Public internet<br/>end users visit apps"]
+  Internet["Public internet<br/>end users hit apps"]
   CF["Cloudflare<br/>authoritative DNS<br/>and HTTPS edge"]
   GitLab["GitLab<br/>stores the OpenTofu state"]
   PDNS["PowerDNS<br/>resolves internal hostnames"]
   PVE["Proxmox VE host<br/>runs the VMs"]
   SDN["Virtual network<br/>DHCP and routing"]
-  Template["Ubuntu template<br/>golden image"]
-  Cicd["cicd cluster<br/>runs the CI/CD workloads"]
-  Apps["apps cluster<br/>runs the user-facing apps"]
+  Template["Proxmox template VM<br/>Ubuntu 24.04 golden image"]
+
+  subgraph CICD["Cluster cicd (2 k3s nodes)"]
+    CicdCp["k3s control-plane node<br/>runs the API server + etcd"]
+    CicdW["k3s worker node<br/>runs your Pods"]
+  end
+
+  subgraph APPS["Cluster apps (2 k3s nodes)"]
+    AppsCp["k3s control-plane node<br/>runs the API server + etcd"]
+    AppsW["k3s worker node<br/>runs your Pods"]
+  end
 
   Operator -->|"applies tofu,<br/>builds image,<br/>bootstraps"| PVE
   Operator -->|"reads/writes state"| GitLab
   Operator -->|"records DNS"| PDNS
   Operator -->|"provisions DNS<br/>and HTTPS edge"| CF
 
-  PVE -->|"clones from"| Template
-  PVE -->|"hosts VMs on"| SDN
-  SDN -->|"leases IPs to"| Cicd
-  SDN -->|"leases IPs to"| Apps
+  PVE -->|"clones VMs from"| Template
+  PVE -->|"connects VMs to"| SDN
+  SDN -->|"DHCP leases IPs to"| CicdCp
+  SDN -->|"DHCP leases IPs to"| CicdW
+  SDN -->|"DHCP leases IPs to"| AppsCp
+  SDN -->|"DHCP leases IPs to"| AppsW
 
-  Apps -->|"resolves cicd DNS"| PDNS
+  AppsCp -. "resolves cicd DNS" .-> PDNS
 
-  Apps -->|"serves HTTPS"| Internet
-  CF -->|"tunnels traffic to"| Apps
+  AppsW -->|"serves HTTPS"| Internet
+  CF -->|"tunnels traffic to"| AppsW
   Internet -->|"HTTPS request"| CF
 
   classDef operator fill:#dbeafe,stroke:#1e40af,color:#0f172a
   classDef external fill:#fef3c7,stroke:#a16207,color:#0f172a
   classDef pve fill:#e9d5ff,stroke:#6b21a8,color:#0f172a
-  classDef cluster fill:#dcfce7,stroke:#166534,color:#0f172a
+  classDef cp fill:#dcfce7,stroke:#166534,color:#0f172a
   classDef internet fill:#fee2e2,stroke:#991b1b,color:#0f172a
 
   class Operator operator
   class CF,GitLab,PDNS external
   class PVE,SDN,Template pve
-  class Cicd,Apps cluster
+  class CicdCp,CicdW,AppsCp,AppsW cp
   class Internet internet
 ```
 
