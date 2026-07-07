@@ -10,6 +10,7 @@ flowchart TB
   Operator["Operator laptop<br/>runs the skill"]
   Internet["Public internet<br/>end users hit your apps"]
   CF["Cloudflare<br/>authoritative DNS<br/>and HTTPS edge"]
+  PDNS["PowerDNS<br/>resolves internal<br/>hostnames"]
 
   subgraph PVE["Proxmox VE host"]
     direction TB
@@ -24,6 +25,7 @@ flowchart TB
 
   Operator -->|"creates the template VM,<br/>clones the 4 VMs"| PVE
   Operator -->|"provisions DNS<br/>and HTTPS edge"| CF
+  Operator -->|"records internal<br/>hostnames"| PDNS
 
   Template -. "cloned into" .-> VMcicdcp
   Template -. "cloned into" .-> VMcicdw
@@ -44,8 +46,12 @@ flowchart TB
   CF -->|"tunnels traffic to"| VMappsw
   Internet -->|"HTTPS request"| CF
 
+  VMappsw -. "looks up cicd service<br/>(apps -> cicd via<br/>ExternalName + PowerDNS)" .-> PDNS
+  PDNS -->|"returns the cicd<br/>control-plane IP"| VMappsw
+
   classDef operator fill:#1e3a8a,stroke:#1e40af,color:#ffffff
   classDef external fill:#b45309,stroke:#a16207,color:#ffffff
+  classDef pdns fill:#0f766e,stroke:#115e59,color:#ffffff
   classDef template fill:#7c3aed,stroke:#6b21a8,color:#ffffff
   classDef storage fill:#0e7490,stroke:#155e75,color:#ffffff
   classDef network fill:#be185d,stroke:#9d174d,color:#ffffff
@@ -54,6 +60,7 @@ flowchart TB
 
   class Operator operator
   class CF external
+  class PDNS pdns
   class Template template
   class Storage storage
   class SDN network
