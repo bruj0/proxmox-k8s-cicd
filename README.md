@@ -1,9 +1,25 @@
 # proxmox-k8s-cicd
 
-End-to-end pipeline that provisions **two k3s clusters** (`cicd` and
-`apps`) on a **single Proxmox VE host**, with **public HTTPS via
-Cloudflare Tunnel** (no host open ports) and **apps -> cicd
-cross-cluster Service consumption via ExternalName**.
+**Spin up two production-shaped k3s clusters on a single Proxmox
+box in one afternoon — no open ports, no manual yak-shaving, fully
+reproducible from a single skill file.**
+
+The pipeline provisions a `cicd` and an `apps` cluster side-by-side
+on one Proxmox VE host. Both come up with a real control plane
+(Cilium CNI, kube-vip, etcd), `proxmox-ccm` + `proxmox-csi` so
+workloads can claim Proxmox storage, public HTTPS via Cloudflare
+Tunnel with **zero inbound ports opened**, and cross-cluster Service
+consumption so apps workloads reach cicd services by name over
+PowerDNS.
+
+Everything is driven by a single
+[agentskills.io](https://agentskills.io)-format skill — give it a
+Proxmox host, a Cloudflare zone, and a GitLab project for state,
+and an Operator (human or AI agent) gets walked through the full
+lifecycle: token mint -> golden image -> cluster provisioning ->
+baseline -> bootstrap -> verification. Re-running any phase is
+idempotent; tearing down and rebuilding a cluster takes a single
+`tofu apply`.
 
 ```mermaid
 %%{ init: { 'flowchart': { 'curve': 'linear' } } }%%
@@ -65,11 +81,11 @@ flowchart TB
   class Internet internet
 ```
 
-The pipeline is driven by a single
-[agentskills.io](https://agentskills.io)-format skill at
+The skill at
 [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md)
-that walks an Operator (human or AI agent) through five top-level phases
-end-to-end. The bootstrap phase further decomposes into six sub-phases.
+walks an Operator (human or AI agent) through five top-level
+phases — and the bootstrap phase further decomposes into six
+sub-phases — so every step is reproducible and reviewable.
 
 ## What you get after running the skill
 
