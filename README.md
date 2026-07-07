@@ -8,52 +8,52 @@ cross-cluster Service consumption via ExternalName**.
 ```mermaid
 flowchart TB
   Operator["Operator laptop<br/>runs the skill"]
-  Internet["Public internet<br/>end users hit apps"]
+  Internet["Public internet<br/>end users hit your apps"]
   CF["Cloudflare<br/>authoritative DNS<br/>and HTTPS edge"]
-  GitLab["GitLab<br/>stores the OpenTofu state"]
-  PDNS["PowerDNS<br/>resolves internal hostnames"]
-  PVE["Proxmox VE host<br/>runs the VMs"]
-  SDN["Virtual network<br/>DHCP and routing"]
-  Template["Proxmox template VM<br/>Ubuntu 24.04 golden image"]
 
-  subgraph CICD["Cluster cicd (2 k3s nodes)"]
-    CicdCp["k3s control-plane node<br/>runs the API server + etcd"]
-    CicdW["k3s worker node<br/>runs your Pods"]
+  subgraph PVE["Proxmox VE host"]
+    direction TB
+    Storage["Storage 'data1'<br/>holds every VM disk"]
+    Template["Template VM<br/>Ubuntu 24.04<br/>cloned into every node"]
+    SDN["Virtual network 'vnet0'<br/>SDN zone 'intranet'<br/>DHCP gives every VM an IP"]
+    VMcicdcp["VM 'cicd-cp-1'<br/>k3s control-plane"]
+    VMcicdw["VM 'cicd-w-1'<br/>k3s worker"]
+    VMappscp["VM 'apps-cp-1'<br/>k3s control-plane"]
+    VMappsw["VM 'apps-w-1'<br/>k3s worker"]
   end
 
-  subgraph APPS["Cluster apps (2 k3s nodes)"]
-    AppsCp["k3s control-plane node<br/>runs the API server + etcd"]
-    AppsW["k3s worker node<br/>runs your Pods"]
-  end
-
-  Operator -->|"applies tofu,<br/>builds image,<br/>bootstraps"| PVE
-  Operator -->|"reads/writes state"| GitLab
-  Operator -->|"records DNS"| PDNS
+  Operator -->|"creates the template VM,<br/>clones the 4 VMs"| PVE
   Operator -->|"provisions DNS<br/>and HTTPS edge"| CF
 
-  PVE -->|"clones VMs from"| Template
-  PVE -->|"connects VMs to"| SDN
-  SDN -->|"DHCP leases IPs to"| CicdCp
-  SDN -->|"DHCP leases IPs to"| CicdW
-  SDN -->|"DHCP leases IPs to"| AppsCp
-  SDN -->|"DHCP leases IPs to"| AppsW
+  Template -. "cloned into" .-> VMcicdcp
+  Template -. "cloned into" .-> VMcicdw
+  Template -. "cloned into" .-> VMappscp
+  Template -. "cloned into" .-> VMappsw
 
-  AppsCp -. "resolves cicd DNS" .-> PDNS
+  Storage ---|"disk on"| VMcicdcp
+  Storage ---|"disk on"| VMcicdw
+  Storage ---|"disk on"| VMappscp
+  Storage ---|"disk on"| VMappsw
 
-  AppsW -->|"serves HTTPS"| Internet
-  CF -->|"tunnels traffic to"| AppsW
+  SDN ---|"NIC attached to"| VMcicdcp
+  SDN ---|"NIC attached to"| VMcicdw
+  SDN ---|"NIC attached to"| VMappscp
+  SDN ---|"NIC attached to"| VMappsw
+
+  VMappsw -->|"serves HTTPS"| Internet
+  CF -->|"tunnels traffic to"| VMappsw
   Internet -->|"HTTPS request"| CF
 
   classDef operator fill:#dbeafe,stroke:#1e40af,color:#0f172a
   classDef external fill:#fef3c7,stroke:#a16207,color:#0f172a
   classDef pve fill:#e9d5ff,stroke:#6b21a8,color:#0f172a
-  classDef cp fill:#dcfce7,stroke:#166534,color:#0f172a
+  classDef vm fill:#dcfce7,stroke:#166534,color:#0f172a
   classDef internet fill:#fee2e2,stroke:#991b1b,color:#0f172a
 
   class Operator operator
-  class CF,GitLab,PDNS external
-  class PVE,SDN,Template pve
-  class CicdCp,CicdW,AppsCp,AppsW cp
+  class CF external
+  class PVE,Storage,Template,SDN pve
+  class VMcicdcp,VMcicdw,VMappscp,VMappsw vm
   class Internet internet
 ```
 
