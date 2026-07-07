@@ -14,34 +14,30 @@ flowchart TB
   PDNS["PowerDNS<br/>resolves internal<br/>hostnames"]
 
   subgraph PVE["Proxmox VE host"]
-    direction TB
-    Template["Template VM<br/>Ubuntu 24.04<br/>cloned into every node"]
-    Storage["Storage 'data1'<br/>holds every VM disk"]
-    SDN["Virtual network 'vnet0'<br/>SDN zone 'intranet'<br/>DHCP gives every VM an IP"]
-    VMcicdcp["VM 'cicd-cp-1'<br/>k3s control-plane"]
-    VMcicdw["VM 'cicd-w-1'<br/>k3s worker"]
-    VMappscp["VM 'apps-cp-1'<br/>k3s control-plane"]
-    VMappsw["VM 'apps-w-1'<br/>k3s worker"]
+    direction LR
+    subgraph PRIMS[" "]
+      direction TB
+      Template["Template VM<br/>Ubuntu 24.04"]
+      Storage["Storage 'data1'"]
+      SDN["Virtual network 'vnet0'<br/>SDN zone 'intranet'<br/>DHCP"]
+    end
+
+    subgraph VMS[" "]
+      direction TB
+      VMcicdcp["VM 'cicd-cp-1'<br/>k3s control-plane"]
+      VMcicdw["VM 'cicd-w-1'<br/>k3s worker"]
+      VMappscp["VM 'apps-cp-1'<br/>k3s control-plane"]
+      VMappsw["VM 'apps-w-1'<br/>k3s worker"]
+    end
   end
 
   Operator -->|"creates the template VM,<br/>clones the 4 VMs"| PVE
   Operator -->|"provisions DNS<br/>and HTTPS edge"| CF
   Operator -->|"records internal<br/>hostnames"| PDNS
 
-  Template -.-> VMcicdcp
-  Template -.-> VMcicdw
-  Template -.-> VMappscp
-  Template -.-> VMappsw
-
-  Storage --- VMcicdcp
-  Storage --- VMcicdw
-  Storage --- VMappscp
-  Storage --- VMappsw
-
-  SDN --- VMcicdcp
-  SDN --- VMcicdw
-  SDN --- VMappscp
-  SDN --- VMappsw
+  Template -. "cloned into all 4 VMs" .-> VMcicdcp
+  Storage -->|"disk on all 4 VMs"| VMcicdcp
+  SDN -->|"NIC on all 4 VMs"| VMcicdcp
 
   VMappsw -->|"serves HTTPS"| Internet
   CF -->|"tunnels traffic to"| VMappsw
