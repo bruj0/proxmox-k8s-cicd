@@ -85,20 +85,40 @@ After a successful end-to-end run, your Proxmox host has:
 The skill ([`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md))
 is the authoritative step-by-step; the docs here are summaries.
 
+## Requirements
+
+You need:
+
+- A Proxmox VE 9.x host reachable over SSH on a non-default port
+  (the skill defaults to `pve.example.net:6022`).
+- A Cloudflare account with a managed DNS zone (e.g. `example.net`)
+  and a Cloudflare Tunnel for the cicd cluster's public HTTPS.
+- A GitLab personal access token (the tofu state lives in a GitLab
+  HTTP backend).
+- A PowerDNS authoritative server reachable over an SSH tunnel,
+  for the cluster's internal DNS (used by ExternalName Services
+  and the post-apply `sync_dns_to_sdn.py` fix-up).
+- An SSH public key authorized to log into the PVE host (the build
+  uses SSH only; the cluster token is the only PVE API call).
+
+For the full list of `.env` keys, where to mint each token, and the
+exact UI clicks to get them, see
+[`docs/requirements.md`](docs/requirements.md).
+
 ## Quick start (operator-only, live host)
 
 Prerequisites: a Proxmox VE host reachable over SSH (the skill assumes
-`kvm.bruj0.net:6022` but the same recipe applies to any PVE 9.x host
+`pve.example.net:6022` but the same recipe applies to any PVE 9.x host
 with a single-node SDN zone).
 
 ```bash
 # 0. Set env (or ./.env with the same keys)
 cat > .env <<'EOF'
-PROXMOX_API_URL=https://kvm.bruj0.net:8006/api2/json
+PROXMOX_API_URL=https://pve.example.net:8006/api2/json
 PROXMOX_API_TOKEN=root@pam!tf-bootstrap=<uuid>
 CLOUDFLARE_TOKEN_CREATOR=<cfat_...>
 CLOUDFLARE_ACCOUNT_ID=<uuid>
-CLOUDFLARE_DOMAIN=bruj0.net
+CLOUDFLARE_DOMAIN=example.net
 CLOUDFLARE_GLOBAL_API_KEY=<key>
 CLOUDFLARE_GLOBAL_API_EMAIL=<email>
 CLOUDFLARE_ZONE_ID=<uuid>
@@ -111,10 +131,10 @@ python scripts/apply_tofu.py tokens
 
 # 2. Bake the Ubuntu+k3s golden template at VMID 900 (Phase 1)
 python -m tools.build_image \
-  --pve-endpoint https://kvm.bruj0.net:8006/api2/json \
-  --pve-node BigBertha \
-  --pve-ssh-host kvm.bruj0.net --pve-ssh-port 6022 \
-  --ssh-pubkey-path ~/.ssh/kvm.bruj0.net.pub
+  --pve-endpoint https://pve.example.net:8006/api2/json \
+  --pve-node pve \
+  --pve-ssh-host pve.example.net --pve-ssh-port 6022 \
+  --ssh-pubkey-path ~/.ssh/pve.example.net.pub
 
 # 3. Clone the 4 cluster VMs (Phase 2)
 python scripts/apply_tofu.py cicd
@@ -146,8 +166,8 @@ make test-infra-clusters  # tofu test for every instance under infra/clusters
 
 ## Status (2026-07-07)
 
-- **Phases 0-2 verified end-to-end** on `kvm.bruj0.net` (BigBertha,
-  PVE 9.2.3, kernel 7.0.6-2-pve) with the canonical Proxmox+Ubuntu
+- **Phases 0-2 verified end-to-end** on `pve.example.net` (PVE 9.2.3,
+  kernel 7.0.6-2-pve) with the canonical Proxmox+Ubuntu
   recipe: `virt-customize` bakes `qemu-guest-agent` into the cloud
   image BEFORE the VM is created, Proxmox's native cloud-init drive
   (`--ide2 data1:cloudinit`) replaces the custom NoCloud seed ISO.
@@ -166,6 +186,7 @@ make test-infra-clusters  # tofu test for every instance under infra/clusters
 ## See also
 
 - [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md) — the canonical playbook
+- [`docs/requirements.md`](docs/requirements.md) — full prerequisites: PVE host, Cloudflare + GitLab + PowerDNS tokens, operator SSH key
 - [`docs/architecture.md`](docs/architecture.md) — subsystem boundaries + Mermaid
 - [`docs/verification.md`](docs/verification.md) — success criteria + NFRs
 - [`docs/runbooks/`](docs/runbooks/) — single-concern operator procedures
