@@ -17,7 +17,7 @@ PYTHON ?= python
 # Required env (resolved at runtime, never echoed)
 # ---------------------------------------------------------------------------
 
-TALOS_VERSION ?= v1.10.0
+TALOS_VERSION ?= v1.13.5
 
 # PVE endpoint / node / token — sourced from .env if present.
 -include .env

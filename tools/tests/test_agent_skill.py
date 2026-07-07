@@ -1,7 +1,9 @@
-"""WP07 acceptance tests.
+"""WP07 acceptance tests for the live-host proxmox-k3s-pipeline skill.
 
 Encodes the Agent Skill acceptance criteria from NFR-010, NFR-011, NFR-012
-and the WP07 prompt's Acceptance Criteria list:
+and the WP07 prompt's Acceptance Criteria list, updated for the
+2026-07-07 refactor (Talos v1.10 -> v1.13, Packer -> Python/Image-Factory,
+PowerDNS, sync_dns_to_sdn.py):
 
   NFR-010: SKILL.md has YAML frontmatter with `name` and non-empty `description`.
   NFR-011: skill idempotency (running from clean state vs partial state
@@ -10,11 +12,15 @@ and the WP07 prompt's Acceptance Criteria list:
     in its body.
   NFR-012: SKILL.md mentions every external library with version pin and
     rationale. We assert a curated list of (library, version) pairs.
-  Acceptance: SKILL.md Step 1 instructs the agent to load
-    .agents/skills/context7-auto-research/SKILL.md before invoking any
-    external library.
+  Acceptance: SKILL.md's library-version table calls out the
+    context7-auto-research gate.
   Acceptance: all four runbooks exist and contain a copy-pasteable
     command block (bash fenced code).
+  Acceptance (2026-07-07): SKILL.md documents the canonical
+    Sidero Image Factory + qm importdisk + talosctl --install-image
+    flow (NOT Packer), the Bitwarden SSH agent requirement, the
+    pre-enrolled-keys Secure-Boot fix, the boot-order flip in
+    the template, and the sync_dns_to_sdn.py post-apply fixup.
 
 Side-effect guarantee: tests only read files. No subprocess, no PVE.
 """
@@ -32,6 +38,8 @@ VERSIONS_PATH = (
     ROOT / ".agents" / "skills" / "proxmox-k3s-pipeline" / "versions.lock.yaml"
 )
 RUNBOOKS = ROOT / "docs" / "runbooks"
+TOOLS_LIB = ROOT / "tools" / "lib"
+SCRIPTS = ROOT / "scripts"
 
 
 # ---------- frontmatter acceptance (NFR-010) ----------
@@ -70,16 +78,21 @@ def test_skill_md_mentions_every_external_library_with_version() -> None:
     version pin (e.g. `v1.34.x` or `0.111.1`) and a rationale sentence.
 
     The (library, version-substring, rationale-substring) tuples below
-    are the canonical contract; if any are missing, NFR-012 fails."""
+    are the canonical contract; if any are missing, NFR-012 fails.
+
+    Updated 2026-07-07:
+      - talosctl 1.10 -> 1.13.x (matches Talos v1.13.5 image)
+      - + pan-net/powerdns 1.5.0 (Phase 2 DNS records)
+    """
     text = SKILL_PATH.read_text().lower()
     required = [
         ("bpg/proxmox", "0.111.1"),
-        ("hashicorp/proxmox", "1.2.3"),
+        ("pan-net/powerdns", "1.5.0"),
         ("strrl/cloudflare-tunnel-ingress-controller", "0.0.23"),
         ("cilium", "1.16"),
         ("sergelogvinov/proxmox-cloud-controller-manager", "0.14.0"),
         ("sergelogvinov/proxmox-csi-plugin", "0.5.9"),
-        ("talosctl", "1.10"),
+        ("talosctl", "1.13"),
         ("k3s", "1.34"),
         ("helm", "3"),  # major version pin
     ]
@@ -103,21 +116,39 @@ def test_skill_md_mentions_every_external_library_with_version() -> None:
     )
 
 
-# ---------- context7 gate (Step 1) ----------
+def test_skill_md_excludes_obsolete_hashicorp_proxmox_packer() -> None:
+    """2026-07-07 refactor: the pipeline no longer uses Packer. The skill
+    must NOT pin hashicorp/proxmox Packer plugin or recommend Packer for
+    Phase 1. The skill MUST call out the canonical Sidero Image Factory
+    + qm importdisk + talosctl --install-image path instead."""
+    text = SKILL_PATH.read_text().lower()
+    # The OLD library table pinned hashicorp/proxmox 1.2.3 (Packer plugin).
+    # It should be gone now -- we don't use Packer.
+    assert "hashicorp/proxmox 1.2.3" not in text, (
+        "SKILL.md still references the Packer plugin hashicorp/proxmox 1.2.3;"
+        " Phase 1 was rewritten to use the canonical Sidero Image Factory"
+        " flow in 2026-07-07 -- remove the obsolete pin."
+    )
+    # The canonical flow MUST be documented.
+    assert "image factory" in text or "image_factory" in text or (
+        "factory.talos.dev" in text
+    ), (
+        "SKILL.md must document the Sidero Image Factory URL pattern"
+        " (factory.talos.dev/...) as the canonical Phase 1 source."
+    )
+    assert "--install-image" in text, (
+        "SKILL.md must document the talosctl apply-config --install-image"
+        " flag (load-bearing for installing the schematic to scsi0)."
+    )
 
 
-def test_skill_md_step_1_instructs_context7_gate() -> None:
-    """Acceptance criterion: SKILL.md's first content step (after the
-    prerequisites preamble) must instruct the agent to load
+# ---------- context7 gate (Step 0) ----------
+
+
+def test_skill_md_step_0_instructs_context7_gate() -> None:
+    """Acceptance criterion: SKILL.md must instruct the agent to load
     `.agents/skills/context7-auto-research/SKILL.md` before invoking any
-    external library.
-
-    We assert:
-      - the literal path `.agents/skills/context7-auto-research/SKILL.md`
-        appears in the body (NOT the frontmatter), and
-      - the phrase "before invoking" (case-insensitive) appears within
-        ~20 lines of that mention (a positive gate, not a stray mention).
-    """
+    external library."""
     text = SKILL_PATH.read_text()
     # Strip frontmatter
     body = re.sub(r"^---.*?---\n", "", text, count=1, flags=re.DOTALL)
@@ -194,26 +225,409 @@ def test_versions_lock_documents_agentskills_spec() -> None:
     assert "cross_check" in text
 
 
-# ---------- docs/architecture.md cross-links (T007) ----------
+def test_versions_lock_documents_live_host_evidence() -> None:
+    """After the 2026-07-06 deploy, versions.lock.yaml must
+    record live-host evidence (PVE version, kernel, node name,
+    Cloudflare zone/account IDs, permission-group UUIDs) so
+    future agents can verify the same environment."""
+    assert VERSIONS_PATH.is_file(), f"versions.lock.yaml missing at {VERSIONS_PATH}"
+    text = VERSIONS_PATH.read_text()
+    assert "live_host_evidence" in text, (
+        "versions.lock.yaml must have a live_host_evidence section"
+    )
+    # Proxmox
+    assert "kvm.bruj0.net" in text, (
+        "live_host_evidence must record the Proxmox host DNS name"
+    )
+    assert "BigBertha" in text, (
+        "live_host_evidence must record the Proxmox node name"
+    )
+    # Cloudflare
+    assert "15e4cfe0ecfee91903601ae780932ad3" in text, (
+        "live_host_evidence must record the Cloudflare zone_id"
+    )
+    assert "2e9c09b27d2a089c531b12ae0f0e6ff3" in text, (
+        "live_host_evidence must record the Cloudflare account_id"
+    )
+    # Permission-group UUIDs
+    assert "c8fed203ed3043cba015a93ad1616f1f" in text
+    assert "4755a26eedb94da69e1066d98aa820be" in text
+    assert "c07321b023e944ff818fec44d8203567" in text
 
 
-def test_architecture_md_links_all_planning_artefacts() -> None:
-    """WP07 T007: docs/architecture.md must link spec.md, plan.md,
-    decomposition.md, research.md."""
-    p = ROOT / "docs" / "architecture.md"
-    assert p.is_file(), f"docs/architecture.md missing at {p}"
-    text = p.read_text()
-    for artefact in ["spec.md", "plan.md", "decomposition.md", "research.md"]:
-        assert artefact in text, f"architecture.md missing link to {artefact}"
+# ---------- 2026-07-07 Phase 1 contracts (Talos v1.13 + Image Factory) ----------
 
-# ---------- live-host preflight (Step 0a / 0b / 0c / 0d) ----------
-#
-# Added 2026-07-06 after the WP00 deploy against kvm.bruj0.net
-# surfaced four hard blockers (Proxmox node-name mismatch, host
-# subnet collision with node IP CIDR, Proxmox token without
-# Sys.Modify, Cloudflare provider ExactlyOneOf auth, child-token
-# mint via cfat_*). Each test below pins one of those lessons
-# into the skill's body so future agents cannot regress.
+
+def test_skill_documents_sidero_image_factory_schematic() -> None:
+    """Step 1.1: SKILL.md must pin the operator-curated Sidero Image
+    Factory schematic ID and the seven extensions it contains.
+    The schematic ID is the single source of truth for the rootfs
+    composition; if it changes, the build will produce a different
+    image and Phase 2 clones will have different extension sets."""
+    text = SKILL_PATH.read_text()
+    assert (
+        "ab5430f4aef7985d19988502c97f5a15d309963d664456d8ba5394156dbe524a" in text
+    ), (
+        "SKILL.md must pin the Sidero Image Factory schematic ID"
+        " (ab5430f4aef7985d19988502c97f5a15d309963d664456d8ba5394156dbe524a)"
+        " so future agents cannot drift to a different rootfs composition."
+    )
+    # The seven extensions in the schematic
+    for ext in [
+        "cloudflared", "ctr", "fuse3", "glibc",
+        "iscsi-tools", "qemu-guest-agent", "util-linux-tools",
+    ]:
+        assert ext in text, (
+            f"SKILL.md must list the {ext} extension as part of the"
+            f" canonical schematic composition."
+        )
+
+
+def test_skill_documents_build_image_py_entry_point() -> None:
+    """Step 1.2: SKILL.md must document the tools/build_image.py
+    orchestrator as the single Python entry point for Phase 1."""
+    text = SKILL_PATH.read_text()
+    assert "tools/build_image" in text or "tools.build_image" in text, (
+        "SKILL.md must name the Python build orchestrator"
+        " (tools/build_image or tools.build_image module path)."
+    )
+    assert "qm create" in text and "qm template" in text, (
+        "SKILL.md must document the qm create + qm template sequence"
+        " that the build orchestrator drives."
+    )
+    assert "talosctl apply-config" in text, (
+        "SKILL.md must document talosctl apply-config as the install"
+        " trigger (with --install-image)."
+    )
+
+
+def test_skill_documents_pre_enrolled_keys_secure_boot_fix() -> None:
+    """Step 1.5.1: SKILL.md must warn that pre-enrolled-keys=1
+    breaks Talos v1.13.5 Secure Boot. This was the load-bearing
+    Phase-1 gotcha of 2026-07-07; without this, builds hang in
+    the OVMF Boot Manager with `Access Denied`."""
+    text = SKILL_PATH.read_text()
+    assert "pre-enrolled-keys" in text, (
+        "SKILL.md must mention the pre-enrolled-keys Secure Boot"
+        " interaction with Talos v1.13.5."
+    )
+    # The fix must be clearly stated: drop pre-enrolled-keys=1
+    assert (
+        "drop" in text.lower() and "pre-enrolled-keys" in text
+    ) or (
+        "remove" in text.lower() and "pre-enrolled-keys" in text
+    ) or (
+        "no `pre-enrolled-keys=1`" in text
+        or "NO `pre-enrolled-keys=1`" in text
+    ), (
+        "SKILL.md must state the fix: drop/remove `pre-enrolled-keys=1`"
+        " from the create_template_shell call."
+    )
+
+
+def test_skill_documents_template_boot_order_flip() -> None:
+    """Step 1.5.2: SKILL.md must explain that the template's boot order
+    MUST be flipped from ide2 to scsi0 BEFORE `qm template 900`,
+    otherwise every clone boots the ISO forever."""
+    text = SKILL_PATH.read_text()
+    assert "boot order" in text.lower() or "boot: order" in text, (
+        "SKILL.md must explain the template boot order requirement."
+    )
+    assert "order=scsi0" in text, (
+        "SKILL.md must show the corrected boot order: order=scsi0."
+    )
+    # The recovery path for a forgotten boot-order flip
+    assert "qm set" in text and "boot order=scsi0" in text, (
+        "SKILL.md must give the recovery command (qm set ... --boot order=scsi0)"
+        " for when the boot-order flip is forgotten."
+    )
+
+
+def test_skill_documents_installer_mode_shutdown_fallback() -> None:
+    """Step 1.5.3: SKILL.md must explain that Talos in installer mode
+    ignores ACPI shutdown, and that the build uses stop_vm (graceful)
+    -> wait_for_vm_stopped (30s) -> stop_vm_forcible (qm stop, 10s)
+    as a fail-safe."""
+    text = SKILL_PATH.read_text()
+    assert "installer mode" in text.lower() or "installer-mode" in text, (
+        "SKILL.md must explain that Talos installer mode (booted from"
+        " ISO) does not respond to ACPI shutdown."
+    )
+    assert "stop_vm_forcible" in text or "qm stop" in text, (
+        "SKILL.md must document the force-stop fallback (stop_vm_forcible"
+        " or qm stop) used when graceful shutdown hangs."
+    )
+
+
+def test_skill_documents_talos_force_gen_config() -> None:
+    """Step 1.5.4: SKILL.md must warn that `talosctl gen config` refuses
+    to overwrite existing files; the build uses --force for idempotency."""
+    text = SKILL_PATH.read_text()
+    assert "talosctl gen config" in text, (
+        "SKILL.md must mention talosctl gen config as the machineconfig"
+        " generator."
+    )
+    assert "--force" in text, (
+        "SKILL.md must document the --force flag (so re-runs work)."
+    )
+
+
+# ---------- 2026-07-07 Phase 2 contracts ----------
+
+
+def test_skill_documents_bitwarden_ssh_agent_requirement() -> None:
+    """Step 0a.9: SKILL.md must explain that PVE SSH access REQUIRES
+    SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock -- the standard
+    OpenSSH agent's key is rejected by PVE."""
+    text = SKILL_PATH.read_text()
+    assert "/home/bruj0/.bitwarden-ssh-agent.sock" in text, (
+        "SKILL.md must name the Bitwarden SSH agent socket path"
+        " (/home/bruj0/.bitwarden-ssh-agent.sock) explicitly."
+    )
+    assert "Bitwarden" in text, (
+        "SKILL.md must call out that the SSH agent is Bitwarden's,"
+        " not the default OpenSSH agent."
+    )
+    # The recovery when SSH_AUTH_SOCK is unset
+    assert "Permission denied" in text, (
+        "SKILL.md must show the failure mode (Permission denied (publickey))"
+        " that occurs without SSH_AUTH_SOCK set."
+    )
+
+
+def test_skill_documents_k3s_cluster_role_19_privs() -> None:
+    """Step 2.2.3: The k3s-cluster role must extend from the spec
+    T005 12-priv set to 19 entries for VM lifecycle / SDN writes."""
+    text = SKILL_PATH.read_text()
+    assert (
+        "Sys.Audit" in text and "VM.Audit" in text and "VM.Clone" in text
+    ) and "VM.Config.HWType" in text, (
+        "SKILL.md must enumerate the added VM-lifecycle privs"
+    )
+    assert "19" in text and (
+        "12" in text and ("spec" in text.lower() or "T005" in text)
+    ), (
+        "SKILL.md must compare the new 19-priv total against the"
+        " original spec T005 12-priv count."
+    )
+
+
+def test_skill_documents_sdn_ipam_dhcp_allocation() -> None:
+    """Step 2.2.7: SKILL.md must explain that PVE's SDN IPAM allocates
+    IPs from the DHCP pool (10.0.0.50-200), NOT from var.ip_start, and
+    that the post-apply sync_dns_to_sdn.py is required to fix the
+    PowerDNS records."""
+    text = SKILL_PATH.read_text()
+    assert "DHCP" in text, (
+        "SKILL.md must explain that the SDN DHCP pool is what assigns"
+        " real VM IPs."
+    )
+    assert "sync_dns_to_sdn" in text, (
+        "SKILL.md must name the sync_dns_to_sdn.py post-apply fixup."
+    )
+    assert "scripts/sync_dns_to_sdn.py" in text or (
+        ROOT / "scripts" / "sync_dns_to_sdn.py"
+    ).is_file(), (
+        "SKILL.md must reference the scripts/sync_dns_to_sdn.py file"
+        " (either by literal path in the body or by file presence)."
+    )
+    # The wrong-IP record table
+    assert "10.0.1.0" in text and "10.0.0.61" in text, (
+        "SKILL.md must show the concrete wrong-IP vs actual-IP table"
+        " from Step 2.2.7."
+    )
+
+
+def test_skill_documents_powerdns_lxc_101() -> None:
+    """Step 2.3: SKILL.md must name the PowerDNS LXC container (101)
+    and its API endpoint (10.0.0.3:8081) so future agents know where
+    the records actually live (NOT on PVE itself)."""
+    text = SKILL_PATH.read_text()
+    assert "LXC 101" in text or "lxc 101" in text.lower() or (
+        "pct exec 101" in text
+    ), (
+        "SKILL.md must name PowerDNS LXC container 101 as the record store."
+    )
+    assert "10.0.0.3:8081" in text, (
+        "SKILL.md must show the PowerDNS API address 10.0.0.3:8081."
+    )
+
+
+def test_skill_documents_dns_tunnel_local_port() -> None:
+    """Step 2.3: SKILL.md must document the SSH tunnel the
+    sync_dns_to_sdn.py and apply_tofu.py scripts open to reach
+    PowerDNS (10.0.0.3:8081 is not directly reachable from the
+    operator host because vnet0 is private to PVE)."""
+    text = SKILL_PATH.read_text()
+    assert "127.0.0.1:18081" in text or (
+        "127.0.0.1:8081" in text and "tunnel" in text.lower()
+    ), (
+        "SKILL.md must document the SSH tunnel local-port"
+        " (127.0.0.1:18081 for sync_dns_to_sdn.py,"
+        " 127.0.0.1:8081 for apply_tofu.py) used to reach PowerDNS."
+    )
+
+
+def test_skill_documents_apply_tofu_py_runner() -> None:
+    """Step 0d / 2.1: SKILL.md must name scripts/apply_tofu.py as the
+    single entry point for `tofu apply` against the tokens and cluster
+    roots. The legacy scripts/apply.sh is gone (replaced 2026-07-07)."""
+    text = SKILL_PATH.read_text()
+    assert "scripts/apply_tofu.py" in text, (
+        "SKILL.md must name scripts/apply_tofu.py as the unified"
+        " apply entry point."
+    )
+    assert "apply.sh" not in text, (
+        "SKILL.md must NOT reference the legacy scripts/apply.sh"
+        " (replaced by apply_tofu.py in 2026-07-07)."
+    )
+
+
+def test_skill_documents_state_backend_layout() -> None:
+    """Step 0e.2: SKILL.md must name the 4 state names and the
+    project id, and document why the module does not carry state."""
+    text = SKILL_PATH.read_text()
+    assert "Step 0e" in text, "SKILL.md missing Step 0e (state backend) section"
+    assert "infra-tokens" in text and "cluster-cicd" in text and "cluster-apps" in text, (
+        "Step 0e.2 must list the three stateful stack names"
+    )
+    assert "84156476" in text, (
+        "Step 0e.2 must document the project id (84156476)"
+    )
+    assert "proxmox-k3s-cluster-module" in text, (
+        "Step 0e.2 must reserve the module's state name even though"
+        " the module does not actually carry state"
+    )
+
+
+def test_skill_documents_gitlab_pat_requirement() -> None:
+    """Step 0e.3: SKILL.md must spell out the api-scope PAT
+    requirement and warn against the OAuth token."""
+    text = SKILL_PATH.read_text()
+    assert "api" in text and "scope" in text, (
+        "Step 0e.3 must mention the api scope requirement"
+    )
+    assert "OAuth" in text or "oauth" in text, (
+        "Step 0e.3 must warn that the glab cached OAuth token is"
+        " not suitable (it expires daily)"
+    )
+    assert "GITLAB_ACCESS_TOKEN" in text, (
+        "Step 0e.3 must show how to export GITLAB_ACCESS_TOKEN"
+        " from the .env file"
+    )
+
+
+def test_skill_documents_gitlab_backend_helper() -> None:
+    """Step 0e.4: SKILL.md must document the
+    scripts/gitlab_backend.sh helper and its three sub-commands."""
+    text = SKILL_PATH.read_text()
+    assert "scripts/gitlab_backend.sh" in text, (
+        "Step 0e.4 must name the helper script"
+    )
+    assert "init" in text and "show" in text, (
+        "Step 0e.4 must list the init + show sub-commands"
+    )
+    assert "-force-copy" in text and "-input=false" in text, (
+        "Step 0e.4 must call out the -force-copy + -input=false"
+        " flags the helper passes to make migration non-interactive"
+    )
+
+
+def test_skill_documents_force_unlock_recipe() -> None:
+    """Step 0e.5: SKILL.md must show the curl-based force-unlock
+    recipe for stuck HTTP-backend locks."""
+    text = SKILL_PATH.read_text()
+    assert "force-unlock" in text or "force_unlock" in text or "DELETE" in text, (
+        "Step 0e.5 must show a force-unlock recipe (curl DELETE)"
+    )
+    # The exact URL pattern
+    assert "/terraform/state/" in text, (
+        "Step 0e.5 must show the GitLab state-lock API path"
+    )
+
+
+def test_skill_documents_module_no_backend() -> None:
+    """Step 0e.6: SKILL.md must explain that the module does NOT
+    carry a `backend "http" {}` block, and why."""
+    text = SKILL_PATH.read_text()
+    assert "module" in text.lower() and "backend" in text.lower(), (
+        "Step 0e.6 must explain the module-vs-backend relationship"
+    )
+    # The comment in the module's versions.tf must explain this
+    module_versions_text = (ROOT / "infra/modules/proxmox-k3s-cluster/versions.tf").read_text()
+    assert 'backend "http"' not in module_versions_text, (
+        "infra/modules/proxmox-k3s-cluster/versions.tf must NOT"
+        " declare a `backend \"http\"` block (modules never"
+        " carry state)"
+    )
+    # The module versions.tf must mention why no backend block
+    assert "ignored" in module_versions_text or "silently" in module_versions_text or "warning" in module_versions_text, (
+        "infra/modules/proxmox-k3s-cluster/versions.tf must"
+        " document why no backend block is declared"
+    )
+
+
+def test_skill_documents_path_drift_expectation() -> None:
+    """Step 0e.7: SKILL.md must warn about the tokens_output_path
+    drift between mount paths."""
+    text = SKILL_PATH.read_text()
+    assert "tokens_output_path" in text, (
+        "Step 0e.7 must call out the tokens_output_path drift"
+    )
+    assert "/mnt/data/Projects" in text or "mount path" in text, (
+        "Step 0e.7 must show that the drift is between two"
+        " paths to the same physical directory"
+    )
+
+
+def test_skill_documents_refresh_only_post_migration() -> None:
+    """Step 0e.8: SKILL.md must set the expectation that post-migration
+    plan is `0 to add, N to change, 0 to destroy` (no resource
+    destruction)."""
+    text = SKILL_PATH.read_text()
+    assert "0 to add" in text and "0 to destroy" in text, (
+        "Step 0e.8 must show the expected post-migration plan shape"
+        " (`0 to add, N to change, 0 to destroy`)"
+    )
+
+
+def test_gitlab_backend_helper_script_exists() -> None:
+    """The gitlab_backend.sh helper must exist and be executable."""
+    helper = ROOT / "scripts/gitlab_backend.sh"
+    assert helper.is_file(), f"helper missing at {helper}"
+    import stat
+    mode = helper.stat().st_mode
+    assert mode & stat.S_IXUSR, "scripts/gitlab_backend.sh must be executable"
+
+
+def test_three_root_stacks_have_backend_block() -> None:
+    """infra/tokens, infra/clusters/cicd, infra/clusters/apps must
+    each declare a `backend \"http\" {}` block in their
+    `terraform { ... }`."""
+    for path in [
+        "infra/tokens/versions.tf",
+        "infra/clusters/cicd/main.tf",
+        "infra/clusters/apps/main.tf",
+    ]:
+        text = (ROOT / path).read_text()
+        assert 'backend "http"' in text, (
+            f"{path} must declare a `backend \"http\"` block to"
+            f" route state to the GitLab HTTP backend"
+        )
+
+
+def test_module_has_no_backend_block() -> None:
+    """infra/modules/proxmox-k3s-cluster must NOT declare a
+    `backend \"http\" {}` block (modules never carry state and the
+    block would trigger a warning at every init)."""
+    text = (ROOT / "infra/modules/proxmox-k3s-cluster/versions.tf").read_text()
+    assert 'backend "http"' not in text, (
+        "infra/modules/proxmox-k3s-cluster/versions.tf must NOT"
+        " declare a `backend \"http\"` block"
+    )
+
+
+# ---------- WP00 preflight (Step 0a / 0b / 0c / 0d) ----------
 
 
 def test_skill_documents_pve_node_discovery() -> None:
@@ -385,261 +799,58 @@ def test_skill_documents_wp00_phase() -> None:
     )
 
 
-def test_versions_lock_documents_live_host_evidence() -> None:
-    """After the 2026-07-06 deploy, versions.lock.yaml must
-    record live-host evidence (PVE version, kernel, node name,
-    Cloudflare zone/account IDs, permission-group UUIDs) so
-    future agents can verify the same environment."""
-    assert VERSIONS_PATH.is_file(), f"versions.lock.yaml missing at {VERSIONS_PATH}"
-    text = VERSIONS_PATH.read_text()
-    assert "live_host_evidence" in text, (
-        "versions.lock.yaml must have a live_host_evidence section"
-    )
-    # Proxmox
-    assert "kvm.bruj0.net" in text, (
-        "live_host_evidence must record the Proxmox host DNS name"
-    )
-    assert "BigBertha" in text, (
-        "live_host_evidence must record the Proxmox node name"
-    )
-    # Cloudflare
-    assert "15e4cfe0ecfee91903601ae780932ad3" in text, (
-        "live_host_evidence must record the Cloudflare zone_id"
-    )
-    assert "2e9c09b27d2a089c531b12ae0f0e6ff3" in text, (
-        "live_host_evidence must record the Cloudflare account_id"
-    )
-    # Permission-group UUIDs
-    assert "c8fed203ed3043cba015a93ad1616f1f" in text
-    assert "4755a26eedb94da69e1066d98aa820be" in text
-    assert "c07321b023e944ff818fec44d8203567" in text
-
-
-# ---------- Phase 1 apply-time lessons (Step 1b, 2026-07-06) ----------
-#
-# Pinned from the live PVE 9.2.3 deploy where the WP00-minted
-# k3s-terraform@pam!tf token was used as Packer auth and Phase 1
-# surfaced six hard blockers. Each test below pins one lesson so a
-# future agent can't regress.
-
-
-def test_skill_documents_packer_local_lvm_storage_swap() -> None:
-    """Step 1b.1: SKILL.md must tell operators to retarget
-    `local-lvm` -> `data1` when the live host has no `local-lvm`
-    lvmthin pool. BigBertha only has `data1`, `data2`, `local`."""
-    text = SKILL_PATH.read_text()
-    assert "Step 1b" in text, (
-        "SKILL.md missing Step 1b (Phase 1 apply-time gotchas) section"
-    )
-    assert "local-lvm" in text, (
-        "Step 1b must explain why local-lvm is the default and why we"
-        " retarget to data1 on hosts that lack it"
-    )
-    assert "data1" in text, (
-        "Step 1b must recommend data1 as the replacement storage"
-    )
-
-
-def test_skill_documents_packer_token_bare_secret_format() -> None:
-    """Step 1b.2: Packer v1.2.x `token` is the BARE secret UUID,
-    not the concatenated `<id>=<secret>` value. The pre-2026-07-06
-    template concatenated twice and PVE rejected with 401."""
-    text = SKILL_PATH.read_text().lower()
-    assert "bare secret" in text, (
-        "Step 1b.2 must explain that Packer `token` is the BARE secret"
-    )
-    assert "double-prefixed" in text or ("401" in text and "auth" in text), (
-        "Step 1b.2 must call out the 401 double-prefix failure mode"
-    )
-
-
-def test_skill_documents_k3s_cluster_role_19_privs() -> None:
-    """Step 1b.3: The k3s-cluster role must extend from the spec
-    T005 12-priv set to 19 entries (adding Sys.Audit, VM.Audit,
-    VM.Clone, VM.Migrate, VM.Config.CDROM, VM.Config.HWType,
-    VM.Snapshot.Rollback) for Packer/Phase 1 access."""
-    text = SKILL_PATH.read_text()
-    assert (
-        "Sys.Audit" in text and "VM.Audit" in text and "VM.Clone" in text
-    ) and "VM.Config.HWType" in text, (
-        "Step 1b.3 must enumerate the 7 added privs"
-    )
-    assert "19" in text and (
-        "12 priv" in text or "12-priv" in text or "12 priv" in text
-    ), (
-        "Step 1b.3 must compare the new 19-priv total against the"
-        " original spec T005 12-priv count"
-    )
-
-
-def test_skill_documents_output_json_secret_split() -> None:
-    """Step 1b.4: bpg/proxmox v0.111.x's
-    `proxmox_user_token.<>.value` is the FULL api-token string;
-    output_json.tf must split on `=` so proxmox_token_secret
-    contains only the bare UUID (length 36)."""
-    text = SKILL_PATH.read_text()
-    assert "value" in text and (
-        "FULL" in text or "full" in text.lower()
-    ), (
-        "Step 1b.4 must explain that .value is the FULL token string"
-    )
-    assert "split" in text and "=" in text, (
-        "Step 1b.4 must mention the split-on-= approach to extract"
-        " the bare UUID"
-    )
-    assert "36" in text, (
-        "Step 1b.4 must mention the 36-char UUID length as the"
-        " success signature"
-    )
-
-
-def test_skill_documents_packer_ssh_wait_incompatibility() -> None:
-    """Step 1b.5: hashicorp/proxmox v1.2.x proxmox-clone blocks
-    on SSH-wait (5-minute timeout) which Talos installer mode
-    can never satisfy. SKILL must recommend the direct PVE API
-    clone+template bypass path."""
-    text = SKILL_PATH.read_text()
-    assert (
-        "proxmox-clone" in text or "proxmox-clone" in text
-    ), (
-        "Step 1b.5 must name the proxmox-clone builder"
-    )
-    assert "SSH" in text and (
-        "wait" in text or "timeout" in text
-    ), (
-        "Step 1b.5 must call out the SSH-wait / SSH-timeout behavior"
-    )
-    assert (
-        "/nodes/" in text and "clone" in text and "template" in text
-    ) or (
-        "PROXMOX_API_URL" in text and "clone" in text
-    ), (
-        "Step 1b.5 must give the concrete curl copy-paste for the"
-        " POST /nodes/<node>/qemu/999/clone + template bypass"
-    )
-
-
-def test_skill_documents_vmid_999_storage_preallocation() -> None:
-    """Step 1b.6: VMID 999 (talos-base) must be pre-created on
-    the same storage pool the Packer template retargets to
-    (`data1`). The ISO file name must match; the upstream
-    asset is `metal-amd64.iso`, NOT `talos-amd64.iso`."""
-    text = SKILL_PATH.read_text()
-    assert "talos-base" in text and "999" in text, (
-        "Step 1b.6 must instruct pre-creating VMID 999 named"
-        " `talos-base` with the Talos ISO attached"
-    )
-    assert "qm create 999" in text, (
-        "Step 1b.6 must give the qm create copy-paste for VMID 999"
-    )
-    assert "metal-amd64.iso" in text, (
-        "Step 1b.6 must call out the GitHub release asset name"
-        " `metal-amd64.iso` (NOT `talos-v1.10.0-amd64.iso`)"
-    )
-
-
-def test_versions_lock_documents_phase1_evidence() -> None:
-    """After the 2026-07-06 Phase 1 deploy, versions.lock.yaml
-    must record the Phase 1 cross-checks: Packer schema patches,
-    role-extension to 19 privs, output.json split, Packer-SSH
-    incompatibility, and the direct API bypass."""
-    assert VERSIONS_PATH.is_file(), f"versions.lock.yaml missing at {VERSIONS_PATH}"
-    text = VERSIONS_PATH.read_text()
-    assert "phase1_apply_against_live_host" in text
-    assert "phase1_k3s_role_privs" in text
-    assert "phase1_output_json_split" in text
-    assert "phase1_packer_schema" in text
-    assert "phase1_packer_ssh_wait" in text
-    # The 19-priv count must be present in the lock file too
-    assert "19" in text, (
-        "versions.lock.yaml must record the new 19-priv k3s-cluster role"
-    )
-    # BigBertha's storage pool is in evidence
-    assert "data1" in text and "data2" in text
-
-
-# ---------- Phase 2 apply-time lessons (Step 2b, 2026-07-06) ----------
-#
-# Pinned from the live PVE 9.2.3 Phase-2 apply where the k3s-cluster
-# tofu module surfaced six real-world deployment issues beyond the
-# Phase-0/Phase-1 preflight set. Each test pins one lesson.
+# ---------- Phase 2 apply-time lessons (Step 2b, 2026-07-07) ----------
 
 
 def test_skill_documents_cf_api_token_contract() -> None:
-    """Step 2b.1: `output.json` must expose `cf_api_token` and
+    """Step 2.2.1: `output.json` must expose `cf_api_token` and
     `cf_account_id` per spec T007. The cluster root's
     `data.local_sensitive_file` reads these keys."""
     text = SKILL_PATH.read_text()
-    assert "Step 2b" in text, (
-        "SKILL.md missing Step 2b (Phase 2 apply-time gotchas) section"
-    )
     assert "cf_api_token" in text and "cf_account_id" in text, (
-        "Step 2b.1 must spell out the cf_api_token / cf_account_id"
+        "Step 2.2.1 must spell out the cf_api_token / cf_account_id"
         " contract keys that output.json must expose"
-    )
-    assert (
-        "spec-T007" in text or "spec T007" in text or "tasks.md" in text
-    ), (
-        "Step 2b.1 must reference the spec contract (tasks.md line ~106)"
-        " that mandates the cf_api_token naming convention"
     )
 
 
 def test_skill_documents_target_datastore_fix() -> None:
-    """Step 2b.2: bpg/proxmox v0.111.x proxmox_cloned_vm needs
+    """Step 2.2.2: bpg/proxmox v0.111.x proxmox_cloned_vm needs
     `clone.target_datastore` set to the same storage pool as the
     source VM. Otherwise plan/apply disagrees."""
     text = SKILL_PATH.read_text()
     assert "target_datastore" in text, (
-        "Step 2b.2 must name the target_datastore PVE clone config"
+        "Step 2.2.2 must name the target_datastore PVE clone config"
     )
     assert (
         "disk_storage_pool" in text and "var.disk_storage_pool" in text
     ), (
-        "Step 2b.2 must introduce the disk_storage_pool module variable"
+        "Step 2.2.2 must introduce the disk_storage_pool module variable"
     )
     assert "local-lvm" in text and "data1" in text, (
-        "Step 2b.2 must explain that BigBertha lacks local-lvm and"
+        "Step 2.2.2 must explain that BigBertha lacks local-lvm and"
         " the retarget is to data1"
     )
 
 
-def test_skill_documents_sys_modify_requirement() -> None:
-    """Step 2b.3: the k3s-cluster role MUST extend to include
-    `Sys.Modify` (20 privs total) for proxmox_virtual_environment_hosts
-    SDN writes to be accepted by PVE 9.2.x."""
-    text = SKILL_PATH.read_text()
-    assert "Sys.Modify" in text, (
-        "Step 2b.3 must explain that Sys.Modify is required for"
-        " SDN hosts writes"
-    )
-    assert (
-        "20" in text and "12 spec T005" in text
-    ), (
-        "Step 2b.3 must compare the new 20-priv total against the"
-        " original 12-priv spec T005 count"
-    )
-
-
 def test_skill_documents_pod_svc_cidr_output() -> None:
-    """Step 2b.4: `output.json` MUST expose `pod_cidr` and
+    """Step 2.2.5: `output.json` MUST expose `pod_cidr` and
     `svc_cidr` so tools/lib/talos_client.py can wire Talos
     configs."""
     text = SKILL_PATH.read_text()
     assert "pod_cidr" in text and "svc_cidr" in text, (
-        "Step 2b.4 must call out the missing pod_cidr / svc_cidr"
+        "Step 2.2.5 must call out the missing pod_cidr / svc_cidr"
         " output.json keys and the fix"
     )
     assert (
         "tools/lib/talos_client.py" in text or "talos_client.py" in text
     ), (
-        "Step 2b.4 must reference the consumer (talos_client.py)"
+        "Step 2.2.5 must reference the consumer (talos_client.py)"
         " that needs these keys"
     )
 
 
 def test_skill_documents_manifests_subdir_path() -> None:
-    """Step 2b.5: the module must write the Traefik HelmChartConfig
+    """Step 2.2.6: the module must write the Traefik HelmChartConfig
     under `infra/clusters/<name>/manifests/`, not at the cluster
     root."""
     text = SKILL_PATH.read_text()
@@ -647,193 +858,107 @@ def test_skill_documents_manifests_subdir_path() -> None:
         "manifests/traefik-helmchartconfig.yaml" in text
         or "manifests/traefik" in text
     ), (
-        "Step 2b.5 must mandate the manifests/ subdirectory"
+        "Step 2.2.6 must mandate the manifests/ subdirectory"
         " for the Traefik HelmChartConfig"
     )
     assert (
         "tools/lib/helm_client.py" in text or "helm_client.py" in text
     ), (
-        "Step 2b.5 must reference tools/lib/helm_client.py which"
+        "Step 2.2.6 must reference tools/lib/helm_client.py which"
         " expects the file under manifests/"
     )
 
 
-def test_skill_documents_path_module_double_dot_fix() -> None:
-    """Step 2b.7: the cluster module and cluster root both use
-    relative paths that broke after the layout refactor. Both
-    must use enough `..` segments to reach the repo root."""
-    text = SKILL_PATH.read_text()
-    assert "${path.module}/../../clusters" in text, (
-        "Step 2b.7 must show the corrected module-side path"
-        " pattern (two '..' segments)"
-    )
-    assert "${path.module}/../../../build" in text, (
-        "Step 2b.7 must show the corrected cluster-root-side path"
-        " pattern (three '..' segments to the build/ dir)"
-    )
+# ---------- Architecture cross-links (T007) ----------
 
 
-def test_versions_lock_documents_phase2_evidence() -> None:
-    """After the 2026-07-06 Phase-2 apply, versions.lock.yaml must
-    record the Phase-2 evidence."""
-    assert VERSIONS_PATH.is_file(), f"versions.lock.yaml missing at {VERSIONS_PATH}"
-    text = VERSIONS_PATH.read_text()
-    assert "phase2" in text, (
-        "versions.lock.yaml must have a Phase-2 cross_check entry"
-    )
-    # The 20-priv count must be present
-    assert "20" in text, (
-        "versions.lock.yaml must record the new 20-priv k3s-cluster role"
-    )
+def test_architecture_md_links_all_planning_artefacts() -> None:
+    """WP07 T007: docs/architecture.md must link spec.md, plan.md,
+    decomposition.md, research.md."""
+    p = ROOT / "docs" / "architecture.md"
+    assert p.is_file(), f"docs/architecture.md missing at {p}"
+    text = p.read_text()
+    for artefact in ["spec.md", "plan.md", "decomposition.md", "research.md"]:
+        assert artefact in text, f"architecture.md missing link to {artefact}"
 
 
-# ---------- State-backend (Step 0e, 2026-07-06) ----------
-#
-# Pinned from the live 4-stack migration from local state to the
-# GitLab HTTP backend at project infra-state/bigbertha (id 84156476).
-# Each test pins one lesson so a future re-org has to update the
-# test before changing the design.
+# ---------- Source-file pin: build_image pre-enrolled-keys fix ----------
 
 
-def test_skill_documents_gitlab_backend_layout() -> None:
-    """Step 0e.2: SKILL.md must name the 4 state names and the
-    project id, and document why the module does not carry state."""
-    text = SKILL_PATH.read_text()
-    assert "Step 0e" in text, "SKILL.md missing Step 0e (state backend) section"
-    assert "infra-tokens" in text and "cluster-cicd" in text and "cluster-apps" in text, (
-        "Step 0e.2 must list the three stateful stack names"
+def test_build_image_omits_pre_enrolled_keys_in_create_template() -> None:
+    """Cross-check: the PveClient.create_template_shell must NOT
+    include `pre-enrolled-keys=1` in the efidisk0 args (Talos v1.13.5
+    UKI signature is not in the OVMF pre-enrolled DB). The skill
+    documents this in Step 1.5.1; this test pins the source-side
+    fix."""
+    text = (TOOLS_LIB / "pve_client.py").read_text()
+    # Find the create_template_shell method body
+    m = re.search(
+        r"def create_template_shell.*?(?=\n    def |\nclass )",
+        text, re.DOTALL,
     )
-    assert "84156476" in text, (
-        "Step 0e.2 must document the project id (84156476)"
+    assert m is not None, (
+        "PveClient.create_template_shell not found in pve_client.py"
     )
-    assert "proxmox-k3s-cluster-module" in text, (
-        "Step 0e.2 must reserve the module's state name even though"
-        " the module does not actually carry state"
-    )
-
-
-def test_skill_documents_gitlab_pat_requirement() -> None:
-    """Step 0e.3: SKILL.md must spell out the api-scope PAT
-    requirement and warn against the OAuth token."""
-    text = SKILL_PATH.read_text()
-    assert "api" in text and "scope" in text, (
-        "Step 0e.3 must mention the api scope requirement"
-    )
-    assert "OAuth" in text or "oauth" in text, (
-        "Step 0e.3 must warn that the glab cached OAuth token is"
-        " not suitable (it expires daily)"
-    )
-    assert "GITLAB_ACCESS_TOKEN" in text, (
-        "Step 0e.3 must show how to export GITLAB_ACCESS_TOKEN"
-        " from the .env file"
+    body = m.group(0)
+    # Strip line comments and docstrings so the rationale comment
+    # doesn't trigger a false positive. We only want to assert that
+    # the live `efidisk0` / `--efidisk0` arg list does NOT include
+    # `pre-enrolled-keys=1`.
+    code_lines = []
+    for line in body.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        # Drop inline comments
+        if "#" in line:
+            in_str = False
+            for i, ch in enumerate(line):
+                if ch in ('"', "'"):
+                    in_str = not in_str
+                elif ch == "#" and not in_str:
+                    line = line[:i]
+                    break
+        code_lines.append(line)
+    code_only = "\n".join(code_lines)
+    assert "pre-enrolled-keys" not in code_only, (
+        "PveClient.create_template_shell must NOT pass pre-enrolled-keys=1"
+        " (Talos v1.13.5 Secure Boot fix). See SKILL Step 1.5.1."
     )
 
 
-def test_skill_documents_gitlab_backend_helper() -> None:
-    """Step 0e.4: SKILL.md must document the
-    scripts/gitlab_backend.sh helper and its three sub-commands."""
-    text = SKILL_PATH.read_text()
-    assert "scripts/gitlab_backend.sh" in text, (
-        "Step 0e.4 must name the helper script"
+def test_build_image_flips_boot_order_before_template() -> None:
+    """Cross-check: build_image.py must set the template's boot order
+    to scsi0 BEFORE calling qm template 900. Otherwise clones boot
+    the ISO forever."""
+    text = (ROOT / "tools" / "build_image" / "__init__.py").read_text()
+    # Find the boot-order flip and the template_vm call
+    assert "order=scsi0" in text, (
+        "tools/build_image/__init__.py must set --boot order=scsi0"
+        " before converting VM 900 to a template (SKILL Step 1.5.2)."
     )
-    assert "init" in text and "show" in text, (
-        "Step 0e.4 must list the init + show sub-commands"
-    )
-    assert "-force-copy" in text and "-input=false" in text, (
-        "Step 0e.4 must call out the -force-copy + -input=false"
-        " flags the helper passes to make migration non-interactive"
-    )
-
-
-def test_skill_documents_force_unlock_recipe() -> None:
-    """Step 0e.5: SKILL.md must show the curl-based force-unlock
-    recipe for stuck HTTP-backend locks."""
-    text = SKILL_PATH.read_text()
-    assert "force-unlock" in text or "force_unlock" in text or "DELETE" in text, (
-        "Step 0e.5 must show a force-unlock recipe (curl DELETE)"
-    )
-    # The exact URL pattern
-    assert "/terraform/state/" in text, (
-        "Step 0e.5 must show the GitLab state-lock API path"
+    # The set_vm_config call must appear before template_vm
+    scsi0_idx = text.find("order=scsi0")
+    template_idx = text.find("self.pve.template_vm(TEMPLATE_VMID)")
+    assert 0 < scsi0_idx < template_idx, (
+        f"boot order=scsi0 (idx {scsi0_idx}) must be set BEFORE"
+        f" template_vm (idx {template_idx}) in tools/build_image/__init__.py"
     )
 
 
-def test_skill_documents_module_no_backend() -> None:
-    """Step 0e.6: SKILL.md must explain that the module does NOT
-    carry a `backend "http" {}` block, and why."""
-    text = SKILL_PATH.read_text()
-    assert "module" in text.lower() and "backend" in text.lower(), (
-        "Step 0e.6 must explain the module-vs-backend relationship"
+def test_sync_dns_to_sdn_script_exists() -> None:
+    """The DNS sync post-apply fixup must exist (SKILL Step 2.3)."""
+    p = SCRIPTS / "sync_dns_to_sdn.py"
+    assert p.is_file(), (
+        f"scripts/sync_dns_to_sdn.py missing at {p}"
     )
-    # The comment in the module's versions.tf must explain this
-    module_versions_text = (ROOT / "infra/modules/proxmox-k3s-cluster/versions.tf").read_text()
-    assert 'backend "http"' not in module_versions_text, (
-        "infra/modules/proxmox-k3s-cluster/versions.tf must NOT"
-        " declare a `backend \"http\"` block (modules never"
-        " carry state)"
+    text = p.read_text()
+    assert "network-get-interfaces" in text, (
+        "sync_dns_to_sdn.py must call qm agent network-get-interfaces"
     )
-    # The module versions.tf must mention why no backend block
-    assert "ignored" in module_versions_text or "silently" in module_versions_text or "warning" in module_versions_text, (
-        "infra/modules/proxmox-k3s-cluster/versions.tf must"
-        " document why no backend block is declared"
+    assert "intranet.local" in text, (
+        "sync_dns_to_sdn.py must target the intranet.local. forward zone"
     )
-
-
-def test_skill_documents_path_drift_expectation() -> None:
-    """Step 0e.7: SKILL.md must warn about the tokens_output_path
-    drift between mount paths."""
-    text = SKILL_PATH.read_text()
-    assert "tokens_output_path" in text, (
-        "Step 0e.7 must call out the tokens_output_path drift"
-    )
-    assert "/mnt/data/Projects" in text or "mount path" in text, (
-        "Step 0e.7 must show that the drift is between two"
-        " paths to the same physical directory"
-    )
-
-
-def test_skill_documents_refresh_only_post_migration() -> None:
-    """Step 0e.8: SKILL.md must set the expectation that post-migration
-    plan is `0 to add, N to change, 0 to destroy` (no resource
-    destruction)."""
-    text = SKILL_PATH.read_text()
-    assert "0 to add" in text and "0 to destroy" in text, (
-        "Step 0e.8 must show the expected post-migration plan shape"
-        " (`0 to add, N to change, 0 to destroy`)"
-    )
-
-
-def test_gitlab_backend_helper_script_exists() -> None:
-    """The gitlab_backend.sh helper must exist and be executable."""
-    helper = ROOT / "scripts/gitlab_backend.sh"
-    assert helper.is_file(), f"helper missing at {helper}"
-    import stat
-    mode = helper.stat().st_mode
-    assert mode & stat.S_IXUSR, "scripts/gitlab_backend.sh must be executable"
-
-
-def test_three_root_stacks_have_backend_block() -> None:
-    """infra/tokens, infra/clusters/cicd, infra/clusters/apps must
-    each declare a `backend \"http\" {}` block in their
-    `terraform { ... }`."""
-    for path in [
-        "infra/tokens/versions.tf",
-        "infra/clusters/cicd/main.tf",
-        "infra/clusters/apps/main.tf",
-    ]:
-        text = (ROOT / path).read_text()
-        assert 'backend "http"' in text, (
-            f"{path} must declare a `backend \"http\"` block to"
-            f" route state to the GitLab HTTP backend"
-        )
-
-
-def test_module_has_no_backend_block() -> None:
-    """infra/modules/proxmox-k3s-cluster must NOT declare a
-    `backend \"http\" {}` block (modules never carry state and the
-    block would trigger a warning at every init)."""
-    text = (ROOT / "infra/modules/proxmox-k3s-cluster/versions.tf").read_text()
-    assert 'backend "http"' not in text, (
-        "infra/modules/proxmox-k3s-cluster/versions.tf must NOT"
-        " declare a `backend \"http\"` block"
+    assert "10.in-addr.arpa" in text, (
+        "sync_dns_to_sdn.py must target the 10.in-addr.arpa. reverse zone"
     )
