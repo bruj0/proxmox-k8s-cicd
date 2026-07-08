@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.host_ports import HostPortsAddedError, verify_no_new_dnat_rules  # noqa: E402
 from lib.helm_client import (  # noqa: E402
     GATEWAY_API_STANDARD_CRDS_URL,
+    first_two_releases,
     gateway_releases,
     remaining_releases,
 )
@@ -116,6 +117,53 @@ def test_remaining_releases_includes_all_five_locked_charts(tmp_path: Path, monk
     assert traefik_apply is not None
     assert traefik_apply.kind == "HelmChartConfig"
     assert traefik_apply.path.exists()
+
+
+# ---------- §14.4 cilium + k3s flags (WP07 fix, 2026-07-08) ----------
+
+def test_cilium_replaces_kube_proxy() -> None:
+    """§14.4 fix: k3s is started with --disable-kube-proxy so cilium eBPF
+    is the sole owner of ClusterIP routing. Without this, k3s's embedded
+    kube-proxy writes partial iptables (DNAT but no MASQUERADE for the
+    `kubernetes` ClusterIP) and pod->apiserver TLS handshakes hang on
+    the return path.
+    """
+    rels = first_two_releases(
+        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "10.42.0.0/16"}
+    )
+    cilium = next(r for r in rels if r.name == "cilium")
+    assert cilium.values["kubeProxyReplacement"] == "true", (
+        "cilium must run in kube-proxy replacement mode (eBPF)"
+    )
+
+
+def test_cilium_k8s_service_host_is_vip_not_clusterip() -> None:
+    """§14.4 fix: cilium must connect to the apiserver via the kube-vip
+    VIP (already reachable via L2 ARP before any pod network exists),
+    NOT the ClusterIP 10.43.0.1. Without this, cilium-agent fails its
+    initial apiserver handshake (chicken-and-egg).
+    """
+    rels = first_two_releases(
+        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "10.42.0.0/16"}
+    )
+    cilium = next(r for r in rels if r.name == "cilium")
+    assert cilium.values["k8sServiceHost"] == "10.0.0.30", (
+        "k8sServiceHost must equal the kube-vip VIP, not the ClusterIP"
+    )
+    assert cilium.values["k8sServicePort"] == "6443"
+
+
+def test_cilium_mtu_is_1450_for_vxlan() -> None:
+    """§14.4 fix: vxlan adds 50 bytes of overhead to the underlying
+    eth0 mtu=1500. Without mtu=1450, the pod->apiserver TLS ServerHello
+    (typically 4-10 KB with the cert chain) gets fragmented at the
+    vxlan encap and the conntrack return path drops the fragments.
+    """
+    rels = first_two_releases(
+        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "10.42.0.0/16"}
+    )
+    cilium = next(r for r in rels if r.name == "cilium")
+    assert cilium.values["mtu"] == "1450"
 
 
 def test_cert_manager_release_has_no_acme_solvers() -> None:

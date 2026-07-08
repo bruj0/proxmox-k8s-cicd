@@ -238,6 +238,31 @@ cross_check:
     assertions pass) but unverified on the live cluster.
     Next attempt: re-run on a cluster where §14.4 is fixed
     (likely a Cilium kubeProxyReplacement tuning).
+  in_cluster_apiserver_routing_fix_2026_07_08: >
+    Live-host root-cause + recipe fix on 2026-07-08. Root
+    cause: k3s's embedded kube-proxy (NOT disabled) wrote
+    KUBE-SVC + KUBE-SEP DNAT rules for the `kubernetes`
+    ClusterIP but omitted the companion KUBE-MARK-MASQ
+    rule; cilium eBPF in DSR mode also skipped MASQUERADE
+    for non-NodePort traffic. Net effect: pod->apiserver
+    TLS ServerHello (~5KB with cert chain) is dropped on
+    the return path because the apiserver's response src
+    (10.0.0.65:6443) didn't match the pod socket's
+    expected src (10.43.0.1:443). Fix committed (164 tests
+    pass; +4 new pin tests): (1) added
+    --disable-kube-proxy to k3s server flags so cilium eBPF
+    is the sole ClusterIP translator; (2) cilium chart
+    values add k8sServiceHost=<vip> + k8sServicePort=6443
+    so cilium-agent can reach the apiserver via the
+    kube-vip VIP during its own startup (chicken-and-egg);
+    (3) cilium chart mtu=1450 to keep vxlan-encapsulated
+    packets within the underlying eth0 MTU. Live apply
+    pending: k3s.service surgery on cicd-cp-1 (append
+    --disable-kube-proxy) + cilium helm upgrade with new
+    values + restart coredns/csi-provisioner/proxmox-ccm
+    to confirm 10.43.0.1:443 reachable from pods. See
+    .agents/skills/proxmox-k3s-pipeline/SKILL.md Step
+    4b.3.5 + docs/cluster-state.md §14.4.
 
 verifier:
   envoy_gateway_smoke:

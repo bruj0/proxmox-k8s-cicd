@@ -122,7 +122,28 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
             namespace="kube-system",
             version="1.16.1",
             values={
+                # WP07 fix (2026-07-08, §14.4): k3s is now started with
+                # --disable-kube-proxy (see tools/lib/k3s_installer.py
+                # _SERVER_BASE_FLAGS). cilium therefore fully owns
+                # ClusterIP routing via eBPF. Two follow-up settings:
+                #
+                # 1. k8sServiceHost/Port: cilium must reach the apiserver
+                #    *before* its eBPF ClusterIP routing is installed
+                #    (chicken-and-egg). Without these it tries
+                #    https://10.43.0.1:443 and crashes on startup. Point
+                #    it at the kube-vip VIP (which is already reachable
+                #    via L2 ARP before any pod network exists).
                 "kubeProxyReplacement": "true",
+                "k8sServiceHost": vip,
+                "k8sServicePort": "6443",
+                # 2. mtu=1450: vxlan adds 50 bytes of overhead to the
+                #    underlying eth0 mtu=1500. Without this, large TLS
+                #    ServerHello responses from the apiserver get
+                #    fragmented at the vxlan encap and the conntrack
+                #    return-path drops them (this was the visible
+                #    half of §14.4 before the MASQUERADE root cause was
+                #    identified).
+                "mtu": "1450",
                 "gatewayAPI.enabled": "true",
                 "ipv4NativeRoutingCIDR": "10.0.0.0/8",
                 "ipam.mode": "cluster-pool",

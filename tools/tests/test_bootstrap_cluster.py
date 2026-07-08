@@ -138,6 +138,25 @@ def test_csi_smoke_phase_runs_after_kubeconfig() -> None:
     assert phases.index("csi_smoke") > phases.index("kubeconfig")
 
 
+def test_k3s_server_disables_embedded_kube_proxy() -> None:
+    """§14.4 fix (WP07, 2026-07-08): k3s's --disable-kube-proxy MUST be
+    in the server base flags. cilium runs in kubeProxyReplacement=true
+    mode; without this, k3s's embedded kube-proxy writes partial
+    iptables (DNAT but no MASQUERADE) for the `kubernetes` ClusterIP
+    and pod->apiserver TLS handshakes hang on the return path.
+
+    Live root-caused via iptables-save on cicd-w-1:
+      KUBE-SEP-...  -j DNAT --to-destination 10.0.0.65:6443
+      (no companion KUBE-MARK-MASQ in KUBE-SVC-NPX46M4PTMTKRN6Y)
+    """
+    from lib.k3s_installer import _SERVER_BASE_FLAGS
+
+    assert "--disable-kube-proxy" in _SERVER_BASE_FLAGS, (
+        "k3s server flags must include --disable-kube-proxy so cilium "
+        "eBPF owns ClusterIP routing exclusively"
+    )
+
+
 def test_bootstrap_missing_output_json_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """M4 acceptance: missing output.json fails clearly, not silently."""
     monkeypatch.setattr(subprocess, "run", _stub_ok)

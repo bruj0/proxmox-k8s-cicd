@@ -1469,8 +1469,9 @@ SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
 
 The first live apply surfaced four pre-existing or
 chart-shape gotchas. The first three are recipe-level and
-have been pinned in tests; the fourth is a cluster-network
-issue (§14.4) and is a separate work item.
+have been pinned in tests; the fourth is the §14.4
+in-cluster-routing blocker. **§14.4 was root-caused and
+fixed on 2026-07-08** (see Step 4b.3.5 below and §14.4).
 
 **4b.3.1 -- `oci://docker.io/envoyproxy/gateway-helm` is the
 canonical OCI ref.** Not `oci://gateway-helm-charts/gateway-envoy`
@@ -1524,14 +1525,59 @@ created manually. See `scripts/wp07_live_apply.py` for the
 full pattern.
 
 **4b.3.5 -- The cilium BPF LB maps the apiserver service IP
-correctly (`10.43.0.1:443 → 10.0.0.65:6443`) but cross-node
-pod→apiserver traffic is dropped at the routing layer** on
-this cluster. See §14.4 for full diagnosis. This blocks any
-chart with a pre-install hook that talks to the apiserver
-(Envoy Gateway's certgen, gitlab's migration Job, etc.) and
-is also why the proxmox-ccm and proxmox-csi controllers have
-been `ContainerCreating` for hours. **Fix in a separate
-work item** before declaring the cluster GitLab-ready.
+correctly (`10.43.0.1:443 → 10.0.0.65:6443`) but the
+cluster's pod→apiserver TLS handshakes hung on the return
+path even with the correct BPF map.** Root-caused 2026-07-08
+via `iptables-save -t nat | grep 6443` on cicd-w-1: the
+embedded k3s kube-proxy wrote `KUBE-SVC` + `KUBE-SEP` DNAT
+rules but omitted the companion `KUBE-MARK-MASQ` rule that
+makes the apiserver's response source-port match the
+ClusterIP that the pod's socket is bound to. TCP completed
+the handshake, but the TLS ServerHello (~5 KB with the cert
+chain) was dropped because the response packet's src
+(`10.0.0.65:6443`) didn't match the pod's expected src
+(`10.43.0.1:443`). Cilium eBPF (set to `kubeProxyReplacement: true`)
+didn't write a MASQUERADE either because DSR mode doesn't
+need one for NodePorts but DOES need one for the
+`kubernetes` ClusterIP traffic.
+
+**Fix (committed 2026-07-08, 164 tests passing):**
+
+1. Add `--disable-kube-proxy` to
+   `tools/lib/k3s_installer.py::_SERVER_BASE_FLAGS` so cilium
+   eBPF is the sole ClusterIP translator. Cilium's auto-detect
+   then enables full kube-proxy replacement (BPF maps +
+   socket-level acceleration).
+2. Keep `cilium.kubeProxyReplacement: "true"` (revert any
+   `false` workaround) and set
+   `k8sServiceHost: <vip>` + `k8sServicePort: "6443"` so
+   cilium-agent can reach the apiserver via the kube-vip VIP
+   (already on L2 ARP) during its own startup -- without
+   this, cilium-agent's first apiserver call hits
+   `10.43.0.1:443` and crashes.
+3. Set `cilium.mtu: "1450"` so the vxlan-encapsulated
+   packets don't exceed the underlying eth0 MTU; without
+   this, large TLS ServerHello responses get fragmented at
+   the vxlan encap and the conntrack return-path drops the
+   fragments.
+
+The recipe is pinned by `test_cilium_replaces_kube_proxy`,
+`test_cilium_k8s_service_host_is_vip_not_clusterip`,
+`test_cilium_mtu_is_1450_for_vxlan` (in
+`tools/tests/test_remaining_releases.py`), and
+`test_k3s_server_disables_embedded_kube_proxy` (in
+`tools/tests/test_bootstrap_cluster.py`). After applying
+this recipe on a fresh cluster, `proxmox-ccm`,
+`csi-provisioner`, and the certgen Job all complete their
+apiserver handshakes without iptables hacks.
+
+For an existing cluster that was bootstrapped without
+these flags: re-run the `install_k3s` phase (after `rm
+bootstrap_state.json` to invalidate the phase cache), then
+`helm upgrade cilium cilium/cilium --reuse-values` after
+saving the current values, then re-run the `helm` phase.
+See `docs/cluster-state.md` §14.4 for the full live-apply
+log.
 
 ## Step 4c -- csi_smoke sub-phase (WP07)
 

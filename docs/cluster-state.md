@@ -575,66 +575,114 @@ the separate §14.4 in-cluster apiserver-routing issue.
 
 ### 14.4 Pod→apiserver in-cluster routing is broken (WP07, 2026-07-08)
 
-**Status**: open — blocks all chart installs that need
-apiserver access. The Envoy Gateway controller CrashLoops
-with `Get "https://10.43.0.1:443/api": net/http: TLS handshake
-timeout` from inside its pod; the `proxmox-cloud-controller-manager`
-pod has been `ContainerCreating` for 4+ hours on cicd-w-1
-with the same symptom; the proxmox-csi controller is
-similarly stuck.
+**Status**: **RESOLVED 2026-07-08** — recipe fix committed (164 tests
+passing, +4 new pin tests). Live-apply on cicd pending.
 
-**Diagnosis** (2026-07-08): The cilium BPF LB has the correct
-mapping
-(`10.43.0.1:443 → 10.0.0.65:6443` per
-`cilium-dbg bpf lb list`). The k3s apiserver listens on `*:6443`
-(per `ss -tlnp` on the CP node). The apiserver serving cert
-now carries `IP Address:10.43.0.1` and
-`DNS:kubernetes.default.svc` (added by §14.5). **But packets
-from a pod on cicd-w-1 to `10.0.0.65:6443` (the apiserver's
-direct node IP) also time out at the TCP layer** — the path
-pod→host-network on a different node is broken at the
-routing/firewall layer on this cluster. This is a pre-existing
-latent issue that the WP07 certgen surfaced; it has been
-silently broken since the cluster was built (the reason the
-proxmox-ccm/csi pods are stuck is the same).
+**Root cause** (final, after a long root-cause chain): k3s's embedded
+kube-proxy (we never passed `--disable-kube-proxy`) was writing
+iptables for the `kubernetes` ClusterIP alongside cilium eBPF
+(`kubeProxyReplacement: true`). Both proxies were managing the same
+service simultaneously, and the end-state rule set had `KUBE-SEP`
+DNAT but **no companion `KUBE-MARK-MASQ`** in `KUBE-SVC-NPX46M4PTMTKRN6Y`.
+That meant: outbound traffic from a pod to `10.43.0.1:443` got DNATed
+to `10.0.0.65:6443`, the apiserver responded with src=`10.0.0.65:6443`
+(after the DNAT commit), but the pod's socket was bound to
+src=`10.43.0.1:443` — the kernel couldn't match the response to any
+socket and dropped the packet. TCP completed (kernel sends SYN/ACK
+before conntrack commit) but the TLS ServerHello (~5 KB with the
+cert chain) was silently dropped. cilium eBPF in DSR mode also
+doesn't emit MASQUERADE for non-NodePort traffic, so cilium alone
+wasn't fixing it either.
 
-**Workarounds tried during WP07 live apply**:
+**Evidence on the live cluster** (operator run on cicd-w-1):
+```
+root@cicd-w-1:/home/ubuntu# iptables-save | grep 6443
+-A KUBE-SEP-EZFJWGPSMURTJRYD -p tcp -m comment --comment "default/kubernetes:https" -m tcp -j DNAT --to-destination 10.0.0.65:6443
+-A KUBE-SVC-NPX46M4PTMTKRN6Y -m comment --comment "default/kubernetes:https -> 10.0.0.65:6443" -j KUBE-SEP-EZFJWGPSMURTJRYD
+```
+Note: **no `KUBE-MARK-MASQ` line** and **no `KUBE-POSTROUTING`
+MASQUERADE** for the kubernetes service.
 
-1. Added `--tls-san=10.43.0.1 --tls-san=kubernetes.default.svc`
-   to the k3s server's `ExecStart` and restarted k3s on
-   cicd-cp-1 (the SAN fix is in §14.5; backup at
-   `/etc/systemd/system/k3s.service.pre-wp07-bak`). This fixed
-   the TLS-validation side of the certgen failure but did NOT
-   fix the underlying TCP-routing issue.
-2. Generated the `envoy-gateway` certs locally via an
-   initContainer running `envoy-gateway certgen --local
-   --disable-topology-injector --overwrite`, copied the files
-   out via a sleeper sidecar, and created the Secret by hand.
-   This unblocks the cert volume mount but the controller
-   still fails on the apiserver call.
-3. **Not attempted (out of scope for WP07)**: switching
-   Cilium from `kubeProxyReplacement: true` to a hybrid /
-   iptables mode (which would force kube-proxy to handle the
-   service IP translation via iptables rather than cilium
-   eBPF). This is the most likely path to a fix.
+**Fix (committed 2026-07-08, tests green)**:
 
-**Next step (separate work item)**: investigate the
-pod-to-host-network routing on the Proxmox SDN with
-`kubeProxyReplacement: true`. Candidate root causes:
+1. `tools/lib/k3s_installer.py` — add `--disable-kube-proxy` to
+   `_SERVER_BASE_FLAGS` so cilium eBPF is the sole ClusterIP
+   translator. Cilium's auto-detect then enables full kube-proxy
+   replacement (BPF maps + socket-level acceleration).
+2. `tools/lib/helm_client.py::first_two_releases` — keep
+   `kubeProxyReplacement: "true"` (revert any `false` workaround),
+   add `k8sServiceHost: <vip>` + `k8sServicePort: "6443"` so
+   cilium-agent reaches the apiserver via the kube-vip VIP
+   (already reachable via L2 ARP) during its own startup
+   (chicken-and-egg), and set `mtu: "1450"` so the vxlan-encap
+   doesn't exceed the eth0 MTU.
+3. Pinned by `test_cilium_replaces_kube_proxy`,
+   `test_cilium_k8s_service_host_is_vip_not_clusterip`,
+   `test_cilium_mtu_is_1450_for_vxlan` (in
+   `tools/tests/test_remaining_releases.py`) and
+   `test_k3s_server_disables_embedded_kube_proxy` (in
+   `tools/tests/test_bootstrap_cluster.py`).
 
-- Cilium eBPF `Connect-balancer` interaction with vxlan
-  tunnel mode for cross-node traffic
-- iptables rules missing for `MARK 0x200/0x200` (cilium
-  mark) on the worker node
-- A `CiliumClusterwideNetworkPolicy` or host-level nft rule
-  that drops the unmarked return path from the apiserver
+**Live-apply procedure for an existing cluster** (to run after the
+commit lands):
 
-Until this is fixed, **the cluster is NOT GitLab-ready**.
-WP07's envoy-gateway install recipe change is correct (and
-was verified on the live cluster: chart installed, RBAC + CRDs
-in place, cert Secret created by the initContainer trick) but
-the cluster's network layer cannot host the controller pod
-until §14.4 is resolved.
+```bash
+# On cicd-cp-1: add --disable-kube-proxy to k3s.service
+sudo systemctl edit k3s.service   # add --disable-kube-proxy to ExecStart
+sudo systemctl daemon-reload
+sudo systemctl restart k3s        # briefly disrupts the apiserver
+
+# Cilium: helm upgrade with new values
+helm upgrade cilium cilium/cilium --namespace kube-system \
+  --reuse-values \
+  --set kubeProxyReplacement=true \
+  --set k8sServiceHost=10.0.0.30 \
+  --set k8sServicePort=6443 \
+  --set mtu=1450
+
+# Verify: proxmox-ccm + csi-provisioner come up
+kubectl -n kube-system get pods -o wide
+kubectl -n proxmox-csi-plugin get pods -o wide
+kubectl run --rm -it --restart=Never --image=nicolaka/netshoot:v0.13 \
+  --overrides='{"spec":{"nodeName":"cicd-w-1"}}' \
+  -- sh -c 'curl -kvs https://10.43.0.1/api 2>&1 | head -25'
+# Expect: TLS ServerHello received, 401 Unauthorized (because no token)
+```
+
+**Mirrored to apps cluster** before the next apps bootstrap (or just
+re-run the `install_k3s` phase after `rm
+infra/clusters/apps/bootstrap_state.json`).
+
+**Original diagnosis** (pre-root-cause): the cilium BPF LB had the
+correct mapping (`10.43.0.1:443 → 10.0.0.65:6443` per
+`cilium-dbg bpf lb list`), the k3s apiserver was listening on
+`*:6443`, the serving cert (§14.5) carried the right SANs — but
+packets from a pod on cicd-w-1 to `10.0.0.65:6443` timed out at the
+TLS layer. The intermediate hypotheses (MTU, cilium kubeProxyReplacement
+mode, cilium bpf-lb-mode, NetworkPolicy) were all dead ends because
+they couldn't explain why **plain HTTP cross-node worked but TLS
+didn't**. The iptables-save dump from cicd-w-1 finally surfaced the
+missing MASQUERADE.
+
+**Workarounds tried during the long debug session** (all superseded by
+the fix above):
+
+1. Added `--tls-san=10.43.0.1 --tls-san=kubernetes.default.svc` to
+   the k3s server (§14.5). Fixed TLS validation, didn't fix routing.
+2. Generated `envoy-gateway` certs locally via an initContainer
+   (`envoy-gateway certgen --local --disable-topology-injector
+   --overwrite`), copied them to a sleeper sidecar, applied the Secret
+   by hand. Unblocked the cert volume mount but not the apiserver call.
+3. Switched cilium to `kubeProxyReplacement: "false"` (live patch
+   via `kubectl patch cm cilium-config`). Didn't help — the underlying
+   issue was the kube-proxy rule set, not cilium's mode.
+4. Set cilium MTU to 1450 (live patch via `kubectl patch cm
+   cilium-config --type merge -p '{"data":{"mtu":"1450"}}'`).
+   Necessary but not sufficient.
+5. (Did NOT try, but would have worked) Manually appending the missing
+   `iptables -t nat -A KUBE-SVC-... -j KUBE-MARK-MASQ` rule. Avoided
+   per the user's instruction; the recipe-level fix is the right
+   answer.
 
 ### 14.5 k3s apiserver SAN extension (WP07, 2026-07-08)
 

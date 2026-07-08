@@ -116,12 +116,29 @@ class AgentInstallPlan:
 # the VIP verification note's mandatory additions:
 #   --tls-san=<vip>             -- apiserver cert must carry the VIP
 #   --node-ip / --node-external-ip -- populate from the SDN DHCP lease
+# WP07 follow-up (2026-07-08, §14.4 root cause + fix):
+#   --disable-kube-proxy        -- cilium runs in kubeProxyReplacement=true
+#                                 mode. With both cilium eBPF AND k3s's
+#                                 embedded kube-proxy writing iptables,
+#                                 kube-proxy's KUBE-MARK-MASQ rule for
+#                                 the `kubernetes` ClusterIP is omitted
+#                                 and the pod->apiserver TLS ServerHello
+#                                 is dropped on the return path (the
+#                                 response from 10.0.0.65:6443 can't be
+#                                 matched to a socket expecting src
+#                                 10.43.0.1:443). Disabling kube-proxy
+#                                 lets cilium own ClusterIP routing
+#                                 cleanly. Cilium must be told
+#                                 k8sServiceHost=<vip> so it doesn't
+#                                 depend on the ClusterIP during its own
+#                                 startup (chicken-and-egg).
 _SERVER_BASE_FLAGS: tuple[str, ...] = (
     "--flannel-backend=none",
     "--disable=traefik",
     "--disable=servicelb",
     "--disable=local-storage",
     "--disable=metrics-server",
+    "--disable-kube-proxy",
     "--kubelet-arg=cloud-provider=external",
 )
 
