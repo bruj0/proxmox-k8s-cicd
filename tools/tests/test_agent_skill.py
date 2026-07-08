@@ -90,8 +90,18 @@ def test_skill_md_mentions_every_external_library_with_version() -> None:
         ("pan-net/powerdns", "1.5.0"),
         ("strrl/cloudflare-tunnel-ingress-controller", "0.0.23"),
         ("cilium", "1.16"),
-        ("sergelogvinov/proxmox-cloud-controller-manager", "0.14.0"),
-        ("sergelogvinov/proxmox-csi-plugin", "0.5.9"),
+        # 2026-07-08 update: sergelogvinov charts moved to OCI in
+        # late 2025; the old HTTP paths 404. The skill must use the
+        # OCI ref. Chart versions are pinned to what the live host
+        # validated via `ghcr.io/v2/.../tags/list`.
+        ("oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager", "0.2.29"),
+        ("oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin", "0.5.9"),
+        # kube-vip 0.9.9 with the config.address + env.cp_enable
+        # values shape (NOT controlPlane.enabled, which never
+        # shipped in any released chart).
+        ("kube-vip", "0.9.9"),
+        # cert-manager 1.20.x.
+        ("cert-manager", "1.20"),
         ("talosctl", "1.13"),
         ("k3s", "1.34"),
         ("helm", "3"),  # major version pin

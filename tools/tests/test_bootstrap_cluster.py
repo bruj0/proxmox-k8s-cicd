@@ -151,6 +151,11 @@ def test_bootstrap_full_happy_path(
     Without this test, a structural bug (e.g. helm phase referencing a
     kubeconfig file that the kubeconfig phase hasn't written yet) could
     pass every other test and still break in production.
+
+    The Ubuntu+k3s path talks to the CP via PveSshProxy (a port forward
+    + sudo cat /etc/rancher/k3s/k3s.yaml). We stub that out with a
+    fake proxy that returns a syntactically-valid kubeconfig body, so
+    the helm phase can run end-to-end without any real network calls.
     """
     cluster = _write_cluster(tmp_path)
 
@@ -171,6 +176,102 @@ def test_bootstrap_full_happy_path(
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+
+    # Stub PveSshProxy so the helm + kubeconfig phases can run without
+    # touching a real Proxmox node. The stub returns a syntactically
+    # valid k3s kubeconfig body from `proxy.run()` and a no-op forward
+    # from `proxy.port_forward()`.
+    class _FakeForward:
+        local_port = 16443
+        proc = type("_FakeProc", (), {"pid": 4242})()
+
+        def wait_ready(self, timeout_s: float = 15.0) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+    class _FakeProxy:
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            return None
+
+        def port_forward(
+            self,
+            target_ip: str,
+            *,
+            remote_port: int = 6443,
+            remote_bind: str = "127.0.0.1",
+            local_port: int = 0,
+        ) -> _FakeForward:
+            return _FakeForward()
+
+        def run(self, target_ip: str, command: str, **kw: Any) -> Any:
+            # Mimic `sudo cat /etc/rancher/k3s/k3s.yaml` -- return a
+            # kubeconfig body with the loopback server URL so
+            # rewrite_server_url has something to match.
+            return type(
+                "_R",
+                (),
+                {
+                    "stdout": (
+                        "apiVersion: v1\n"
+                        "kind: Config\n"
+                        "clusters:\n"
+                        "- cluster:\n"
+                        "    server: https://127.0.0.1:6443\n"
+                        "  name: fake\n"
+                        "contexts: []\n"
+                        "users: []\n"
+                    ),
+                    "stderr": "",
+                },
+            )()
+
+    import bootstrap_cluster as _bc  # noqa: PLC0415 -- local import for clarity
+    # Patch the source module so both consumers see the stub. The
+    # merger (`lib.kubeconfig_merger`) imports PveSshProxy via
+    # `from .pve_ssh import PveSshProxy`; module-level bindings are
+    # set at import time, so monkeypatch.setattr on lib.pve_ssh only
+    # reaches callers that look up the class dynamically. The cleanest
+    # stub for the merger is to short-circuit the function itself
+    # (it owns the body-fetch + rewrite + merge logic).
+    import lib.pve_ssh as _pve_ssh  # noqa: PLC0415
+    import lib.kubeconfig_merger as _kcm  # noqa: PLC0415
+
+    def _fake_merge_kubeconfig_for_pveproxy(
+        cluster_name: str,
+        control_plane_ip: str,
+        repo_root: Path,
+        home: Path,
+        *,
+        forward_local_port: int,
+        forward_proc: object,
+    ) -> Path:
+        # Write the cluster kubeconfig verbatim (same body the helm
+        # phase wrote) and then perform the ~/.kube/config merge step.
+        cluster_dir = repo_root / "infra" / "clusters" / cluster_name
+        cluster_dir.mkdir(parents=True, exist_ok=True)
+        kubeconfig_path = cluster_dir / "kubeconfig"
+        # The body was already written by the helm phase. If not,
+        # materialise a minimal one so the test still exercises the
+        # merge step.
+        if not kubeconfig_path.exists():
+            kubeconfig_path.write_text(
+                "apiVersion: v1\nkind: Config\nserver: "
+                f"https://127.0.0.1:{forward_local_port}\n"
+            )
+        kubeconfig_path.chmod(0o600)
+        from lib.kubeconfig_merger import _merge_into_default  # noqa: PLC0415
+        return _merge_into_default(cluster_name, kubeconfig_path, home)
+
+    monkeypatch.setattr(_pve_ssh, "PveSshProxy", _FakeProxy)
+    monkeypatch.setattr(_bc, "PveSshProxy", _FakeProxy)
+    monkeypatch.setattr(_kcm, "merge_kubeconfig_for_pveproxy", _fake_merge_kubeconfig_for_pveproxy)
+    # bootstrap_cluster re-imports the symbol into its own namespace at
+    # load time, so the merger-call site in bootstrap_cluster.py needs
+    # a separate patch.
+    monkeypatch.setattr(_bc, "merge_kubeconfig_for_pveproxy", _fake_merge_kubeconfig_for_pveproxy)
+
     # Skip the host_ports phase explicitly so the test does not need a
     # baseline file. WP05 tests cover that phase separately.
     bootstrap(
@@ -178,15 +279,19 @@ def test_bootstrap_full_happy_path(
         repo_root=cluster.parent.parent.parent,
         phases=("cloudinit", "k3s", "helm", "kubeconfig"),
     )
-    # Every phase must have been invoked exactly once on the first run.
-    # On the Ubuntu+k3s path the kubeconfig is pulled via scp from
-    # /etc/rancher/k3s/k3s.yaml, not talosctl. The cloudinit phase is a
-    # no-op on the Python side (the actual k3s install happens at first
-    # boot via cloud-init runcmd), so it doesn't emit subprocess calls.
+    # The k3s phase probes apiserver via `kubectl --kubeconfig ...
+    # get --raw /healthz`; the helm phase runs `helm upgrade --install`;
+    # the kubeconfig phase merges into ~/.kube/config via
+    # `kubectl config view --flatten`.
     cmds = [" ".join(c) for c in calls]
     assert any(c.startswith("kubectl") and "/healthz" in c for c in cmds)
     assert any(c.startswith("helm upgrade") for c in cmds)
-    assert any(c.startswith("kubectl config view") or c.startswith("scp") for c in cmds)
+    assert any(c.startswith("kubectl config view") for c in cmds)
+    # The kubeconfig file the helm phase wrote should now exist and
+    # contain a server: URL pointing at the fake forward's local port.
+    kc = cluster / "kubeconfig"
+    assert kc.exists()
+    assert "https://127.0.0.1:16443" in kc.read_text()
 
 
 def test_bootstrap_logs_redact_secret_tokens(

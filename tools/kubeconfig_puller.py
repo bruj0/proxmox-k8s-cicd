@@ -149,7 +149,7 @@ def _find_first_cp(topo: ClusterTopology) -> dict[str, str]:
     return dict(topo.control_plane[0])
 
 
-def _fetch_kubeconfig_via_proxy(
+def fetch_kubeconfig_via_proxy(
     proxy: PveSshProxy,
     target_ip: str,
     logger: StructuredLogger,
@@ -160,6 +160,11 @@ def _fetch_kubeconfig_via_proxy(
     `ubuntu` and `sudo -n` to read the kubeconfig. We pull it through
     the same PveSshProxy used for the port forward so the operator
     only has to trust one SSH fingerprint chain.
+
+    Exposed as a module-level helper so the bootstrap script can
+    reuse it (the helm phase needs the same body to install the
+    first two helm releases before the operator ever runs the
+    kubeconfig-puller).
     """
     inner = f"cat {_K3S_KUBECONFIG_PATH}"
     remote = f"sudo -n bash -c {shlex.quote(inner)}"
@@ -182,7 +187,7 @@ def _fetch_kubeconfig_via_proxy(
     return body
 
 
-def _rewrite_server_url(kubeconfig_text: str, local_port: int) -> str:
+def rewrite_server_url(kubeconfig_text: str, local_port: int) -> str:
     """Replace the `server:` line with the local-forwarded URL.
 
     The CP-side kubeconfig points at `https://127.0.0.1:6443` (k3s
@@ -194,6 +199,9 @@ def _rewrite_server_url(kubeconfig_text: str, local_port: int) -> str:
     match on `server:` (no YAML parser) because the k3s-generated
     file uses simple `key: value` pairs on a single line and we
     never want to silently mis-parse a multi-doc YAML.
+
+    Exposed as a module-level helper so the bootstrap script can
+    reuse it after fetching the kubeconfig for the helm phase.
     """
     new_url = f"https://127.0.0.1:{local_port}"
     out_lines: list[str] = []
@@ -267,8 +275,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if local_port is None:
             local_port = _pick_unused_local_port()
 
-    body = _fetch_kubeconfig_via_proxy(proxy, target_ip, logger)
-    rewritten = _rewrite_server_url(body, local_port)
+    body = fetch_kubeconfig_via_proxy(proxy, target_ip, logger)
+    rewritten = rewrite_server_url(body, local_port)
     cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
     cfg.output_path.write_text(rewritten)
     cfg.output_path.chmod(0o600)

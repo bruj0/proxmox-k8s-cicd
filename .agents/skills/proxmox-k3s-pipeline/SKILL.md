@@ -268,8 +268,10 @@ in the operator's reply before invoking the library:
 | `pan-net/powerdns` (OpenTofu provider) | `1.5.0` | rationale: pan-net 1.5.x is the first version that supports the `rrsets` PATCH endpoint with `changetype: REPLACE`, which we use for idempotent record updates |
 | `STRRL/cloudflare-tunnel-ingress-controller` (Helm chart) | `0.0.23` | rationale: only stable version on the strrl chart repo as of 2026-07; pinned because the upstream CRDs are still alpha |
 | `cilium` (Helm chart) | `1.16.x` | rationale: matches the Ubuntu 24.04 HWE kernel (6.8) shipped with the cloud image; supports `gatewayAPI.enabled` plus eBPF host routing |
-| `sergelogvinov/proxmox-cloud-controller-manager` (Helm chart) | `0.14.0` | rationale: latest stable; required for `topology.kubernetes.io/region` + `zone` labels on the apps cluster nodes |
-| `sergelogvinov/proxmox-csi-plugin` (Helm chart) | `0.5.9` | rationale: chart 0.5.9 supports PVE 9.x and lvm-thin on `data1/data2` |
+| `kube-vip` (Helm chart) | `0.9.9` | rationale: latest stable as of 2026-07; values shape is `config.address` + `env.cp_enable` (NOT `controlPlane.enabled`, which was a 1.x-only preview that never shipped) |
+| `proxmox-cloud-controller-manager` (OCI Helm chart) | `0.2.29` | rationale: latest stable; OCI ref `oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager` (HTTP path 404s). Required for `topology.kubernetes.io/region` + `zone` labels on the apps cluster nodes |
+| `proxmox-csi-plugin` (OCI Helm chart) | `0.5.9` | rationale: latest stable; OCI ref `oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin`. Supports PVE 9.x and lvm-thin on `data1/data1` |
+| `cert-manager` (Helm chart) | `1.20.x` | rationale: latest stable; in-cluster CA only, no ACME solvers |
 | `k3s` | `1.34.x` | rationale: matches the Cilium + kube-vip versions; no known CVEs |
 | `helm` | `3.x` | rationale: required for `helm upgrade --install`; matches what k3s 1.34 ships |
 | Ubuntu cloud image (noble) | `noble-24.04.x` | rationale: LTS through 2029; cloud image ships with `qemu-guest-agent` package (no sideloading required); cloud-init NoCloud datasource auto-discovers seeded ISOs |

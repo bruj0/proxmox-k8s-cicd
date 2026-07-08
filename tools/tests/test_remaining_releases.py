@@ -92,8 +92,15 @@ def test_remaining_releases_includes_all_five_locked_charts(tmp_path: Path, monk
     }
     rels, traefik_apply = remaining_releases(cluster, secrets)
     chart_names = {r.chart for r in rels}
-    assert "sergelogvinov/proxmox-cloud-controller-manager" in chart_names
-    assert "sergelogvinov/proxmox-csi-plugin" in chart_names
+    # The sergelogvinov charts moved to OCI in late 2025 -- the old
+    # HTTP `sergelogvinov/<chart>` paths 404. Pin the OCI form.
+    assert (
+        "oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager"
+        in chart_names
+    )
+    assert (
+        "oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin" in chart_names
+    )
     assert "oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller" in chart_names
     assert "cert-manager/cert-manager" in chart_names
     # Traefik is a kubectl apply step, not a helm release.

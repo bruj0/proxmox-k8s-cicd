@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from kubeconfig_puller import (  # noqa: E402
     _parse_args,
-    _rewrite_server_url,
+    rewrite_server_url,
 )
 
 
@@ -27,7 +27,7 @@ def test_rewrite_server_url_replaces_loopback() -> None:
         "    server: https://127.0.0.1:6443\n"
         "  name: default\n"
     )
-    out = _rewrite_server_url(body, local_port=16443)
+    out = rewrite_server_url(body, local_port=16443)
     assert "server: https://127.0.0.1:16443" in out
     # The CP-side URL must be gone.
     assert "server: https://127.0.0.1:6443" not in out
@@ -41,7 +41,7 @@ def test_rewrite_preserves_indentation() -> None:
         "    server: https://127.0.0.1:6443\n"
         "  name: default\n"
     )
-    out = _rewrite_server_url(body, local_port=12345)
+    out = rewrite_server_url(body, local_port=12345)
     # Same 4-space indent on the new server: line.
     assert "    server: https://127.0.0.1:12345" in out
 
@@ -57,7 +57,7 @@ def test_rewrite_only_replaces_first_server_line() -> None:
         "    server: https://127.0.0.1:6443\n"
         "  name: default\n"
     )
-    out = _rewrite_server_url(body, local_port=8080)
+    out = rewrite_server_url(body, local_port=8080)
     # Only one server: line in the output.
     assert out.count("server:") == 1
     assert "127.0.0.1:8080" in out
@@ -67,7 +67,7 @@ def test_rewrite_raises_when_no_server_line() -> None:
     import pytest
     body = "apiVersion: v1\nkind: Config\n"  # no `clusters:`
     with pytest.raises(RuntimeError):
-        _rewrite_server_url(body, local_port=1234)
+        rewrite_server_url(body, local_port=1234)
 
 
 def test_parse_args_default_output_path(tmp_path) -> None:

@@ -73,7 +73,12 @@ from lib.helm_client import (  # type: ignore[import-not-found]  # noqa: E402
 )
 from lib.host_ports import verify_no_new_dnat_rules  # type: ignore[import-not-found]  # noqa: E402
 from lib.k3s_installer import K3sInstaller, K3sInstallerError  # type: ignore[import-not-found]  # noqa: E402
-from lib.kubeconfig_merger import merge as merge_kubeconfig  # type: ignore[import-not-found]  # noqa: E402
+from lib.kubeconfig_merger import merge_kubeconfig_for_pveproxy  # type: ignore[import-not-found]  # noqa: E402
+from lib.pve_ssh import ForwardedPort, PveSshProxy  # type: ignore[import-not-found]  # noqa: E402
+from kubeconfig_puller import (  # type: ignore[import-not-found]  # noqa: E402
+    fetch_kubeconfig_via_proxy,
+    rewrite_server_url,
+)
 from lib.log import StructuredLogger  # type: ignore[import-not-found]  # noqa: E402
 from lib.secret_loader import SecretLoader  # type: ignore[import-not-found]  # noqa: E402
 # ClusterTopology is the data class for parsing infra/clusters/<name>/output.json.
@@ -121,6 +126,16 @@ class State:
     cluster: str
     repo_root: Path
     phases_done: set[str] = field(default_factory=set)
+    # Tunnel bookkeeping for the bootstrap run. The helm phase opens
+    # a PveSshProxy.port_forward to the first CP's :6443 (apiserver)
+    # so helm install can talk to a cluster the operator host can't
+    # reach directly (CPs are on the SDN 10.0.0.0/24, not on the
+    # operator's eth0). The same tunnel is reused by the kubeconfig
+    # phase to write the operator's kubeconfig, and torn down at
+    # script exit. Both fields are optional -- populated lazily on
+    # first use.
+    proxy: PveSshProxy | None = None
+    forward: ForwardedPort | None = None
 
     def load(self) -> "State":
         state_file = self._state_file()
@@ -351,34 +366,75 @@ def _run_k3s(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
     state.phases_done.add("k3s")
 
 
-def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
-    # Helm needs a kubeconfig file to talk to the cluster. PHASES puts helm
-    # before kubeconfig so the file might not exist yet; pull it inline.
+def _open_apiserver_tunnel(
+    state: State,
+    cp_ip: str,
+    cluster_dir: Path,
+) -> tuple[Path, int]:
+    """Open an apiserver tunnel through PVE, write a kubeconfig that hits it.
+
+    Returns (kubeconfig_path, local_port). Idempotent: if the State already
+    has a live tunnel, reuse it (the same call happens again on retries or
+    when both `helm` and `kubeconfig` phases run in one invocation).
+
+    Why a tunnel (vs. an scp/raw ssh call):
+      - The CPs are on SDN 10.0.0.0/24; the operator host is on
+        10.0.10.0/24. The CPs aren't directly reachable.
+      - PveSshProxy provides port forwarding through the PVE node
+        (10.0.10.4), the same channel used by the live operator
+        tools (tools/ssh_proxy.py, tools/kubeconfig_puller.py).
+      - The k3s kubeconfig points at https://127.0.0.1:6443 on the
+        CP. We rewrite the server: URL to https://127.0.0.1:<local_port>
+        so kubectl / helm on the operator host reach the tunnel
+        instead of the operator's own loopback.
+    """
+    if state.forward is None:
+        if state.proxy is None:
+            state.proxy = PveSshProxy(logger=_LOG)
+        # Forward 127.0.0.1:6443 on the CP (where k3s binds) to a
+        # free local port. Pick a free port explicitly so the
+        # kubeconfig's server: URL is deterministic and the operator
+        # can pre-arrange firewall rules if needed.
+        state.forward = state.proxy.port_forward(
+            cp_ip,
+            remote_port=6443,
+            remote_bind="127.0.0.1",
+            local_port=0,  # ask the proxy for a free port
+        )
+        # port_forward() already calls wait_ready() internally before
+        # returning; no extra wait needed here.
+        _LOG.info(
+            "helm.tunnel_ready",
+            local_port=state.forward.local_port,
+            cp_ip=cp_ip,
+            pid=state.forward.proc.pid,
+        )
     kubeconfig = cluster_dir / "kubeconfig"
-    if not kubeconfig.exists():
-        if not topo.control_plane:
-            raise BootstrapError("helm", {"reason": "no control plane"})
-        cp_ip = topo.control_plane[0]["ip"]
-        kubeconfig.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            # Ubuntu+k3s: kubeconfig lives at /etc/rancher/k3s/k3s.yaml on
-            # the control-plane node. scp over SSH using the Bitwarden SSH
-            # agent so the key is forwarded without prompting.
-            subprocess.run(
-                [
-                    "scp",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    f"root@{cp_ip}:/etc/rancher/k3s/k3s.yaml",
-                    str(kubeconfig),
-                ],
-                check=True,
-                env={**__import__("os").environ, "SSH_AUTH_SOCK": "/home/bruj0/.bitwarden-ssh-agent.sock"},
-            )
-        except (subprocess.CalledProcessError, OSError) as exc:
-            raise BootstrapError("helm", {"reason": str(exc)}) from exc
+    if state.proxy is None:  # pragma: no cover -- guarded above
+        raise BootstrapError("helm", {"reason": "proxy missing"})
+    # Always fetch + rewrite. Re-running the bootstrap script picks a
+    # different ephemeral forward port each time, so a cached
+    # kubeconfig pointing at the previous port would steer kubectl
+    # and helm at a closed socket. The fetch is cheap (one ssh exec).
+    body = fetch_kubeconfig_via_proxy(state.proxy, cp_ip, _LOG)
+    rewritten = rewrite_server_url(body, state.forward.local_port)
+    kubeconfig.parent.mkdir(parents=True, exist_ok=True)
+    kubeconfig.write_text(rewritten)
+    kubeconfig.chmod(0o600)
+    return kubeconfig, state.forward.local_port
+
+
+def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
+    # Helm needs a reachable apiserver and a kubeconfig that points at it.
+    # Open the PVE tunnel to the first CP and write the kubeconfig if it
+    # isn't on disk yet.
+    if not topo.control_plane:
+        raise BootstrapError("helm", {"reason": "no control plane"})
+    cp_ip = topo.control_plane[0]["ip"]
+    try:
+        kubeconfig, _local_port = _open_apiserver_tunnel(state, cp_ip, cluster_dir)
+    except Exception as exc:
+        raise BootstrapError("helm", {"reason": str(exc)}) from exc
     client = HelmClient(kubeconfig)
     cluster_dict: dict[str, object] = {
         "name": topo.name,
@@ -423,8 +479,24 @@ def _run_kubeconfig(state: State, cluster_dir: Path, topo: ClusterTopology) -> N
     cp_ip = topo.control_plane[0]["ip"]
     home = Path.home()
     try:
-        merge_kubeconfig(state.cluster, cp_ip, state.repo_root, home)
-    except (subprocess.CalledProcessError, OSError) as exc:
+        # If the helm phase ran first in this invocation the tunnel is
+        # already up; reuse it. Otherwise open one now.
+        _kubeconfig, local_port = _open_apiserver_tunnel(state, cp_ip, cluster_dir)
+        if state.forward is None:  # pragma: no cover -- guarded above
+            raise BootstrapError("kubeconfig", {"reason": "tunnel missing"})
+        # Merge the cluster kubeconfig into the operator's ~/.kube/config
+        # (timestamped backup). The kubeconfig at cluster_dir/kubeconfig
+        # has already been written by _open_apiserver_tunnel above; the
+        # merger just merges it into the default location.
+        merge_kubeconfig_for_pveproxy(
+            state.cluster,
+            cp_ip,
+            state.repo_root,
+            home,
+            forward_local_port=local_port,
+            forward_proc=state.forward.proc,
+        )
+    except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
         raise BootstrapError("kubeconfig", {"reason": str(exc)}) from exc
     state.phases_done.add("kubeconfig")
 
@@ -568,30 +640,45 @@ def bootstrap(
     topo = _load_topology(cluster_dir)
     _LOG.info("bootstrap.start", cluster=cluster_name, phases=",".join(requested))
 
-    for phase in requested:
-        if phase in state.phases_done:
-            _LOG.info(
-                "bootstrap.skip",
-                phase=phase,
-                cluster=cluster_name,
-                reason="already_done",
-            )
-            continue
-        if phase == "cloudinit":
-            _run_cloudinit(state, cluster_dir, topo)
-        elif phase == "install_k3s":
-            _run_install_k3s(state, cluster_dir, topo)
-        elif phase == "k3s":
-            _run_k3s(state, cluster_dir, topo)
-        elif phase == "helm":
-            _run_helm(state, cluster_dir, topo)
-        elif phase == "kubeconfig":
-            _run_kubeconfig(state, cluster_dir, topo)
-        elif phase == "host_ports":
-            _run_host_ports(state, cluster_dir)
-        elif phase == "externalname":
-            _run_externalname(state, cluster_dir, topo)
-        state.save()
+    try:
+        for phase in requested:
+            if phase in state.phases_done:
+                _LOG.info(
+                    "bootstrap.skip",
+                    phase=phase,
+                    cluster=cluster_name,
+                    reason="already_done",
+                )
+                continue
+            if phase == "cloudinit":
+                _run_cloudinit(state, cluster_dir, topo)
+            elif phase == "install_k3s":
+                _run_install_k3s(state, cluster_dir, topo)
+            elif phase == "k3s":
+                _run_k3s(state, cluster_dir, topo)
+            elif phase == "helm":
+                _run_helm(state, cluster_dir, topo)
+            elif phase == "kubeconfig":
+                _run_kubeconfig(state, cluster_dir, topo)
+            elif phase == "host_ports":
+                _run_host_ports(state, cluster_dir)
+            elif phase == "externalname":
+                _run_externalname(state, cluster_dir, topo)
+            state.save()
+    finally:
+        # Tear down the apiserver tunnel regardless of success/failure.
+        # Without this we'd leak the long-lived ssh process on every
+        # bootstrap run, eventually exhausting the PVE connection limit.
+        if state.forward is not None:
+            try:
+                state.forward.terminate()
+                _LOG.info("bootstrap.tunnel_torn_down", pid=state.forward.proc.pid)
+            except Exception as exc:  # pragma: no cover -- defensive
+                _LOG.warn(
+                    "bootstrap.tunnel_teardown_failed",
+                    message=str(exc),
+                )
+            state.forward = None
 
     _LOG.info("bootstrap.done", cluster=cluster_name)
 

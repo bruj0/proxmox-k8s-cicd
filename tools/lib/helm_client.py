@@ -83,13 +83,21 @@ class HelmClient:
 def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
     """The first two Helm releases for a new cluster.
 
-    Recipes come straight from the WP04 spec (T005 + T006). The Cilium
-    release pulls pod_cidr from the cluster output so IPAM cluster-pool
-    sizing matches SS2's Pod CIDR.
+    Recipes are pinned against the live host (cicd + apps clusters,
+    2026-07-08 cross_check in infra/clusters/<name>/versions.lock.yaml).
+    The cilium release pulls pod_cidr from the cluster output so IPAM
+    cluster-pool sizing matches SS2's Pod CIDR; the kube-vip release
+    uses the chart's `config.address` + `env.cp_enable` shape, which
+    is the upstream-canonical form for chart 0.9.x (the old
+    `controlPlane.enabled` shape was a 1.x-only preview that never
+    made it into a release).
 
-    Versions and values are recorded in tools/versions.lock.yaml.
+    Versions and values are recorded in tools/versions.lock.yaml and
+    pinned by tests/test_remaining_releases.py + test_agent_skill.py
+    so a stale-pin regression fails CI.
     """
     pod_cidr = cluster.get("pod_cidr", "10.42.0.0/16")
+    vip = str(cluster.get("vip", ""))
     return [
         HelmRelease(
             name="cilium",
@@ -109,13 +117,21 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
             name="kube-vip",
             chart="kube-vip/kube-vip",
             namespace="kube-system",
-            version="1.2.1",
+            version="0.9.9",
+            # The kube-vip chart's values shape in 0.9.x lives under
+            # `config:` and `env:` (camelCase keys). The "controlPlane.*"
+            # shape is NOT supported in any released chart version; it
+            # was a doc-only preview. Live-validated 2026-07-08.
             values={
-                "interface": "eth0",
-                "leaderElection": "true",
-                "controlPlane.enabled": "true",
-                "controlPlane.hostPort": "6443",
-                "services.etcd.enabled": "false",
+                "config.address": vip,
+                "env.cp_enable": "true",
+                "env.vip_interface": "eth0",
+                "env.vip_arp": "true",
+                "env.vip_leaderelection": "true",
+                "env.lb_enable": "true",
+                "env.lb_port": "6443",
+                "env.svc_enable": "true",
+                "env.svc_election": "false",
             },
         ),
     ]
@@ -147,6 +163,12 @@ def remaining_releases(
 
     Secrets are passed in directly (read at runtime from
     secret_loader.SecretLoader); they never enter logs.
+
+    Chart versions and OCI refs are pinned against the live host
+    (cicd + apps clusters, 2026-07-08) and asserted by
+    tests/test_agent_skill.py. The sergelogvinov charts moved to
+    OCI in late 2025; the old HTTP `sergelogvinov/<chart>` paths
+    return 404 now. Use `oci://ghcr.io/sergelogvinov/charts/<chart>`.
     """
     region, zone = _proxmox_region_zone(cluster)
     cluster_name = str(cluster["name"])
@@ -155,9 +177,9 @@ def remaining_releases(
     rels: list[HelmRelease] = [
         HelmRelease(
             name="proxmox-cloud-controller-manager",
-            chart="sergelogvinov/proxmox-cloud-controller-manager",
+            chart="oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager",
             namespace="kube-system",
-            version="0.14.0",
+            version="0.2.29",
             values={
                 "region": region,
                 "zone": zone,
@@ -168,7 +190,7 @@ def remaining_releases(
         ),
         HelmRelease(
             name="proxmox-csi-plugin",
-            chart="sergelogvinov/proxmox-csi-plugin",
+            chart="oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin",
             namespace="proxmox-csi-plugin",
             version="0.5.9",
             values={
@@ -199,7 +221,7 @@ def remaining_releases(
             name="cert-manager",
             chart="cert-manager/cert-manager",
             namespace="cert-manager",
-            version="1.16.1",
+            version="1.20.3",
             values={
                 "installCRDs": "true",
             },

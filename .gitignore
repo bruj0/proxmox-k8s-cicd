@@ -57,3 +57,6 @@ terraform.tfvars
 # One-shot pre-migration backups of terraform.tfstate before
 # `tofu init -migrate-state` to a remote backend. Never track.
 .local-state-backup-*/
+
+# Per-cluster bootstrap state (regenerated on each bootstrap run)
+infra/clusters/*/bootstrap_state.json
