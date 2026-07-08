@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from tools.lib.log import StructuredLogger
+from tools.lib.pve_ssh import PveSshProxy
 from tools.lib.versions import VersionsLockReader
 
 
@@ -148,6 +149,7 @@ class K3sInstaller:
     ssh_proxy_target: str
     logger: StructuredLogger
     versions: VersionsLockReader | None = None
+    proxy: PveSshProxy | None = None
 
     def __post_init__(self) -> None:
         # VersionsLockReader is read-only and cacheable; default to a
@@ -162,12 +164,32 @@ class K3sInstaller:
                 "versions",
                 VersionsLockReader(logger=self.logger),
             )
+        if self.proxy is None:
+            # ssh_user on the cluster dict lets per-cluster tofu
+            # overrides pin a different in-VM user (we currently use
+            # the cloud-image default `ubuntu` everywhere).
+            ssh_user = str(self.cluster.get("ssh_user", "ubuntu"))
+            object.__setattr__(
+                self,
+                "proxy",
+                PveSshProxy(
+                    jump_host=self.ssh_proxy_target,
+                    ssh_user=ssh_user,
+                    logger=self.logger,
+                ),
+            )
 
     @property
     def _versions(self) -> VersionsLockReader:
         # Convenience accessor for the always-non-None invariant.
         assert self.versions is not None
         return self.versions
+
+    @property
+    def _proxy(self) -> PveSshProxy:
+        # Convenience accessor for the always-non-None invariant.
+        assert self.proxy is not None
+        return self.proxy
 
     # ---------- planning ----------
 
@@ -308,7 +330,7 @@ class K3sInstaller:
         # as root via sudo -n (the cluster VMs refuse root login).
         inner = "cat /var/lib/rancher/k3s/server/node-token 2>/dev/null"
         remote = f"sudo -n bash -c {shlex.quote(inner)}"
-        cmd = self._ssh_argv(target_ip=ip) + ["--", remote]
+        cmd = self._proxy.ssh_argv(ip, command=remote)
         proc = subprocess.run(  # noqa: S603 -- single, documented shell call.
             cmd,
             check=False,
@@ -375,7 +397,7 @@ class K3sInstaller:
         try:
             remote = f"sudo -n bash -c {shlex.quote(command)}"
             proc = subprocess.run(  # noqa: S603 -- documented shell call.
-                self._ssh_argv(target_ip=ip) + ["--", remote],
+                self._proxy.ssh_argv(ip, command=remote),
                 check=False,
                 capture_output=True,
                 text=True,
@@ -446,7 +468,7 @@ class K3sInstaller:
         )
         inner = export_block + install_cmd
         remote = f"sudo -n bash -c {shlex.quote(inner)}"
-        cmd = self._ssh_argv(target_ip=ip) + ["--", remote]
+        cmd = self._proxy.ssh_argv(ip, command=remote)
         try:
             proc = subprocess.run(  # noqa: S603
                 cmd,
@@ -472,57 +494,3 @@ class K3sInstaller:
                 stdout_tail=proc.stdout[-200:],
                 stderr_tail=proc.stderr[-400:],
             )
-
-    def _ssh_argv(self, target_ip: str | None = None) -> list[str]:
-        """Return the SSH argv prefix used to reach a cluster VM.
-
-        `ssh_proxy_target` is the canonical PVE jump (e.g. `root@kvm.bruj0.net -p 6022`).
-        When `target_ip` is supplied we tunnel through the PVE jump
-        host to the VM's SDN IP via `ssh -o ProxyCommand=...` -- this
-        is the standard "double ssh" pattern used everywhere the
-        operator host is NOT directly routable to the SDN.
-
-        Why ProxyCommand and not `-W`: when the remote side needs to
-        execute a non-trivial shell command (our installer passes a
-        multi-token env-prefix + pipe to `sh -s - <flags>`), `-W`
-        forces ssh into forward-only mode and refuses the command.
-        ProxyCommand gives us stdio forwarding AND a real exec target.
-
-        Implementation note: the ProxyCommand value is ONE shell-eval-able
-        string (not a list of argv tokens). When ssh sees `-o
-        ProxyCommand=<value>` it runs `<value> via /bin/sh -c`, so we
-        must build the value as a single quoted string. We use
-        `shlex.quote` per token and rejoin with spaces.
-        """
-        base = [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-        ]
-        if target_ip:
-            # Build a single ProxyCommand value. ssh will run it via
-            # /bin/sh -c, so we shlex.quote each token.
-            proxy_tokens = ["ssh", *self.ssh_proxy_target.split(), "-W", "%h:%p"]
-            proxy_cmd = " ".join(shlex.quote(t) for t in proxy_tokens)
-            # ssh uses this only to pick the host key fingerprint;
-            # StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null
-            # so any name works. The actual destination hop is the
-            # ProxyCommand above which substitutes %h/%p on the fly.
-            #
-            # USER: the cluster VMs are configured (via --ciuser in the
-            # cluster root's tofu module) with `ubuntu` as the primary
-            # user. The cloud image default sshd_config refuses root
-            # login with the literal message "Please login as the user
-            # ubuntu rather than the user root.". We use `ubuntu@` and
-            # rely on sudo NOPASSWD inside the installer plan.
-            remote_user = str(self.cluster.get("ssh_user", "ubuntu"))
-            return base + [
-                "-o",
-                f"ProxyCommand={proxy_cmd}",
-                f"{remote_user}@{target_ip}",
-            ]
-        return base + self.ssh_proxy_target.split()
