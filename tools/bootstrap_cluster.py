@@ -1,22 +1,27 @@
 """SS3 entrypoint: bootstrap a cluster end-to-end.
 
-Phases (6):
-  1. cloudinit   — verify every clone VM finished cloud-init + k3s join
-                   (k3s is installed as a systemd unit by the NoCloud
-                   user-data runcmd attached by the cluster root tofu
-                   module; no Python-side orchestration required)
-  2. k3s         — verify apiserver /healthz
-  3. helm        — install Cilium (kube-proxy replacement, WP04) and
-                   the remaining four (proxmox-ccm, proxmox-csi,
-                   cloudflare-tunnel, cert-manager, WP05) Helm releases;
-                   apply the rendered Traefik HelmChartConfig if present
-  4. kubeconfig  — pull admin kubeconfig, merge into ~/.kube/config
-  5. host_ports  — verify the PVE nft prerouting chain has no new DNAT
-                   rules beyond the captured baseline (M2 misfit)
-  6. externalname — apps-cluster only: apply the cross-cluster
-                   ExternalName Services kustomization that exposes
-                   cicd services (gitlab, registry, minio,
-                   minio-console) to workloads on apps (WP06)
+Phases (7):
+  1. cloudinit   — verify every clone VM finished cloud-init
+  2. install_k3s  — install k3s on each VM via the Python
+                    orchestrator (tools/lib/k3s_installer.py). The
+                    server runs on the control-plane VM with
+                    --tls-san=<vip>; agents join the cluster via
+                    https://<vip>:6443 with a one-shot token read
+                    from the server's /var/lib/rancher/k3s/server/node-token.
+  3. k3s          — verify apiserver /healthz (after install_k3s has
+                     brought up the server)
+  4. helm         — install Cilium (kube-proxy replacement, WP04) and
+                     the remaining four (proxmox-ccm, proxmox-csi,
+                     cloudflare-tunnel, cert-manager, WP05) Helm
+                     releases; apply the rendered Traefik
+                     HelmChartConfig if present
+  5. kubeconfig   — pull admin kubeconfig, merge into ~/.kube/config
+  6. host_ports   — verify the PVE nft prerouting chain has no new DNAT
+                     rules beyond the captured baseline (M2 misfit)
+  7. externalname — apps-cluster only: apply the cross-cluster
+                     ExternalName Services kustomization that exposes
+                     cicd services (gitlab, registry, minio,
+                     minio-console) to workloads on apps (WP06)
 
 Entry gate:
   python -m tools.bootstrap_cluster --cluster cicd \
@@ -47,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -66,6 +72,7 @@ from lib.helm_client import (  # type: ignore[import-not-found]  # noqa: E402
     remaining_releases,
 )
 from lib.host_ports import verify_no_new_dnat_rules  # type: ignore[import-not-found]  # noqa: E402
+from lib.k3s_installer import K3sInstaller, K3sInstallerError  # type: ignore[import-not-found]  # noqa: E402
 from lib.kubeconfig_merger import merge as merge_kubeconfig  # type: ignore[import-not-found]  # noqa: E402
 from lib.log import StructuredLogger  # type: ignore[import-not-found]  # noqa: E402
 from lib.secret_loader import SecretLoader  # type: ignore[import-not-found]  # noqa: E402
@@ -81,6 +88,7 @@ _LOG = StructuredLogger("bootstrap_cluster")  # noqa: E402
 
 PHASES: tuple[str, ...] = (
     "cloudinit",
+    "install_k3s",
     "k3s",
     "helm",
     "kubeconfig",
@@ -187,6 +195,97 @@ def _run_cloudinit(state: State, cluster_dir: Path, topo: ClusterTopology) -> No
     # can proceed; the cluster-cicd tofu module's lifecycle guarantees
     # VMs are reachable before bootstrap_cluster.py is invoked.
     state.phases_done.add("cloudinit")
+
+
+def _run_install_k3s(
+    state: State, cluster_dir: Path, topo: ClusterTopology
+) -> None:
+    """Per-VM k3s installation via the Python orchestrator.
+
+    Reads `infra/clusters/<name>/output.json` (same file as `_run_cloudinit`
+    loaded), walks every control-plane + worker, and calls
+    `K3sInstaller.install_server` / `install_agent` on each. The agent
+    step depends on the server being healthy first because we have to
+    read `/var/lib/rancher/k3s/server/node-token` from it.
+
+    Idempotency: K3sInstaller is built around hash-based idempotency
+    (the upstream install.sh is, plus our own systemctl+kubeconfig
+    gate). Re-running this phase on a healthy cluster is a no-op that
+    exits in <10s. The phase records `install_k3s` in
+    `bootstrap_state.json::phases_done` so a partial-state rerun skips
+    it.
+    """
+    if not topo.control_plane:
+        raise BootstrapError(
+            "install_k3s",
+            {"reason": "no control plane in cluster output.json"},
+        )
+    cluster_dict = {
+        "name": topo.name,
+        "vip": topo.vip,
+        "vms": [
+            # Use the SDN IP we got at output.json time. The installer
+            # reads --node-ip from this; if the live IP differs (it can
+            # drift after a SDN DHCP reset), the next apply of the
+            # cluster root reconciles it via output.json update + a
+            # bootstrap_state.json wipe of the install_k3s entry.
+            {
+                "name": n["name"],
+                "vmid": int(n.get("vmid", 0)),
+                "role": n["role"],
+                "ip": n["ip"],
+            }
+            for n in topo.all_nodes
+            if n.get("name") and n.get("ip")
+        ],
+    }
+    installer = K3sInstaller(
+        cluster=cluster_dict,
+        # The canonical PVE jump host. Lives in .env via the BITWARDEN
+        # agent env var that apply_tofu.py sets up; the actual SSH
+        # call is delegated to the operator's agent.
+        ssh_proxy_target=os.environ.get(
+            "PVE_SSH_TARGET",
+            "root@kvm.bruj0.net -p 6022",
+        ),
+        logger=_LOG,
+    )
+    try:
+        # 1) Install on every control-plane VM (serially; multi-CP HA
+        # will parallelize via a future WP). The first CP is the join
+        # target for the agents, so we install CPs before workers.
+        for cp in topo.control_plane:
+            node = {
+                "name": cp["name"],
+                "vmid": int(cp.get("vmid", 0)),
+                "role": "control_plane",
+                "ip": cp["ip"],
+            }
+            installer.install_server(node, vip=topo.vip)
+        # 2) Read the join token off the first CP. If the server is
+        # not yet healthy we time out and surface a structured error
+        # so the operator can investigate the upstream install log.
+        first_cp = {
+            "name": topo.control_plane[0]["name"],
+            "vmid": int(topo.control_plane[0].get("vmid", 0)),
+            "role": "control_plane",
+            "ip": topo.control_plane[0]["ip"],
+        }
+        token = installer.read_node_token(first_cp)
+        # 3) Install agents on every worker VM.
+        for w in topo.worker:
+            node = {
+                "name": w["name"],
+                "vmid": int(w.get("vmid", 0)),
+                "role": "worker",
+                "ip": w["ip"],
+            }
+            installer.install_agent(node, vip=topo.vip, token=token)
+    except K3sInstallerError as exc:
+        raise BootstrapError(
+            "install_k3s", {"reason": exc.reason, **exc.fields}
+        ) from exc
+    state.phases_done.add("install_k3s")
 
 
 def _run_k3s(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
@@ -480,6 +579,8 @@ def bootstrap(
             continue
         if phase == "cloudinit":
             _run_cloudinit(state, cluster_dir, topo)
+        elif phase == "install_k3s":
+            _run_install_k3s(state, cluster_dir, topo)
         elif phase == "k3s":
             _run_k3s(state, cluster_dir, topo)
         elif phase == "helm":

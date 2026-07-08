@@ -5,6 +5,17 @@
 # All version pins are operator-overridable via env vars; this file is the
 # canonical default recorded by the implement agent.
 
+# Canonical k3s install pin (NEW 2026-07-08 — install_k3s phase).
+# Both K3sInstaller (tools/lib/k3s_installer.py) and the
+# VersionsLockReader (tools/lib/versions.py) read this. The
+# dependencies[*].name=="k3s" entry below is kept for backwards
+# compatibility with existing tooling.
+k3s_stable_version: "v1.34.9+k3s1"
+k3s_install_url: "https://get.k3s.io"
+k3s_channel: "stable"
+helm_floor: ">= 3.18.0"
+kubectl_floor: ">= v1.34.0"
+
 dependencies:
   - name: talosctl
     version: "v1.10.x"
@@ -15,12 +26,14 @@ dependencies:
     source: "context7-auto-research on 2026-07-05"
 
   - name: k3s
-    version: "v1.34.x"
+    version: "v1.34.9+k3s1"
     rationale: >
       Spec-mandated k3s minor version. k3s 1.34 bundles Traefik v3.x as a
       manifest; we run with --disable=traefik and install Traefik as a
-      standalone Helm release (handled by SS3's helm phase).
-    source: "context7-auto-research on 2026-07-05"
+      standalone Helm release (handled by SS3's helm phase). The
+      `+k3s1` suffix tracks the latest stable patch as published on
+      https://github.com/k3s-io/k3s/releases/tag/v1.34.9+k3s1 .
+    source: "context7-auto-research on 2026-07-08"
 
   - name: cilium
     version: "1.16.x"
@@ -42,21 +55,36 @@ dependencies:
     rationale: "Project-wide pinned_toolchain.python floor."
 
   - name: helm
-    version: ">= 3.13"
+    version: ">= 3.18.0"
     rationale: >
       Required for --wait flag semantics on `helm upgrade --install`.
-      3.13.x is the latest stable line as of 2026-07.
-    source: "context7-auto-research on 2026-07-05"
+      The Phase-4 install_k3s phase assumes a helm-v3 compatible
+      client for later phases; v4 is forward-compatible but we hold
+      the floor at 3.18.x to match the chart repo's stated compatibility.
+    source: "context7-auto-research on 2026-07-08"
 
   - name: kubectl
-    version: "matches k3s minor (1.34)"
-    rationale: "Version skew policy requires kubectl to match the apiserver minor."
+    version: ">= 1.34.0"
+    rationale: >
+      kubectl must match the cluster apiserver's minor version per
+      the Kubernetes version-skew policy. Forward compat across one
+      minor is allowed, so v1.36.x clients work against v1.34.x servers.
+    source: "context7-auto-research on 2026-07-08"
 
 cross_check:
   talos_k3s_shim: "compatible"
   cilium_pve_kernel: "compatible (7.0.6-2-pve has all eBPF features)"
   k3s_traefik_bundled: "compatible (v3.x supports IngressClass + ClusterIP)"
   kubevip_cilium: "compatible (kube-vip runs in host network; Cilium runs in pod network)"
+  install_k3s_2026_07_08_vip_state: >
+    Verified on kvm.bruj0.net (BigBertha, PVE 9.2.3) on 2026-07-08:
+    the four cluster VMs (cicd-cp-1 @ 10.0.0.65, cicd-w-1 @
+    10.0.0.64, apps-cp-1 @ 10.0.0.67, apps-w-1 @ 10.0.0.66) had no
+    k3s installed; PowerDNS A records cicd-vip.intranet.local ->
+    10.0.0.30 and apps-vip.intranet.local -> 10.0.0.40 already
+    present; no listener on either VIP. Outcome: install_k3s phase
+    design confirmed; --tls-san=<vip> is mandatory to make
+    kubeconfig SANs match. See docs/install-k3s-vip-verification.md.
 
 secrets_redaction:
   scrub_pattern: "(?i)(token|secret|password|ssh_key|sshkey)"

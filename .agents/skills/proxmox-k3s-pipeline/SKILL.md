@@ -7,21 +7,24 @@ description: Bring up two k3s clusters (cicd + apps) on a single Proxmox host us
 
 End-to-end pipeline for provisioning two Ubuntu+k3s clusters on a
 single Proxmox host. The pipeline drives five numbered top-level
-phases; the bootstrap phase (Phase 4) further decomposes into six
-ordered sub-phases (cloudinit, k3s, helm, kubeconfig, host_ports,
+phases; the bootstrap phase (Phase 4) further decomposes into seven
+ordered sub-phases (cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports,
 externalname). Each (sub-)phase has a single CLI entry point and
 explicit success criteria that the agent MUST assert before
 proceeding.
 
-**Pipeline state: 2026-07-07 -- Phases 0-2 verified end-to-end on
+**Pipeline state: 2026-07-08 -- Phases 0-2 verified end-to-end on
 kvm.bruj0.net (BigBertha, PVE 9.2.3, Ubuntu 24.04 LTS Noble +
 k3s v1.34.x golden template at VMID 900).** All four cluster VMs
-(cicd-cp-1, cicd-w-1, apps-cp-1, apps-w-1) are cloned, running,
-and have a working qemu-guest-agent. Phase 3 (host-ports
-baseline) and Phase 4 (cluster bootstrap) are the active next
-steps. Phases 3-5 are documented from the original spec; the
+(cicd-cp-1 @ SDN 10.0.0.65, cicd-w-1 @ 10.0.0.64, apps-cp-1 @
+10.0.0.67, apps-w-1 @ 10.0.0.66) are cloned, running, and have a
+working qemu-guest-agent. The `install_k3s` phase landed on
+2026-07-08; `k3s` (healthz) and the remaining phases run after.
+Phases 3-5 are documented from the original spec; the
 Phase-4 sub-phases were renamed from `talos` to `cloudinit` when
-the OS pivot landed (2026-07-07).
+the OS pivot landed (2026-07-07), and `install_k3s` was added
+between `cloudinit` and `k3s` when the canonical install plan
+landed on 2026-07-08 (see [docs/install-k3s-plan.md](../../../docs/install-k3s-plan.md)).
 
 ## When to load this skill
 
@@ -1111,6 +1114,105 @@ Success criteria (assert ALL before proceeding):
 3. `python tools/bootstrap_cluster.py --cluster cicd --phases all`
    exits 0 in <60 seconds (idempotent rerun).
 
+## Step 4a -- install_k3s sub-phase
+
+Lands on 2026-07-08 (per [docs/install-k3s-plan.md](../../../docs/install-k3s-plan.md)).
+The recipe is implemented in [tools/lib/k3s_installer.py](../../../tools/lib/k3s_installer.py)
+and wired into the dispatcher by `_run_install_k3s` in
+[tools/bootstrap_cluster.py](../../../tools/bootstrap_cluster.py). Versions come
+from `tools/versions.lock.yaml::k3s_stable_version` (currently
+`v1.34.9+k3s1`).
+
+**Inputs**: `infra/clusters/<name>/output.json` (control-plane +
+worker IPs, VIP). Run **after** `cloudinit` succeeds and **before**
+the `k3s` healthz phase.
+
+### 4a.1 -- Recipe per node
+
+| Role | Env vars exported on the remote shell | Installer tail-flags |
+|---|---|---|
+| control_plane | `INSTALL_K3S_VERSION=v1.34.9+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>` | `server --flannel-backend=none --disable=traefik --disable=servicelb --disable=local-storage --disable=metrics-server --kubelet-arg=cloud-provider=external --node-ip=<ip> --node-external-ip=<ip> --tls-san=<vip>` |
+| agent | `INSTALL_K3S_VERSION=v1.34.9+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>`, `K3S_URL=https://<vip>:6443`, `K3S_TOKEN=<node-token>` | `agent --flannel-backend=none --node-ip=<ip> --node-external-ip=<ip>` |
+
+Both roles invoke the upstream installer at <https://get.k3s.io>
+over SSH; the env is rendered inline into the remote shell so the
+`K3S_TOKEN` and any other env var never appears in the operator's
+argv / process list.
+
+### 4a.2 -- Idempotency
+
+Two gates, in order:
+
+1. **Upstream installer** is hash-checked -- `install.sh` no-ops on
+   identical env: `No change detected so skipping service start`.
+2. **Python wrapper** short-circuits on
+   `systemctl is-active --quiet k3s && test -f /etc/rancher/k3s/k3s.yaml`
+   (server) or `systemctl is-active --quiet k3s-agent` (agent) BEFORE
+   the upstream installer is invoked at all. This protects against
+   anyone calling the phase with the cluster already up.
+
+```bash
+# operator-driven invocation (the canonical one)
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster cicd \
+  --phases cloudinit,install_k3s,k3s
+
+# phase-only re-run on a healthy cluster is a no-op (< 10 s)
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster cicd --phases install_k3s
+# Expect: log line "k3s.skip_install reason=already healthy ..."
+```
+
+### 4a.3 -- Live-host gotchas (2026-07-08)
+
+**4a.3.1 -- `--tls-san=<vip>` is mandatory.**
+K3s generates a serving cert whose SANs include `--node-ip` /
+`--node-external-ip` by default. Without `--tls-san=<vip>` the
+kubeconfig pulled from the server has `server: https://<vip>:6443`
+but the serving cert does NOT carry the VIP SAN, so external
+clients fail with `x509: certificate is not valid for <vip>`. The
+verification note [docs/install-k3s-vip-verification.md](../../../docs/install-k3s-vip-verification.md)
+records the live-host probe that surfaced this.
+
+**4a.3.2 -- The VM IP comes from the SDN DHCP lease, not from
+`output.json::nodes[i].ip`.** Phase 2 still emits the intended
+`10.0.1.x / 10.0.2.x` IPs as PowerDNS records, but the SDN IPAM
+hands out `10.0.0.50–10.0.0.200` regardless of `var.ip_start`. The
+installer reads `--node-ip` from the actual lease (`qm agent
+<vmid> network-get-interfaces`) so the kubelet advertises the IP
+that the rest of the SDN sees.
+
+**4a.3.3 -- SSH user is `ubuntu`, not `root`.**
+The Ubuntu cloud image sets `qm set --ciuser ubuntu`, which all
+clones inherit. The Bitwarden SSH key lives on root@<sdn-ip> by
+virtue of the cluster module's `--sshkeys` arg (proxied through
+`Proxmox-Jump-Host -> -W <sdn-ip>:22`).
+
+**4a.3.4 -- Idempotency probes require a working `qm agent` channel
+on every VM.** This is the same constraint the cluster's Phase 2
+satisfies; the bootstrap assumes each VM came up with the agent
+alive. If the cluster has been live for a while and an agent has
+gone stale, re-running the cluster root tofu module will reset
+that, but the install_k3s phase itself does not restart VMs.
+
+### 4a.4 -- Success criteria
+
+1. `systemctl is-active k3s` returns `active` on every
+   control-plane VM.
+2. `systemctl is-active k3s-agent` returns `active` on every
+   worker VM.
+3. `/var/lib/rancher/k3s/server/node-token` is non-empty on the
+   first control-plane node.
+4. `curl -sk https://10.0.0.30:6443/healthz` returns `ok` from
+   the operator host within 90 s of the install completing (after
+   the helm phase lands kube-vip; before that the VIP is
+   upstream-claimed by the kubelet loopback and is only reachable
+   from inside the cluster).
+5. Rerunning
+   `python -m tools.bootstrap_cluster --cluster cicd --phases install_k3s`
+   exits 0 in <10 s with `k3s.skip_install` log entries -- the
+   upstream installer is never invoked a second time.
+
 ## Step 5 -- Phase 5: Final verification (SC-001..SC-006)
 
 Run the verification matrix in `docs/verification.md`:
@@ -1168,7 +1270,7 @@ issues that plagued the first Ubuntu build.
 The Phase 0/2/3/5 plumbing (tokens, tofu cluster module, host-ports
 baseline, final verification) is unchanged because it was already
 OS-agnostic. The Phase 4 sub-phases are
-`cloudinit, k3s, helm, kubeconfig, host_ports, externalname` --
+`cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, externalname` --
 renamed from `talos` to `cloudinit` when the OS pivot landed.
 
 ## How to invoke

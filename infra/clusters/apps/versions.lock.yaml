@@ -32,6 +32,23 @@ collision_check:
   cicd_svc_cidr: "10.43.0.0/16"    # apps MUST differ
   cicd_cf_tunnel_name: "cicd"      # apps MUST differ
   status: "VERIFIED — apps uses values disjoint from cicd on all 6 axes"
+
+# WP04 follow-up (2026-07-08) — install_k3s phase on the apps cluster.
+# The control-plane node apps-cp-1 (VMID 114, SDN 10.0.0.67) will run
+# the k3s server with --tls-san=10.0.0.40 and the worker apps-w-1
+# (VMID 113, SDN 10.0.0.66) will join via https://10.0.0.40:6443.
+install_k3s:
+  k3s_stable_version: "v1.34.9+k3s1"
+  vip: "10.0.0.40"
+  control_plane:
+    name: "apps-cp-1"
+    vmid: 114
+    ip: "10.0.0.67"
+  worker:
+    name: "apps-w-1"
+    vmid: 113
+    ip: "10.0.0.66"
+  source: "tools/versions.lock.yaml::k3s_stable_version"
 # WP06 (cross-cluster Services wiring) -- added 2026-07-05.
 # This block records the dependency versions for the cross-cluster
 # wiring between the apps and cicd clusters. The wiring is rendered

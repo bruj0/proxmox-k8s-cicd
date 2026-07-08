@@ -201,6 +201,64 @@ def test_skill_md_documents_rerun_and_partial_state() -> None:
     )
 
 
+# ---------- install_k3s sub-phase (2026-07-08) ----------
+
+
+def test_skill_documents_install_k3s_subphase() -> None:
+    """The Phase-4 sub-phase list must include `install_k3s` between
+    `cloudinit` and `k3s`, and Step 4a must document the canonical recipe.
+
+    Without `install_k3s`, the pipeline has no Python-side k3s installer
+    and falls back to cloud-init runcmd (the old, pre-Pivot recipe).
+    """
+    text = SKILL_PATH.read_text()
+    assert "install_k3s" in text, (
+        "SKILL.md must mention the install_k3s sub-phase by exact name"
+    )
+    # Phase list must order it cloudinit, install_k3s, k3s.
+    assert "cloudinit, install_k3s, k3s" in text, (
+        "SKILL.md phase list must order: cloudinit, install_k3s, k3s, ..."
+    )
+    # Step 4a body must describe the installer + the version pin.
+    assert "Step 4a" in text, (
+        "SKILL.md must include a `Step 4a -- install_k3s sub-phase` section"
+    )
+    assert "v1.34.9+k3s1" in text, (
+        "SKILL.md must pin the k3s install version to v1.34.9+k3s1"
+    )
+    assert "INSTALL_K3S_VERSION" in text, (
+        "SKILL.md must document the INSTALL_K3S_VERSION env var the"
+        " upstream installer reads"
+    )
+    # The mandatory --tls-san=<vip> flag (came out of the VIP verification).
+    assert "--tls-san=" in text and "<vip>" in text, (
+        "SKILL.md Step 4a must call out --tls-san=<vip> as mandatory for"
+        " server installs (see docs/install-k3s-vip-verification.md)"
+    )
+
+
+def test_skill_documents_idempotent_install_k3s() -> None:
+    """Step 4a must document the idempotency contract.
+
+    Two gates: upstream install.sh's hash check + the Python wrapper's
+    systemctl+kubeconfig short-circuit. Both must be present.
+    """
+    text = SKILL_PATH.read_text().lower()
+    assert "no change detected" in text or "no change detected so skipping" in text, (
+        "Step 4a must document the upstream installer's hash-checked"
+        " idempotency (the literal 'no change detected so skipping'"
+        " message from install.sh)"
+    )
+    assert "systemctl is-active" in text, (
+        "Step 4a must document the Python wrapper's systemctl is-active"
+        " short-circuit gate"
+    )
+    assert "k3s.skip_install" in text, (
+        "Step 4a must include the canonical 'k3s.skip_install' log step"
+        " that the Python orchestrator emits on a re-run"
+    )
+
+
 # ---------- runbooks (T004-T006 + T008) ----------
 
 

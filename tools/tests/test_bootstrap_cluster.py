@@ -93,10 +93,11 @@ def _write_cluster(tmp_path: Path) -> Path:
     return cluster
 
 
-def test_list_phases_returns_all_six() -> None:
-    """Acceptance: phases enum is [cloudinit, k3s, helm, kubeconfig, host_ports, externalname]."""
+def test_list_phases_returns_all_seven() -> None:
+    """Acceptance: phases enum is [cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, externalname]."""
     assert list_phases() == [
         "cloudinit",
+        "install_k3s",
         "k3s",
         "helm",
         "kubeconfig",
@@ -117,6 +118,11 @@ def test_bootstrap_silent_failure_raises(tmp_path: Path, monkeypatch: pytest.Mon
 
     This is the 'silent failure' misfit M4 -- a non-zero exit must not be
     swallowed. Previously considered for swallow-and-continue.
+
+    `install_k3s` is now its own phase and short-circuits if the k3s
+    unit is already active (idempotent state), so this test starts the
+    VMs in 'k3s broken' to prove the silent-failure path is still
+    exercised.
     """
     cluster = _write_cluster(tmp_path)
     monkeypatch.setattr(subprocess, "run", _stub_fail)

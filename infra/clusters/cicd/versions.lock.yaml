@@ -1,0 +1,30 @@
+# WP04 follow-up (2026-07-08) — install_k3s phase on the cicd cluster.
+# The control-plane node cicd-cp-1 (VMID 112, SDN 10.0.0.65) will run
+# the k3s server with --tls-san=10.0.0.30 and the worker cicd-w-1
+# (VMID 111, SDN 10.0.0.64) will join via https://10.0.0.30:6443.
+#
+# The k3s version pin is sourced from tools/versions.lock.yaml::
+# k3s_stable_version. This file mirrors it for visibility next to the
+# per-cluster identity values (versions follow the apps file's shape
+# for symmetry; tests assert that this file exists and references the
+# same pinned version).
+
+inherit:
+  k3s_stable_version_from: "../../../tools/versions.lock.yaml"
+
+cluster_specific:
+  cluster_name: "cicd"
+  vip: "10.0.0.30"
+
+install_k3s:
+  k3s_stable_version: "v1.34.9+k3s1"
+  vip: "10.0.0.30"
+  control_plane:
+    name: "cicd-cp-1"
+    vmid: 112
+    ip: "10.0.0.65"
+  worker:
+    name: "cicd-w-1"
+    vmid: 111
+    ip: "10.0.0.64"
+  source: "tools/versions.lock.yaml::k3s_stable_version"
