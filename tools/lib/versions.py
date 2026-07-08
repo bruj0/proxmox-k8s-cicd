@@ -6,7 +6,7 @@ k3s installer) read the same data without re-parsing YAML in two places.
 
 API:
     reader = VersionsLockReader.from_default()
-    k3s_version: str = reader.k3s_stable_version       # "v1.34.9+k3s1"
+    k3s_version: str = reader.k3s_stable_version       # "v1.36.2+k3s1"
     install_url: str = reader.k3s_install_url          # "https://get.k3s.io"
 
 The reader surfaces the keys the bootstrap needs and falls back to
@@ -27,7 +27,10 @@ from tools.lib.log import StructuredLogger
 # Pinned defaults — also live in tools/versions.lock.yaml::dependencies.
 # Duplicated here so a missing/malformed lockfile still leaves the
 # installer calling get.k3s.io with a stable, known-good version.
-_DEFAULT_K3S_STABLE_VERSION = "v1.34.9+k3s1"
+# Bumped 2026-07-08 to v1.36.2+k3s1 (latest stable). Reconcile-and-pin
+# policy: the install pins this version; k3s's built-in upgrade
+# controller is then allowed to roll forward automatically.
+_DEFAULT_K3S_STABLE_VERSION = "v1.36.2+k3s1"
 _DEFAULT_K3S_INSTALL_URL = "https://get.k3s.io"
 _DEFAULT_K3S_CHANNEL = "stable"
 _DEFAULT_HELM_FLOOR = ">= 3.18.0"

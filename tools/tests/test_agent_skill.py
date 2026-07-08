@@ -306,8 +306,8 @@ def test_skill_documents_install_k3s_subphase() -> None:
     assert "Step 4a" in text, (
         "SKILL.md must include a `Step 4a -- install_k3s sub-phase` section"
     )
-    assert "v1.34.9+k3s1" in text, (
-        "SKILL.md must pin the k3s install version to v1.34.9+k3s1"
+    assert "v1.36.2+k3s1" in text, (
+        "SKILL.md must pin the k3s install version to v1.36.2+k3s1"
     )
     assert "INSTALL_K3S_VERSION" in text, (
         "SKILL.md must document the INSTALL_K3S_VERSION env var the"

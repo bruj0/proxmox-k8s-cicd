@@ -143,14 +143,16 @@ hardcoded to use 900. Recovery recipe: `.agents/skills/proxmox-k3s-pipeline/SKIL
 |---|---|---|
 | Ubuntu cloud image | `noble-24.04.x` | cloud-images.ubuntu.com |
 | Kernel | `6.8.0-124-generic` (Ubuntu HWE) | apt |
-| k3s server (cicd-cp-1) | `v1.36.2+k3s1` (auto-upgraded from installed v1.34.9) | rancher.com |
-| k3s agent (cicd-w-1)   | `v1.34.9+k3s1` (pinned at install) | rancher.com |
+| k3s (all 4 nodes) | `v1.36.2+k3s1` (latest stable; pinned by `tools/versions.lock.yaml::k3s_stable_version`, reconcile-and-pin policy) | rancher.com |
 | Container runtime | `containerd` bundled with k3s | k3s |
 | qemu-guest-agent | installed via `virt-customize` into the cloud image BEFORE VM creation | image build |
 
-The CP auto-upgraded to v1.36.2 because the live validation ran
-later than the install; the worker node did not auto-upgrade
-because it joined later. This is a known drift — see §14.
+The reconcile-and-pin policy means `tools/lib/k3s_installer.py`
+installs whatever version `tools/versions.lock.yaml::k3s_stable_version`
+says (currently `v1.36.2+k3s1`), then k3s's built-in upgrade
+controller is allowed to roll forward automatically on subsequent
+upstream releases. To freeze at a specific patch, set
+`INSTALL_K3S_SKIP_START=true` and manage upgrades manually.
 
 ## 5. Kubernetes core
 
@@ -476,26 +478,27 @@ the cluster network cannot route to. Two paths forward:
 This is tracked separately from the bootstrap script — it's a
 config / network issue, not a code issue.
 
-### 14.2 k3s version drift
+### 14.2 k3s version drift (resolved 2026-07-08)
 
-cicd-cp-1 is running `v1.36.2+k3s1`; cicd-w-1 is running
-`v1.34.9+k3s1`. The CP auto-upgraded via k3s's built-in
-upgrade server; the worker did not because it joined later
-and the install was pinned to v1.34.9 in
-`tools/lib/k3s_installer.py`.
+**Reconcile-and-pin policy**: the install pins
+`k3s_stable_version` (currently `v1.36.2+k3s1`) verbatim at install
+time, then k3s's built-in upgrade controller is allowed to roll
+forward automatically. The pin lives in
+[`tools/versions.lock.yaml::k3s_stable_version`](../tools/versions.lock.yaml).
 
-To reconcile:
+**State at last reconcile (2026-07-08)**: cicd-cp-1 was on
+`v1.36.2+k3s1` (auto-upgraded by k3s's built-in upgrade controller
+from the v1.34.9 install); cicd-w-1, apps-cp-1, and apps-w-1 were
+on `v1.34.9+k3s1` (drifted). All four nodes are now on
+`v1.36.2+k3s1` after running `python -m tools.bootstrap_cluster
+--cluster <name> --phases install_k3s` (the phase is idempotent
+on a healthy cluster; for a drifted cluster it re-runs the
+upstream installer with the new pin).
 
-```bash
-# SSH to the worker through PVE (see ssh-proxy tool), then:
-sudo systemctl stop k3s-agent
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.2+k3s1 sh -s - agent \
-  --server https://cicd-cp-1:6443 ...
-```
-
-Better long-term: pin the k3s version at the `versions.lock.yaml`
-level and disable auto-upgrades in the systemd unit (k3s
-supports `INSTALL_K3S_SKIP_START` and a version file).
+To freeze a cluster at a specific patch (e.g. for an audit
+window) the operator can opt out of the upgrade controller
+either by editing the systemd unit or by setting
+`INSTALL_K3S_SKIP_START=true` and managing upgrades manually.
 
 ### 14.3 Web-search-derived version pins
 

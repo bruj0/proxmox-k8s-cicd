@@ -224,7 +224,7 @@ Nothing else in the plan moves.
 
 ## What this does NOT change
 
-- The k3s version pin (`v1.34.9+k3s1`).
+- The k3s version pin (`v1.36.2+k3s1`).
 - The user story (Ubuntu+k3s, not Talos+k3s).
 - The phase ordering in `bootstrap_cluster.py` (still:
   `cloudinit, install_k3s, k3s, helm, …`).

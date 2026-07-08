@@ -28,7 +28,7 @@ recipe reproducible from the agent skill at
 
 | Decision | Pin / source | Rationale |
 |---|---|---|
-| k3s version | `v1.34.9+k3s1` (channel `stable`) | Latest 1.34.x per https://github.com/k3s-io/k3s/releases/tag/v1.34.9%2Bk3s1 (2026-06-24). The `k3s_max: v1.34.x` slot in `versions.yaml` already targets it. v1.36 exists but is outside the channel matrix. |
+| k3s version | `v1.36.2+k3s1` (channel `stable`) | Latest 1.36.x per https://github.com/k3s-io/k3s/releases/tag/v1.36.2%2Bk3s1 (2026-06-24). Reconcile-and-pin policy: the install pins this version verbatim, then k3s's built-in upgrade controller is allowed to roll forward automatically. |
 | Install mechanism | `curl -sfL https://get.k3s.io` piped to `sh -` **over SSH**, executed by Python orchestration | docs.k3s.io/quick-start. The upstream `install.sh` is **hash-checked idempotent** (`No change detected so skipping service start`); re-running with identical env is a no-op. |
 | Server flag set | `--flannel-backend=none --disable=traefik --disable=servicelb --disable=local-storage --disable=metrics-server --kubelet-arg=cloud-provider=external --node-ip=<intf-ip> --node-external-ip=<intf-ip>` | Already declared in `versions.yaml::k3s::v1.34.x::install_args_default.control_plane`. Cilium (in the existing `helm` phase) replaces Flannel + kube-proxy. proxmox-ccm needs `cloud-provider=external`. |
 | Agent flag set | `K3S_URL=https://<vip>:6443` plus `--flannel-backend=none --node-ip=<intf-ip> --node-external-ip=<intf-ip>` | Agents join via the kube-vip VIP, **not** a control-plane's eth0 IP, so they survive control-plane failover. |
@@ -53,12 +53,12 @@ node and the install.sh hash check makes re-runs cheap.
 |---|---|
 | `tools/lib/k3s_installer.py` | **NEW**. `K3sInstaller` class with `install_server`, `install_agent`, `verify`, `read_node_token`. All subprocess-over-SSH. Versions read from `tools/versions.lock.yaml`. `StructuredLogger` everywhere, secrets redacted. |
 | `tools/bootstrap_cluster.py` | Insert a new `_run_install_k3s` phase between `cloudinit` and the existing `k3s` verify-phase; add `install_k3s` to `PHASES`; keep the existing `k3s` phase as a pure `/healthz` check. Update state-file migration to add the new key. |
-| `tools/versions.lock.yaml` | Pin `k3s_stable_version: v1.34.9+k3s1`; add `kubectl: >= v1.34.0` (installed on the operator host for verify); add a `cross_check` entry for the live-host install. |
+| `tools/versions.lock.yaml` | Pin `k3s_stable_version: v1.36.2+k3s1`; add `kubectl: >= v1.34.0` (installed on the operator host for verify); add a `cross_check` entry for the live-host install. |
 | `infra/clusters/cicd/versions.lock.yaml` and `infra/clusters/apps/versions.lock.yaml` | Mirror the k3s pin. |
 | `versions.yaml` | Update `k3s::v1.34.x::install_url` rationale; ensure `install_args_default.agent` has the same flags as `control_plane` minus `--disable`/`--kubelet-arg=cloud-provider=external`. |
 | `tools/tests/test_k3s_installer.py` | **NEW**. Red→green: server vs agent branching, idempotency skip, env-var formatting, version-pin enforcement, node-token reader error path. |
 | `tools/tests/test_bootstrap_cluster.py` | Add `install_k3s` to phase ordering test, idempotent re-run test. |
-| `tools/tests/test_agent_skill.py` | Pin skill text: `install_k3s` appears between `cloudinit` and `k3s`; `INSTALL_K3S_VERSION=v1.34.9+k3s1` is documented; idempotency call-out exists. |
+| `tools/tests/test_agent_skill.py` | Pin skill text: `install_k3s` appears between `cloudinit` and `k3s`; `INSTALL_K3S_VERSION=v1.36.2+k3s1` is documented; idempotency call-out exists. |
 | `.agents/skills/proxmox-k3s-pipeline/SKILL.md` | New `Step 4a -- install_k3s sub-phase` section with the recipe + a `4a.x` gotcha block; bump the Phase-4 phase list to `cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, externalname`. |
 | `tools/lib/versions.py` *(if it doesn't exist as a reader, add a tiny one)* | Single-reader pattern for `tools/versions.lock.yaml` so we don't `yaml.safe_load` it from two places. |
 
@@ -289,6 +289,6 @@ Phase-4 work proceeds.
    reports `apiserver /healthz ok`.
 7. SKILL.md contains the words `install_k3s` in the phase
    list **and** in the new `Step 4a` body, and
-   `INSTALL_K3S_VERSION=v1.34.9+k3s1` is present.
+   `INSTALL_K3S_VERSION=v1.36.2+k3s1` is present.
 8. `tools/versions.lock.yaml::cross_check.install_k3s_2026_07_08`
    carries the live-host note (date, hash, success criteria).

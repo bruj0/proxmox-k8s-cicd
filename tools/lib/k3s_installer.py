@@ -36,6 +36,7 @@ Order of operations: cloudinit -> install_k3s -> helm.
 """
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -80,7 +81,7 @@ class ServerInstallPlan:
     a.k.a. `server ...`. Combined with `environment`, the rendered
     command is:
 
-        env INSTALL_K3S_VERSION=v1.34.9+k3s1 K3S_NODE_NAME=cicd-cp-1 \
+        env INSTALL_K3S_VERSION=v1.36.2+k3s1 K3S_NODE_NAME=cicd-cp-1 \
             curl -sfL https://get.k3s.io | sh -s - server --flannel-backend=none ...
     """
 
@@ -361,23 +362,93 @@ class K3sInstaller:
     # ---------- internals ----------
 
     def _is_k3s_healthy(self, vm: Mapping[str, Any]) -> bool:
-        """Probe + kubeconfig existence check before re-installing."""
+        """Probe + kubeconfig existence check before re-installing.
+
+        Returns False (forcing a re-install) if EITHER:
+          - the k3s systemd unit is not active, OR
+          - /etc/rancher/k3s/k3s.yaml is missing, OR
+          - the running k3s version does NOT match the pinned
+            `k3s_stable_version` (reconcile-and-pin policy -- the
+            installer re-runs the upstream installer.sh to roll
+            forward drifted nodes without disturbing healthy ones).
+        """
         ip = str(vm["ip"])
-        return (
-            self._ssh_returncode(
-                ip,
-                "systemctl is-active --quiet k3s",
-            )
-            == 0
-            and self._ssh_returncode(ip, "test -f /etc/rancher/k3s/k3s.yaml") == 0
-        )
+        if self._ssh_returncode(
+            ip, "systemctl is-active --quiet k3s"
+        ) != 0:
+            return False
+        if self._ssh_returncode(ip, "test -f /etc/rancher/k3s/k3s.yaml") != 0:
+            return False
+        return self._running_k3s_version_matches(vm)
 
     def _is_k3s_agent_healthy(self, vm: Mapping[str, Any]) -> bool:
         """Like `_is_k3s_healthy` but for agents (unit is `k3s-agent`)."""
         ip = str(vm["ip"])
-        return (
-            self._ssh_returncode(ip, "systemctl is-active --quiet k3s-agent") == 0
-        )
+        if self._ssh_returncode(ip, "systemctl is-active --quiet k3s-agent") != 0:
+            return False
+        return self._running_k3s_version_matches(vm)
+
+    def _running_k3s_version_matches(self, vm: Mapping[str, Any]) -> bool:
+        """Return True iff the on-host `k3s --version` matches the pin.
+
+        Reconcile-and-pin policy: the installer always targets
+        `k3s_stable_version` from the lockfile. A drifted node
+        (running an older patch) is treated as "not healthy" so the
+        upstream installer is re-invoked to roll it forward. The
+        upstream installer.sh does the actual download + replace;
+        our short-circuit just gates the call.
+
+        Returns True on any SSH error so a probe failure does not
+        accidentally trigger a re-install on a node we can't read.
+        """
+        ip = str(vm["ip"])
+        try:
+            proc_str = self._ssh_capture(
+                ip, "k3s --version 2>/dev/null | head -n1"
+            )
+        except Exception:  # pragma: no cover -- defensive
+            return True
+        # proc_str is "k3s version v1.34.9+k3s1 (5f72184f)"
+        m = re.search(r"v\d+\.\d+\.\d+\+k3s\d+", proc_str)
+        if m is None:
+            return True
+        running = m.group(0)
+        pinned = self._versions.k3s_stable_version
+        if running != pinned:
+            self.logger.info(
+                "k3s.version_drift",
+                node=str(vm.get("name")),
+                running=running,
+                pinned=pinned,
+                resolution=(
+                    "re-running upstream installer to reconcile the pin"
+                ),
+            )
+        return running == pinned
+
+    def _ssh_capture(self, ip: str, command: str) -> str:
+        """Run `command` over SSH as root; return stdout, never raise.
+
+        Symmetric with `_ssh_returncode` (both wrap a single
+        `sudo -n bash -c <command>` ssh call) but returns the
+        captured stdout. Used by probes that need to parse a version
+        string. Returns "" on any error so callers can pattern-match
+        safely.
+        """
+        try:
+            remote = f"sudo -n bash -c {shlex.quote(command)}"
+            proc = subprocess.run(  # noqa: S603 -- documented shell call.
+                self._proxy.ssh_argv(ip, command=remote),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if proc.returncode != 0:
+                return ""
+            return proc.stdout
+        except (subprocess.CalledProcessError, OSError):
+            return ""
 
     def _ssh_returncode(self, ip: str, command: str) -> int:
         """Run `command` over SSH as root; return the exit code, never raise.
@@ -417,7 +488,7 @@ class K3sInstaller:
         Renders to (single shell run as root via `sudo -n bash -c`):
             sudo -n bash -c '
               export K3S_TOKEN=...
-              export INSTALL_K3S_VERSION=v1.34.9+k3s1
+              export INSTALL_K3S_VERSION=v1.36.2+k3s1
               ...
               curl -sfL https://get.k3s.io | sh -s - <exec-flags...>
             '

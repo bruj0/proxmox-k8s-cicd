@@ -72,12 +72,12 @@ def test_k3s_version_read_from_lockfile(tmp_path: Path) -> None:
     """tools/versions.lock.yaml::k3s_stable_version is the canonical pin."""
     lock = tmp_path / "versions.lock.yaml"
     lock.write_text(
-        "k3s_stable_version: \"v1.34.9+k3s1\"\n"
+        "k3s_stable_version: \"v1.36.2+k3s1\"\n"
         "k3s_install_url: \"https://get.k3s.io\"\n"
         "k3s_channel: \"stable\"\n"
     )
     reader = VersionsLockReader.from_lockfile(lock)
-    assert reader.k3s_stable_version == "v1.34.9+k3s1"
+    assert reader.k3s_stable_version == "v1.36.2+k3s1"
     assert reader.k3s_install_url == "https://get.k3s.io"
     assert reader.k3s_channel == "stable"
 
@@ -103,7 +103,7 @@ def test_k3s_version_default_when_lockfile_missing(tmp_path: Path) -> None:
     lock = tmp_path / "missing.yaml"
     reader = VersionsLockReader.from_lockfile(lock)
     # Hardcoded documented default (matches versions.yaml::k3s::v1.34.x).
-    assert reader.k3s_stable_version == "v1.34.9+k3s1"
+    assert reader.k3s_stable_version == "v1.36.2+k3s1"
     assert reader.k3s_install_url == "https://get.k3s.io"
 
 
@@ -118,7 +118,7 @@ def test_plan_for_control_plane_includes_tls_san_and_flannel_off(
     assert isinstance(plan, ServerInstallPlan)
     env = plan.environment
     # INSTALL_K3S_VERSION must be the exact pinned version.
-    assert env["INSTALL_K3S_VERSION"] == "v1.34.9+k3s1"
+    assert env["INSTALL_K3S_VERSION"] == "v1.36.2+k3s1"
     # K3S_* env vars are preserved for the systemd unit.
     assert env["K3S_NODE_NAME"] == cp["name"]
     exec_str = " ".join(plan.exec_flags)
@@ -151,7 +151,7 @@ def test_plan_for_agent_joins_vip_not_eth0(installer: K3sInstaller) -> None:
     env = plan.environment
     assert env["K3S_URL"] == f"https://{installer.cluster['vip']}:6443"
     assert env["K3S_TOKEN"] == "NODE::TOKEN"
-    assert env["INSTALL_K3S_VERSION"] == "v1.34.9+k3s1"
+    assert env["INSTALL_K3S_VERSION"] == "v1.36.2+k3s1"
     exec_str = " ".join(plan.exec_flags)
     # Agents do NOT have --tls-san (server-only flag; agent rejects it).
     assert "--tls-san" not in exec_str
@@ -190,6 +190,11 @@ class _Recorder:
 
     def __init__(self) -> None:
         self.calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+        # The fake's idea of what k3s is running on the remote node.
+        # Tests can override before calling the install method. The
+        # default matches the live cluster at the time this test was
+        # written (post-reconcile).
+        self.running_version: str = "v1.36.2+k3s1 (01b6f04a)"
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
         self.calls.append((tuple(cmd), kwargs))
@@ -210,6 +215,11 @@ class _Recorder:
         # /etc/rancher/k3s/k3s.yaml existence check
         if "/etc/rancher/k3s/k3s.yaml" in flat and "test -f" in flat:
             return _FakeProcess(0, "", "")
+        # k3s --version probe (reconcile-and-pin gate) -- the
+        # version comes from the active k3s_stable_version of the
+        # fixture's versions reader.
+        if "k3s --version" in flat:
+            return _FakeProcess(0, f"k3s version {self.running_version}\n", "")
         # cat /var/lib/rancher/k3s/server/node-token
         if "node-token" in flat:
             return _FakeProcess(0, "NODE_TOKEN_FROM_TEST", "")
@@ -288,7 +298,62 @@ def test_install_invokes_upstream_when_unhealthy(
     # The upstream installer expects the env to be passed as a shell
     # prefix. We verify that INSTALL_K3S_VERSION is in that prefix.
     cmd_str = " ".join(install_call.get("args", []) or [])
-    assert "INSTALL_K3S_VERSION=v1.34.9+k3s1" in cmd_str
+    assert "INSTALL_K3S_VERSION=v1.36.2+k3s1" in cmd_str
+
+
+def test_install_invokes_upstream_when_running_version_drifts(
+    installer: K3sInstaller, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reconcile-and-pin: if the running k3s is on an older patch than
+    `k3s_stable_version`, the installer re-runs the upstream installer
+    to roll the node forward. The systemctl and kubeconfig probes say
+    'healthy' (so the existing short-circuit would otherwise fire) but
+    the version probe says 'older' and that should force a re-install.
+
+    The reconcile-and-pin policy is the central reason
+    `k3s_stable_version` is read at install time, not just at first
+    bootstrap: drifted nodes get picked up by the next install_k3s
+    run without any operator intervention.
+    """
+    rec = _Recorder()
+    # Pretend the remote node is on v1.34.9 (the pre-reconcile pin).
+    rec.running_version = "v1.34.9+k3s1 (5f72184f)"
+    monkeypatch.setattr("lib.k3s_installer.subprocess.run", rec)
+    cp = next(v for v in installer.cluster["vms"] if v["role"] == "control_plane")
+    installer.install_server(cp, vip=installer.cluster["vip"])
+    # The actual install.sh invocation MUST have happened -- the
+    # version drift is enough to override the "already healthy" gate.
+    saw_install = any(
+        "get.k3s.io" in " ".join(str(a) for a in argv)
+        for argv, _ in rec.calls
+    )
+    assert saw_install, (
+        "installer did not reconcile a drifted node "
+        f"(running={rec.running_version}, "
+        f"pinned={installer.versions.k3s_stable_version})"
+    )
+
+
+def test_install_skips_when_running_version_matches(
+    installer: K3sInstaller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Companion to the drift test: when the running version matches
+    the pin, the installer short-circuits. This is the same behavior
+    the old `_is_k3s_healthy` check provided, but now gated on the
+    version string, not just on the systemd unit's active state.
+    """
+    rec = _Recorder()
+    # Default running_version is v1.36.2+k3s1 -- matches the pin.
+    monkeypatch.setattr("lib.k3s_installer.subprocess.run", rec)
+    cp = next(v for v in installer.cluster["vms"] if v["role"] == "control_plane")
+    installer.install_server(cp, vip=installer.cluster["vip"])
+    saw_install = any(
+        "get.k3s.io" in " ".join(str(a) for a in argv)
+        for argv, _ in rec.calls
+    )
+    assert not saw_install, (
+        "installer re-ran install.sh on a node already at the pinned version"
+    )
 
 
 def test_read_node_token_raises_on_missing_file(

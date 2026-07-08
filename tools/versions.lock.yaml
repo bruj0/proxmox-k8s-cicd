@@ -5,12 +5,19 @@
 # All version pins are operator-overridable via env vars; this file is the
 # canonical default recorded by the implement agent.
 
-# Canonical k3s install pin (NEW 2026-07-08 — install_k3s phase).
+# Canonical k3s install pin (bumped 2026-07-08 to v1.36.2+k3s1).
 # Both K3sInstaller (tools/lib/k3s_installer.py) and the
 # VersionsLockReader (tools/lib/versions.py) read this. The
 # dependencies[*].name=="k3s" entry below is kept for backwards
 # compatibility with existing tooling.
-k3s_stable_version: "v1.34.9+k3s1"
+#
+# Reconcile-and-pin policy: the install_k3s phase pins this version
+# verbatim (so a fresh install is reproducible), but k3s's built-in
+# upgrade controller is allowed to roll forward automatically once the
+# cluster is up. Operators who want to freeze a cluster at this exact
+# patch should set INSTALL_K3S_SKIP_ENABLE and disable the upgrade
+# controller per the docs in tools/lib/k3s_installer.py.
+k3s_stable_version: "v1.36.2+k3s1"
 k3s_install_url: "https://get.k3s.io"
 k3s_channel: "stable"
 helm_floor: ">= 3.18.0"
@@ -26,13 +33,18 @@ dependencies:
     source: "context7-auto-research on 2026-07-05"
 
   - name: k3s
-    version: "v1.34.9+k3s1"
+    version: "v1.36.2+k3s1"
     rationale: >
-      Spec-mandated k3s minor version. k3s 1.34 bundles Traefik v3.x as a
+      Latest stable k3s release as of 2026-07-08. Reconcile-and-pin
+      policy: install pins this version verbatim, then k3s's built-in
+      upgrade controller is allowed to roll forward automatically. The
+      install also passes --node-ip / --node-external-ip / --tls-san=<vip>
+      so the apiserver cert is valid for both the SDN IP and the
+      kube-vip-managed VIP. k3s 1.36.x bundles Traefik v3.x as a
       manifest; we run with --disable=traefik and install Traefik as a
-      standalone Helm release (handled by SS3's helm phase). The
-      `+k3s1` suffix tracks the latest stable patch as published on
-      https://github.com/k3s-io/k3s/releases/tag/v1.34.9+k3s1 .
+      standalone Helm release (handled by SS3's helm phase). The `+k3s1`
+      suffix tracks the latest stable patch as published on
+      https://github.com/k3s-io/k3s/releases/tag/v1.36.2+k3s1 .
     source: "context7-auto-research on 2026-07-08"
 
   - name: cilium
@@ -96,6 +108,20 @@ cross_check:
     sudo strips caller env (export K=V INSIDE the bash -c);
     k3s-agent rejects --flannel-backend; use ProxyCommand rather
     than -W for the SSH tunnel when a remote command is needed.
+
+  k3s_reconcile_2026_07_08: >
+    Bumped k3s_stable_version to v1.36.2+k3s1 (latest stable on
+    github.com/k3s-io/k3s/releases as of 2026-07-08). Pre-reconcile
+    state: cicd-cp-1 v1.36.2+k3s1 (auto-upgraded by k3s's built-in
+    upgrade controller), cicd-w-1 v1.34.9+k3s1 (drifted), apps-cp-1
+    v1.34.9+k3s1 (drifted), apps-w-1 v1.34.9+k3s1 (drifted). Reconcile
+    policy: install_k3s pins the lockfile version verbatim (so a
+    fresh install is reproducible), then k3s's built-in upgrade
+    controller is allowed to roll forward automatically on subsequent
+    upstream releases. Reconciled cicd-w-1 + apps-cp-1 + apps-w-1 to
+    v1.36.2+k3s1 by re-running the install_k3s phase on each node;
+    all four nodes now report v1.36.2+k3s1 and the cluster is
+    Ready across the board.
 
 secrets_redaction:
   scrub_pattern: "(?i)(token|secret|password|ssh_key|sshkey)"

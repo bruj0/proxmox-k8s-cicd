@@ -21,7 +21,7 @@ reference**.
 
 **Pipeline state: 2026-07-08 -- Phases 0-4 verified end-to-end on
 kvm.example.net (BigBertha, PVE 9.2.3, Ubuntu 24.04 LTS Noble +
-k3s v1.34.9+k3s1).** All four cluster VMs (cicd-cp-1 @ SDN
+k3s v1.36.2+k3s1).** All four cluster VMs (cicd-cp-1 @ SDN
 10.0.0.65, cicd-w-1 @ 10.0.0.64, apps-cp-1 @ 10.0.0.67, apps-w-1 @
 10.0.0.66) are cloned, running, and have a working
 qemu-guest-agent. cicd-cp-1 runs the k3s server, cicd-w-1 is
@@ -1212,7 +1212,7 @@ The recipe is implemented in [tools/lib/k3s_installer.py](../../../tools/lib/k3s
 and wired into the dispatcher by `_run_install_k3s` in
 [tools/bootstrap_cluster.py](../../../tools/bootstrap_cluster.py). Versions come
 from `tools/versions.lock.yaml::k3s_stable_version` (currently
-`v1.34.9+k3s1`).
+`v1.36.2+k3s1`).
 
 **Inputs**: `infra/clusters/<name>/output.json` (control-plane +
 worker IPs, VIP). Run **after** `cloudinit` succeeds and **before**
@@ -1222,8 +1222,8 @@ the `k3s` healthz phase.
 
 | Role | Env vars exported on the remote shell | Installer tail-flags |
 |---|---|---|
-| control_plane | `INSTALL_K3S_VERSION=v1.34.9+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>` | `server --flannel-backend=none --disable=traefik --disable=servicelb --disable=local-storage --disable=metrics-server --kubelet-arg=cloud-provider=external --node-ip=<ip> --node-external-ip=<ip> --tls-san=<vip>` |
-| agent | `INSTALL_K3S_VERSION=v1.34.9+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>`, `K3S_URL=https://<vip>:6443`, `K3S_TOKEN=<node-token>` | `agent --flannel-backend=none --node-ip=<ip> --node-external-ip=<ip>` |
+| control_plane | `INSTALL_K3S_VERSION=v1.36.2+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>` | `server --flannel-backend=none --disable=traefik --disable=servicelb --disable=local-storage --disable=metrics-server --kubelet-arg=cloud-provider=external --node-ip=<ip> --node-external-ip=<ip> --tls-san=<vip>` |
+| agent | `INSTALL_K3S_VERSION=v1.36.2+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>`, `K3S_URL=https://<vip>:6443`, `K3S_TOKEN=<node-token>` | `agent --flannel-backend=none --node-ip=<ip> --node-external-ip=<ip>` |
 
 Both roles invoke the upstream installer at <https://get.k3s.io>
 over SSH; the env is rendered inline into the remote shell so the
@@ -1296,7 +1296,7 @@ config) we wrap calls in `sudo -n bash -c '...'`.
 
 **4a.3.6 -- `sudo -n bash -c` strips the caller's env.** A bare
 env-prefix before the sudo invocation IS silently dropped (e.g.
-`INSTALL_K3S_VERSION=v1.34.9+k3s1 sudo -n bash -c '...'` ends up
+`INSTALL_K3S_VERSION=v1.36.2+k3s1 sudo -n bash -c '...'` ends up
 running k3s's installer with an EMPTY env). Fix: put `export
 K=V; export T=V;` INSIDE the bash -c, then the actual install.
 This bit the first cicd-w-1 install attempt; the env file
