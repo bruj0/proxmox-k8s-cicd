@@ -37,7 +37,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import shlex
 import sys
 import time
@@ -47,6 +46,7 @@ from typing import Sequence
 
 from tools.lib.log import StructuredLogger
 from tools.lib.pve_ssh import PveSshProxy
+from tools.lib.repo_locator import RepoNotFoundError, locate_repo_root
 from tools.lib.talos_client import ClusterTopology
 
 
@@ -100,13 +100,25 @@ def _parse_args(argv: Sequence[str] | None) -> PullerConfig:
     )
     parser.add_argument(
         "--repo-root",
-        default=os.environ.get(
-            "PROXMOX_K8S_REPO",
-            str(Path(__file__).resolve().parent.parent),
+        default=None,
+        help=(
+            "repo root containing infra/clusters/<name>/output.json. "
+            "Defaults to PROXMOX_K8S_REPO, then the current working "
+            "directory, then walks up looking for infra/clusters/."
         ),
     )
     args = parser.parse_args(argv)
-    repo_root = Path(args.repo_root).resolve()
+    # Resolve the repo root via the shared locator (covers the
+    # --repo-root flag, PROXMOX_K8S_REPO env var, cwd, and the
+    # walk-up from cwd). Raises RepoNotFoundError with a clear
+    # message if none of those match.
+    try:
+        repo_root = locate_repo_root(flag_value=args.repo_root)
+    except RepoNotFoundError as exc:
+        # Re-raise so main() can log it with the structured
+        # logger; argparse-time resolution isn't ideal because
+        # the logger hasn't been constructed yet.
+        raise SystemExit(str(exc)) from exc
     out_path = (
         Path(args.kubeconfig).resolve()
         if args.kubeconfig

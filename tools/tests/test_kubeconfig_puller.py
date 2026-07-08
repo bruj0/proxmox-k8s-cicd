@@ -71,12 +71,17 @@ def test_rewrite_raises_when_no_server_line() -> None:
 
 
 def test_parse_args_default_output_path(tmp_path) -> None:
-    """No --kubeconfig -> <repo>/infra/clusters/<name>/kubeconfig.pveproxy."""
-    repo = tmp_path
-    cfg = _parse_args(["--cluster", "cicd", "--repo-root", str(repo)])
+    """No --kubeconfig -> <repo>/infra/clusters/<name>/kubeconfig.pveproxy.
+
+    The repo locator requires the target dir to look like a repo
+    (must contain `infra/clusters/`), so we make the tmp_path
+    fixture look like one.
+    """
+    (tmp_path / "infra" / "clusters" / "cicd").mkdir(parents=True)
+    cfg = _parse_args(["--cluster", "cicd", "--repo-root", str(tmp_path)])
     assert cfg.cluster == "cicd"
     assert cfg.output_path == (
-        repo / "infra" / "clusters" / "cicd" / "kubeconfig.pveproxy"
+        tmp_path / "infra" / "clusters" / "cicd" / "kubeconfig.pveproxy"
     )
     assert cfg.keep_tunnel is True
     assert cfg.local_port is None

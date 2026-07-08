@@ -46,11 +46,11 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Sequence
 
 from tools.lib.log import StructuredLogger
 from tools.lib.pve_ssh import PveSshProxy
+from tools.lib.repo_locator import RepoNotFoundError, locate_repo_root
 from tools.lib.talos_client import ClusterTopology
 
 
@@ -225,11 +225,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--repo-root",
-        default=os.environ.get(
-            "PROXMOX_K8S_REPO",
-            str(Path(__file__).resolve().parent.parent),
+        default=None,
+        help=(
+            "repo root containing infra/clusters/<name>/output.json. "
+            "Defaults to PROXMOX_K8S_REPO, then the current working "
+            "directory, then walks up looking for infra/clusters/."
         ),
-        help="repo root containing infra/clusters/<name>/output.json",
     )
     parser.add_argument(
         "--port-forward",
@@ -253,7 +254,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     logger = StructuredLogger("ssh_proxy")
-    cluster_dir = Path(args.repo_root) / "infra" / "clusters" / args.cluster
+    try:
+        repo_root = locate_repo_root(flag_value=args.repo_root)
+    except RepoNotFoundError as exc:
+        logger.error(
+            "ssh_proxy.repo_not_found",
+            error=str(exc),
+            resolution=(
+                "pass --repo-root <path> or set PROXMOX_K8S_REPO; "
+                "see the error message for the searched locations"
+            ),
+        )
+        return 1
+    cluster_dir = repo_root / "infra" / "clusters" / args.cluster
     output_json = cluster_dir / "output.json"
     if not output_json.exists():
         logger.error(
