@@ -28,3 +28,16 @@ install_k3s:
     vmid: 111
     ip: "10.0.0.64"
   source: "tools/versions.lock.yaml::k3s_stable_version"
+
+cross_check:
+  cicd_install_k3s_2026_07_08: >
+    cicd-cp-1 (VMID 112 @ SDN 10.0.0.65) installed k3s v1.34.9+k3s1
+    server successfully; `systemctl is-active k3s` -> active;
+    `/etc/rancher/k3s/k3s.yaml` present; listening on :6443 and
+    :10250. cicd-w-1 (VMID 111 @ 10.0.0.64) installed k3s-agent;
+    systemd unit is `activating` while waiting for kube-vip;
+    `/etc/systemd/system/k3s-agent.service.env` correctly holds
+    K3S_URL=https://10.0.0.30:6443 and the per-cluster node-token.
+    The agent will register once the helm phase brings up
+    kube-vip on the cicd cluster.
+

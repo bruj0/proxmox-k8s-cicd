@@ -153,12 +153,18 @@ def test_plan_for_agent_joins_vip_not_eth0(installer: K3sInstaller) -> None:
     assert env["K3S_TOKEN"] == "NODE::TOKEN"
     assert env["INSTALL_K3S_VERSION"] == "v1.34.9+k3s1"
     exec_str = " ".join(plan.exec_flags)
-    # Agents do NOT have --tls-san (that's a server-only flag and would
-    # be ignored by the k3s agent binary, but be paranoid — assert
-    # explicitly so a regression surfaces).
+    # Agents do NOT have --tls-san (server-only flag; agent rejects it).
     assert "--tls-san" not in exec_str
-    # Agents still disable flannel (the helm phase owns CNI).
-    assert "--flannel-backend=none" in exec_str
+    # CRITICAL: k3s agent binary REJECTS --flannel-backend. The server
+    # sets --flannel-backend=none and the agent inherits the CNI choice
+    # from the kubelet join handshake. Passing the flag directly to the
+    # agent surfaces as `flag provided but not defined: -flannel-backend`
+    # in journalctl.
+    assert "--flannel-backend" not in exec_str, (
+        "k3s agent does not accept --flannel-backend; the server-only "
+        "flag is inherited via the join handshake. Reverting this "
+        "causes systemctl status k3s-agent to exit 1."
+    )
     # Agent must NOT ship --disable=traefik: only the server bundles Traefik.
     assert "--disable=traefik" not in exec_str
 

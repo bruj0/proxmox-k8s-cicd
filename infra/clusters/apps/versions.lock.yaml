@@ -71,4 +71,13 @@ cross_cluster_dependencies:
 cross_check:
   externalname_coredns: "compatible (ExternalName resolves via apps CoreDNS which forwards to host resolv.conf -> 10.0.0.3 PowerDNS)"
   kustomize_manifests: "v1beta1-compatible (kustomize 5.x renders the v1beta1 schema without warnings)"
-  nameservers_upstream: "apps cluster inherits 10.0.0.3 (PowerDNS) as upstream nameserver via host /etc/resolv.conf (FR-034)"
+  nameservers_upstream: "apps cluster inherits 10.0.0.3 (PowerDNS) as upstream nameserver via host /etc/resolv.conf (FR-034)"    apps_install_k3s_2026_07_08: >
+      apps-cp-1 (VMID 114 @ SDN 10.0.0.67) installed k3s v1.34.9+k3s1
+      server successfully; `systemctl is-active k3s` -> active;
+      `/etc/rancher/k3s/k3s.yaml` present; listening on :6443 and
+      :10250. apps-w-1 (VMID 113 @ 10.0.0.66) installed k3s-agent;
+      systemd unit is `activating` while waiting for kube-vip;
+      `/etc/systemd/system/k3s-agent.service.env` correctly holds
+      K3S_URL=https://10.0.0.40:6443 and the per-cluster node-token.
+      The agent will register once the helm phase brings up
+      kube-vip on the apps cluster.

@@ -122,11 +122,17 @@ _SERVER_BASE_FLAGS: tuple[str, ...] = (
 )
 
 
-# Agent-side matches versions.yaml::k3s::v1.34.x::install_args_default.agent.
-# Agents do NOT bundle Traefik, so the --disable=traefik is absent.
-_AGENT_BASE_FLAGS: tuple[str, ...] = (
-    "--flannel-backend=none",
-)
+# Agent-side flags. Per the official k3s documentation, the
+# `--flannel-backend` flag is server-ONLY; the agent inherits the
+# server's CNI decision via the kubelet join handshake. Agents on
+# a `--flannel-backend=none` server must NOT pass --flannel-backend
+# at all (k3s agent binary rejects it: "flag provided but not
+# defined: -flannel-backend"). Same for --disable={traefik,...}
+# which are server-only.
+#
+# What agents DO need: --node-ip / --node-external-ip. Anything else
+# is kubelet config we may add later.
+_AGENT_BASE_FLAGS: tuple[str, ...] = ()
 
 
 @dataclass
@@ -298,13 +304,11 @@ class K3sInstaller:
         of a raw stderr blob.
         """
         ip = str(server_vm["ip"])
-        # Tunnel through the PVE jump host into the VM's SDN IP. For a
-        # deep dive we'd nest a second ProxyCommand; for now we go
-        # directly through the jump host via -W <ip>:22.
-        cmd = self._ssh_argv(target_ip=ip) + [
-            "--",
-            "cat /var/lib/rancher/k3s/server/node-token 2>/dev/null",
-        ]
+        # Tunnel through the PVE jump host into the VM's SDN IP and run
+        # as root via sudo -n (the cluster VMs refuse root login).
+        inner = "cat /var/lib/rancher/k3s/server/node-token 2>/dev/null"
+        remote = f"sudo -n bash -c {shlex.quote(inner)}"
+        cmd = self._ssh_argv(target_ip=ip) + ["--", remote]
         proc = subprocess.run(  # noqa: S603 -- single, documented shell call.
             cmd,
             check=False,
@@ -354,7 +358,13 @@ class K3sInstaller:
         )
 
     def _ssh_returncode(self, ip: str, command: str) -> int:
-        """Run `command` over SSH; return the exit code, never raise.
+        """Run `command` over SSH as root; return the exit code, never raise.
+
+        The remote user is `ubuntu` (cluster VMs use the cloud-image
+        default; root login is rejected). We `sudo -n bash -c <command>`
+        to escalate to root for the call. The whole command is
+        single-quoted on argv so the operators in the inner shell
+        don't get tokenized by the outer ssh client.
 
         Used for idempotency gates where a non-zero result is just a
         'not installed yet' signal, not an error worth surfacing.
@@ -363,8 +373,9 @@ class K3sInstaller:
         as a non-zero rc.
         """
         try:
+            remote = f"sudo -n bash -c {shlex.quote(command)}"
             proc = subprocess.run(  # noqa: S603 -- documented shell call.
-                self._ssh_argv(target_ip=ip) + ["--", command],
+                self._ssh_argv(target_ip=ip) + ["--", remote],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -381,27 +392,60 @@ class K3sInstaller:
     ) -> None:
         """Invoke the upstream `install.sh` over SSH on the given VM.
 
-        Renders to (single shell):
-            env KEY=val KEY=val curl -sfL https://get.k3s.io | \
-                INSTALL_K3S_VERSION=... sh -s - <exec-flags...>
+        Renders to (single shell run as root via `sudo -n bash -c`):
+            sudo -n bash -c '
+              export K3S_TOKEN=...
+              export INSTALL_K3S_VERSION=v1.34.9+k3s1
+              ...
+              curl -sfL https://get.k3s.io | sh -s - <exec-flags...>
+            '
 
         Notes:
-          - The token / secret env vars are placed BEFORE curl so they
-            enter the remote shell as exported env, not argv.
+          - The env vars are placed INSIDE the sudo'd bash (via
+            `export`), not on the outer shell. `sudo -n` strips the
+            caller's environment by default (env_reset is on; env_keep
+            does not include K3S_*/INSTALL_K3S_*), so a bare env prefix
+            on the outer shell would be silently lost.
+          - The token / secret env vars are exported, not argv. They
+            never appear in `ps auxe` output on the operator host.
           - The upstream install script is itself idempotent (hash check);
             our Python-side short-circuit just saves a network round-trip.
+          - The remote user is `ubuntu` (cluster VMs use the cloud-image
+            default; root login is rejected). `sudo -n` requires no
+            password -- the cluster root tofu module sets `NOPASSWD` for
+            the operator's ssh-key user.
         """
         ip = str(vm["ip"])
-        env_prefix = " ".join(
-            f"{shlex.quote(k)}={shlex.quote(v)}"
-            for k, v in plan.environment.items()
-        )
-        # Final command rendered into the remote shell -- this avoids the
-        # token ever appearing in our local argv.
-        remote = (
-            f"{env_prefix} curl -sfL {self._versions.k3s_install_url} | "
+        # Whitelist env keys (alphanumeric + underscore) to defend against
+        # accidental injection. Only the VALUE is shlex-quoted; the KEY
+        # is left bare so bash parses it as an assignment.
+        export_lines = []
+        for k, v in plan.environment.items():
+            if not k.replace("_", "").isalnum():
+                raise K3sInstallerError(
+                    "unsafe_env_key",
+                    node=vm.get("name"),
+                    key=k,
+                    resolution=(
+                        "env keys must be alphanumeric + underscore; "
+                        "check the install plan"
+                    ),
+                )
+            export_lines.append(f"export {k}={shlex.quote(v)}")
+        export_block = "\n".join(export_lines) + "\n"
+        # Build the inner shell payload, then wrap in sudo -n bash -c.
+        # We use a literal shell command: `export K=...; export T=...;
+        # curl -sfL https://get.k3s.io | sh -s - <flags>`. Putting the
+        # `export` statements INSIDE the sudo'd bash is necessary because
+        # `sudo -n` strips the caller's env by default (env_reset is on;
+        # env_keep does NOT include K3S_*/INSTALL_K3S_*). The bare env
+        # prefix on the outer shell would be silently lost.
+        install_cmd = (
+            f"curl -sfL {self._versions.k3s_install_url} | "
             "sh -s - " + " ".join(shlex.quote(f) for f in plan.exec_flags)
         )
+        inner = export_block + install_cmd
+        remote = f"sudo -n bash -c {shlex.quote(inner)}"
         cmd = self._ssh_argv(target_ip=ip) + ["--", remote]
         try:
             proc = subprocess.run(  # noqa: S603
@@ -430,17 +474,26 @@ class K3sInstaller:
             )
 
     def _ssh_argv(self, target_ip: str | None = None) -> list[str]:
-        """Return the SSH argv prefix.
+        """Return the SSH argv prefix used to reach a cluster VM.
 
         `ssh_proxy_target` is the canonical PVE jump (e.g. `root@kvm.bruj0.net -p 6022`).
-        When `target_ip` is supplied we tunnel through it; otherwise we
-        use the same jump host (rare; kept for symmetry).
+        When `target_ip` is supplied we tunnel through the PVE jump
+        host to the VM's SDN IP via `ssh -o ProxyCommand=...` -- this
+        is the standard "double ssh" pattern used everywhere the
+        operator host is NOT directly routable to the SDN.
 
-        The `ProxyCommand`-style -W tunnel pattern keeps this module
-        portable: it does NOT depend on ~/.ssh/config entries the
-        operator host may not have.
+        Why ProxyCommand and not `-W`: when the remote side needs to
+        execute a non-trivial shell command (our installer passes a
+        multi-token env-prefix + pipe to `sh -s - <flags>`), `-W`
+        forces ssh into forward-only mode and refuses the command.
+        ProxyCommand gives us stdio forwarding AND a real exec target.
+
+        Implementation note: the ProxyCommand value is ONE shell-eval-able
+        string (not a list of argv tokens). When ssh sees `-o
+        ProxyCommand=<value>` it runs `<value> via /bin/sh -c`, so we
+        must build the value as a single quoted string. We use
+        `shlex.quote` per token and rejoin with spaces.
         """
-        proxy = self.ssh_proxy_target.split()
         base = [
             "ssh",
             "-o",
@@ -451,8 +504,25 @@ class K3sInstaller:
             "UserKnownHostsFile=/dev/null",
         ]
         if target_ip:
-            # Tunnel through the PVE host. The VM is on the SDN and
-            # not directly routable from the operator laptop.
-            proxy_with_w = proxy + ["-W", f"{target_ip}:22"]
-            return base + proxy_with_w
-        return base + proxy
+            # Build a single ProxyCommand value. ssh will run it via
+            # /bin/sh -c, so we shlex.quote each token.
+            proxy_tokens = ["ssh", *self.ssh_proxy_target.split(), "-W", "%h:%p"]
+            proxy_cmd = " ".join(shlex.quote(t) for t in proxy_tokens)
+            # ssh uses this only to pick the host key fingerprint;
+            # StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null
+            # so any name works. The actual destination hop is the
+            # ProxyCommand above which substitutes %h/%p on the fly.
+            #
+            # USER: the cluster VMs are configured (via --ciuser in the
+            # cluster root's tofu module) with `ubuntu` as the primary
+            # user. The cloud image default sshd_config refuses root
+            # login with the literal message "Please login as the user
+            # ubuntu rather than the user root.". We use `ubuntu@` and
+            # rely on sudo NOPASSWD inside the installer plan.
+            remote_user = str(self.cluster.get("ssh_user", "ubuntu"))
+            return base + [
+                "-o",
+                f"ProxyCommand={proxy_cmd}",
+                f"{remote_user}@{target_ip}",
+            ]
+        return base + self.ssh_proxy_target.split()

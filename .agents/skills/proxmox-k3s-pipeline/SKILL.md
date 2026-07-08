@@ -13,18 +13,22 @@ externalname). Each (sub-)phase has a single CLI entry point and
 explicit success criteria that the agent MUST assert before
 proceeding.
 
-**Pipeline state: 2026-07-08 -- Phases 0-2 verified end-to-end on
-kvm.bruj0.net (BigBertha, PVE 9.2.3, Ubuntu 24.04 LTS Noble +
-k3s v1.34.x golden template at VMID 900).** All four cluster VMs
+**Pipeline state: 2026-07-08 -- Phases 0-2 + `install_k3s` verified
+end-to-end on kvm.bruj0.net (BigBertha, PVE 9.2.3, Ubuntu 24.04
+LTS Noble + k3s v1.34.9+k3s1).** All four cluster VMs
 (cicd-cp-1 @ SDN 10.0.0.65, cicd-w-1 @ 10.0.0.64, apps-cp-1 @
 10.0.0.67, apps-w-1 @ 10.0.0.66) are cloned, running, and have a
-working qemu-guest-agent. The `install_k3s` phase landed on
-2026-07-08; `k3s` (healthz) and the remaining phases run after.
-Phases 3-5 are documented from the original spec; the
-Phase-4 sub-phases were renamed from `talos` to `cloudinit` when
-the OS pivot landed (2026-07-07), and `install_k3s` was added
-between `cloudinit` and `k3s` when the canonical install plan
-landed on 2026-07-08 (see [docs/install-k3s-plan.md](../../../docs/install-k3s-plan.md)).
+working qemu-guest-agent. As of 2026-07-08 09:50 UTC: cicd-cp-1
+runs the k3s server (`:6443` listening) and cicd-w-1 has the
+k3s-agent systemd unit installed and `activating` (it will
+register on the VIP once the `helm` phase brings up kube-vip).
+apps-cp-1 likewise runs the k3s server; apps-w-1 has its agent
+installed and `activating`. Phases 3-5 are documented from the
+original spec; the Phase-4 sub-phases were renamed from `talos`
+to `cloudinit` when the OS pivot landed (2026-07-07), and
+`install_k3s` was added between `cloudinit` and `k3s` when the
+canonical install plan landed on 2026-07-08 (see
+[docs/install-k3s-plan.md](../../../docs/install-k3s-plan.md)).
 
 ## When to load this skill
 
@@ -1194,6 +1198,49 @@ satisfies; the bootstrap assumes each VM came up with the agent
 alive. If the cluster has been live for a while and an agent has
 gone stale, re-running the cluster root tofu module will reset
 that, but the install_k3s phase itself does not restart VMs.
+
+**4a.3.5 -- SSH user is `ubuntu` (sudo NOPASSWD), not `root`.**
+The cloud image's sshd_config rejects `root` logins with "Please
+login as the user ubuntu rather than the user root.". The
+Bitwarden SSH key (proxied through PVE) lands in `/root/.ssh/authorized_keys`
+**inside** each VM via the cluster root's `--sshkeys` arg; for
+root-privileged operations (systemctl, /etc/rancher, kubelet
+config) we wrap calls in `sudo -n bash -c '...'`.
+
+**4a.3.6 -- `sudo -n bash -c` strips the caller's env.** A bare
+env-prefix before the sudo invocation IS silently dropped (e.g.
+`INSTALL_K3S_VERSION=v1.34.9+k3s1 sudo -n bash -c '...'` ends up
+running k3s's installer with an EMPTY env). Fix: put `export
+K=V; export T=V;` INSIDE the bash -c, then the actual install.
+This bit the first cicd-w-1 install attempt; the env file
+remained 0 bytes and `journalctl` reported "Error: --token is
+required".
+
+**4a.3.7 -- `k3s agent` does NOT accept `--flannel-backend`.**
+That flag is server-only; the agent binary rejects it with "flag
+provided but not defined: -flannel-backend" in journalctl. Server
+passes `--flannel-backend=none`; agent inherits the CNI choice
+via the kubelet join handshake and MUST NOT pass the flag. (Bit
+the first cicd-w-1 attempt too.) See test `test_plan_for_agent_joins_vip_not_eth0`
+in `tools/tests/test_k3s_installer.py` for the regression guard.
+
+**4a.3.8 -- Use ProxyCommand, not `-W`, for the SSH tunnel.**
+OpenSSH's `-W <host>:22` cmdline flag forces stdio-forwarding
+mode and refuses a remote command. For the install call we need
+both tunneling AND a remote exec, so `-o ProxyCommand="ssh -W
+%h:%p ..."` is the right form. See
+`tools/lib/k3s_installer.py::_ssh_argv` for the canonical
+shape.
+
+**4a.3.9 -- Agent reaches `127.0.0.1:6444` over a local
+load-balancer, which then tunnels to the VIP (`10.0.0.30` /
+`10.0.0.40`).** Until the `helm` phase lands `kube-vip` on the
+server, that load-balancer connection resets with
+`127.0.0.1:NNNNN -> 127.0.0.1:6444: read: connection reset by peer`.
+This is the agent retrying every 10 s waiting for the apiserver.
+It's expected post-install_k3s; the unit stays `activating` until
+the `helm` phase completes. Don't mistake this for an
+install_k3s failure.
 
 ### 4a.4 -- Success criteria
 

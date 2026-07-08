@@ -77,14 +77,25 @@ cross_check:
   k3s_traefik_bundled: "compatible (v3.x supports IngressClass + ClusterIP)"
   kubevip_cilium: "compatible (kube-vip runs in host network; Cilium runs in pod network)"
   install_k3s_2026_07_08_vip_state: >
-    Verified on kvm.bruj0.net (BigBertha, PVE 9.2.3) on 2026-07-08:
-    the four cluster VMs (cicd-cp-1 @ 10.0.0.65, cicd-w-1 @
-    10.0.0.64, apps-cp-1 @ 10.0.0.67, apps-w-1 @ 10.0.0.66) had no
-    k3s installed; PowerDNS A records cicd-vip.intranet.local ->
-    10.0.0.30 and apps-vip.intranet.local -> 10.0.0.40 already
-    present; no listener on either VIP. Outcome: install_k3s phase
-    design confirmed; --tls-san=<vip> is mandatory to make
-    kubeconfig SANs match. See docs/install-k3s-vip-verification.md.
+    Verified on kvm.bruj0.net (BigBertha, PVE 9.2.3) on 2026-07-08.
+    Pre-install: the four cluster VMs (cicd-cp-1 @ SDN 10.0.0.65,
+    cicd-w-1 @ 10.0.0.64, apps-cp-1 @ 10.0.0.67, apps-w-1 @
+    10.0.0.66) had no k3s installed; PowerDNS A records
+    cicd-vip.intranet.local -> 10.0.0.30 and apps-vip.intranet.local
+    -> 10.0.0.40 already present; no listener on either VIP.
+    Post-install: cicd-cp-1 (k3s server, v1.34.9+k3s1, listening
+    on :6443 / :10250), cicd-w-1 (k3s-agent.service activating,
+    env file populated with K3S_URL=https://10.0.0.30:6443 and
+    K3S_TOKEN set), apps-cp-1 (k3s server up), apps-w-1 (k3s-agent
+    service activating, env file populated with K3S_URL=https://10.0.0.40:6443
+    and K3S_TOKEN set). Agent activation waits on kube-vip; helm
+    phase must complete for the agent to register. See
+    docs/install-k3s-plan.md and docs/install-k3s-vip-verification.md.
+    Gotchas discovered during the live-host run (now pinned in
+    Step 4a.3.x): SSH user is ubuntu not root (sudo -n bash -c);
+    sudo strips caller env (export K=V INSIDE the bash -c);
+    k3s-agent rejects --flannel-backend; use ProxyCommand rather
+    than -W for the SSH tunnel when a remote command is needed.
 
 secrets_redaction:
   scrub_pattern: "(?i)(token|secret|password|ssh_key|sshkey)"
