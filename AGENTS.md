@@ -141,7 +141,7 @@ Every load-bearing recipe change has a corresponding
 
 ## State of the live host (read this before assuming any state)
 
-As of 2026-07-07, on `kvm.bruj0.net` (BigBertha, PVE 9.2.3, kernel
+As of 2026-07-07, on `kvm.example.net` (BigBertha, PVE 9.2.3, kernel
 `7.0.6-2-pve`):
 
 - VMID 900 = `ubuntu-noble-template` (the golden image). `template: 1`,

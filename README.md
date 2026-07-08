@@ -340,7 +340,7 @@ make test-infra-clusters  # tofu test for every instance under infra/clusters
 
 ## Status (2026-07-08)
 
-- **Phases 0-2 verified end-to-end** on `kvm.bruj0.net` (PVE 9.2.3,
+- **Phases 0-2 verified end-to-end** on `kvm.example.net` (PVE 9.2.3,
   kernel 7.0.6-2-pve) with the canonical Proxmox+Ubuntu
   recipe: `virt-customize` bakes `qemu-guest-agent` into the cloud
   image BEFORE the VM is created, Proxmox's native cloud-init drive

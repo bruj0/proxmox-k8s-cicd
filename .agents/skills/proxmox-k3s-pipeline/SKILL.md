@@ -20,7 +20,7 @@ is the **operator playbook**; that document is the **operator
 reference**.
 
 **Pipeline state: 2026-07-08 -- Phases 0-4 verified end-to-end on
-kvm.bruj0.net (BigBertha, PVE 9.2.3, Ubuntu 24.04 LTS Noble +
+kvm.example.net (BigBertha, PVE 9.2.3, Ubuntu 24.04 LTS Noble +
 k3s v1.34.9+k3s1).** All four cluster VMs (cicd-cp-1 @ SDN
 10.0.0.65, cicd-w-1 @ 10.0.0.64, apps-cp-1 @ 10.0.0.67, apps-w-1 @
 10.0.0.66) are cloned, running, and have a working
@@ -63,7 +63,7 @@ The bounded context for this skill is in
 
 ## Step 0a -- Pre-flight discovery (MANDATORY before Phase 0)
 
-The skill assumes the live host `kvm.bruj0.net` running PVE
+The skill assumes the live host `kvm.example.net` running PVE
 9.2.3 on kernel `7.0.6-2-pve`, with a single node named
 `BigBertha` and three storage pools (`data1`, `data2` lvmthin;
 `local` dir). For a different host, run the discovery probes below
@@ -191,7 +191,7 @@ of:
 | `CLOUDFLARE_ACCOUNT_ID` | Account under which to mint the scoped token | WP00 |
 | `CLOUDFLARE_ZONE_ID` | Zone to scope DNS-edit permissions on the child token | WP00 |
 | `CLOUDFLARE_DOMAIN` | Human-readable domain (informational only) | WP00 |
-| `PROXMOX_API_URL` | Proxmox API endpoint, e.g. `https://kvm.bruj0.net:8006/api2/json` | WP00+ |
+| `PROXMOX_API_URL` | Proxmox API endpoint, e.g. `https://kvm.example.net:8006/api2/json` | WP00+ |
 | `PROXMOX_API_TOKEN` | `USER@REALM!TOK=secret` form | WP00+ |
 | `GITLAB_PAT` | GitLab personal access token with `api` scope (project Owner on infra-state/bigbertha) | WP00+ |
 | `POWERDNS_API_KEY` | PowerDNS API key (used by `scripts/sync_dns_to_sdn.py`) | Phase 2 sync |
@@ -247,11 +247,11 @@ not the standard OpenSSH agent. SSH commands that target PVE
 or the key will be rejected with `Permission denied (publickey)`.
 The agent holds a per-host key fingerprint
 (`SHA256:YKoadsaoGPiscSmBy15Nc+Bl+YCThvTFefe8pHKlygo` for
-`kvm.bruj0.net`).
+`kvm.example.net`).
 
 ```bash
 SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
-  ssh -o BatchMode=yes -p 6022 root@kvm.bruj0.net 'echo ok'
+  ssh -o BatchMode=yes -p 6022 root@kvm.example.net 'echo ok'
 ```
 
 If `SSH_AUTH_SOCK` is unset, OpenSSH falls back to the wrong agent
@@ -388,7 +388,7 @@ in production.
 
 ```bash
 SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
-  ssh -p 6022 root@kvm.bruj0.net 'pveum user token delete root@pam tf-bootstrap'
+  ssh -p 6022 root@kvm.example.net 'pveum user token delete root@pam tf-bootstrap'
 # root@pam itself stays -- you need it for any future admin operations
 ```
 
@@ -456,7 +456,7 @@ you created one) can also go.
 
 ```bash
 SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
-  ssh -p 6022 root@kvm.bruj0.net 'pveum user token delete root@pam tf-bootstrap'
+  ssh -p 6022 root@kvm.example.net 'pveum user token delete root@pam tf-bootstrap'
 # root@pam itself stays -- needed for future admin operations
 ```
 
@@ -710,10 +710,10 @@ SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
 PVE_TOKEN_ID='k3s-terraform@pam!tf' \
 PVE_TOKEN_SECRET='<secret-uuid>' \
 python -m tools.build_image \
-  --pve-endpoint https://kvm.bruj0.net:8006/api2/json \
+  --pve-endpoint https://kvm.example.net:8006/api2/json \
   --pve-node BigBertha \
-  --pve-ssh-host kvm.bruj0.net --pve-ssh-port 6022 \
-  --ssh-pubkey-path ~/.ssh/kvm.bruj0.net.pub \
+  --pve-ssh-host kvm.example.net --pve-ssh-port 6022 \
+  --ssh-pubkey-path ~/.ssh/kvm.example.net.pub \
   --ubuntu-image-version noble \
   --k3s-channel stable \
   --log-dir ./logs
@@ -785,8 +785,8 @@ If you need to capture the serial console for diagnostics:
 
 ```bash
 SSH_AUTH_SOCK=... scp scripts/capture_serial.py \
-  root@kvm.bruj0.net:/tmp/capture_serial.py
-SSH_AUTH_SOCK=... ssh -p 6022 root@kvm.bruj0.net \
+  root@kvm.example.net:/tmp/capture_serial.py
+SSH_AUTH_SOCK=... ssh -p 6022 root@kvm.example.net \
   'python3 /tmp/capture_serial.py --vmid 900 --out /tmp/900-serial.log --duration 60'
 ```
 
@@ -804,7 +804,7 @@ uses **VMID 900** and will not collide. If you ever want to
 free VMID 950:
 
 ```bash
-SSH_AUTH_SOCK=... ssh -p 6022 root@kvm.bruj0.net \
+SSH_AUTH_SOCK=... ssh -p 6022 root@kvm.example.net \
   'dmsetup remove /dev/data1/vm--950--disk--1 || true;
    lvremove -f /dev/data1/vm-950-disk-1 || true;
    qm destroy 950'
@@ -1018,7 +1018,7 @@ ones will linger):
 
 ```bash
 SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
-  ssh -p 6022 root@kvm.bruj0.net \
+  ssh -p 6022 root@kvm.example.net \
     'pct exec 101 -- bash -c "for n in 0.1.0.10.10.in-addr.arpa. \
     1.1.0.10.10.in-addr.arpa. 0.2.0.10.10.in-addr.arpa. \
     1.2.0.10.10.in-addr.arpa. 61.0.0.10.in-addr.arpa. \

@@ -6,7 +6,7 @@ official Rancher k3s documentation and release notes.
 
 ## 1. Goal and scope
 
-We have four Ubuntu 24.04 VMs on `kvm.bruj0.net` (`cicd-cp-1`,
+We have four Ubuntu 24.04 VMs on `kvm.example.net` (`cicd-cp-1`,
 `cicd-w-1`, `apps-cp-1`, `apps-w-1`), each with
 `qemu-guest-agent` alive and DHCP'd on `vnet0`. None of them
 currently runs k3s.
@@ -104,7 +104,7 @@ short-circuit).
 ## 5. Open questions — verify before implementing
 
 These need answers from the operator OR live verification on
-`kvm.bruj0.net` before we can say the recipe is wired. Each
+`kvm.example.net` before we can say the recipe is wired. Each
 one is a small task and I have written **what to check** and
 **what the default assumption would be** if the operator
 opts not to chase it.

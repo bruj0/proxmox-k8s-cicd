@@ -83,14 +83,14 @@ Verified flow:
 3. The capture file fills with OVMF/SeaBIOS banner → GRUB → kernel printk
    → initramfs messages.
 
-Total example (for VM 951, PVE host `kvm.bruj0.net`, ssh on port 6022):
+Total example (for VM 951, PVE host `kvm.example.net`, ssh on port 6022):
 
     # shell 1
-    ssh -o BatchMode=yes -p 6022 root@kvm.bruj0.net \
+    ssh -o BatchMode=yes -p 6022 root@kvm.example.net \
         'python3 /tmp/capture_serial.py --vmid 951 --out /tmp/cap.log --duration 90'
 
     # shell 2 (run a few seconds later)
-    ssh -o BatchMode=yes -p 6022 root@kvm.bruj0.net 'qm reset 951'
+    ssh -o BatchMode=yes -p 6022 root@kvm.example.net 'qm reset 951'
 
 After 60s, `/tmp/cap.log` on the PVE host contains ~50 KB of OCR-friendly
 kernel boot log (use `cat -v | head -c N` to read it without CR/ESC noise).

@@ -1,6 +1,6 @@
 # Cluster State — Administrator's Guide
 
-> **Captured**: 2026-07-08, on `kvm.bruj0.net` (BigBertha), PVE 9.2.3,
+> **Captured**: 2026-07-08, on `kvm.example.net`, PVE 9.2.3,
 > kernel `7.0.6-2-pve`. Live snapshot of the two k3s clusters
 > brought up by the
 > [proxmox-k3s-pipeline skill](../.agents/skills/proxmox-k3s-pipeline/SKILL.md).
@@ -15,21 +15,39 @@ documented here.
 
 ## Table of contents
 
-1. [Cluster inventory](#1-cluster-inventory)
-2. [Network topology](#2-network-topology)
-3. [Compute: VM mapping](#3-compute-vm-mapping)
-4. [Operating system and runtime](#4-operating-system-and-runtime)
-5. [Kubernetes core](#5-kubernetes-core)
-6. [CNI — Cilium](#6-cni--cilium)
-7. [Control-plane load balancing — kube-vip](#7-control-plane-load-balancing--kube-vip)
-8. [Storage — proxmox-csi-plugin](#8-storage--proxmox-csi-plugin)
-9. [Cloud integration](#9-cloud-integration)
-10. [Certificate management](#10-certificate-management)
-11. [Ingress — Traefik (planned)](#11-ingress--traefik-planned)
-12. [Cross-cluster wiring](#12-cross-cluster-wiring)
-13. [Operator tooling](#13-operator-tooling)
-14. [Known issues and drift](#14-known-issues-and-drift)
-15. [How to re-run any phase](#15-how-to-re-run-any-phase)
+- [Cluster State — Administrator's Guide](#cluster-state--administrators-guide)
+  - [Table of contents](#table-of-contents)
+  - [1. Cluster inventory](#1-cluster-inventory)
+  - [2. Network topology](#2-network-topology)
+    - [2.1 Subnets](#21-subnets)
+    - [2.2 DNS](#22-dns)
+    - [2.3 Operator → cluster reachability](#23-operator--cluster-reachability)
+  - [3. Compute: VM mapping](#3-compute-vm-mapping)
+  - [4. Operating system and runtime](#4-operating-system-and-runtime)
+  - [5. Kubernetes core](#5-kubernetes-core)
+    - [5.1 Cluster bring-up flags](#51-cluster-bring-up-flags)
+    - [5.2 Bootstrap mechanism](#52-bootstrap-mechanism)
+    - [5.3 Authentication](#53-authentication)
+  - [6. CNI — Cilium](#6-cni--cilium)
+    - [6.1 Routing](#61-routing)
+  - [7. Control-plane load balancing — kube-vip](#7-control-plane-load-balancing--kube-vip)
+    - [7.1 The `config.address` shape (NOT `controlPlane.enabled`)](#71-the-configaddress-shape-not-controlplaneenabled)
+    - [7.2 VIP ownership](#72-vip-ownership)
+  - [8. Storage — proxmox-csi-plugin](#8-storage--proxmox-csi-plugin)
+    - [8.1 Why not `local-path`?](#81-why-not-local-path)
+  - [9. Cloud integration](#9-cloud-integration)
+    - [9.1 proxmox-cloud-controller-manager](#91-proxmox-cloud-controller-manager)
+    - [9.2 Cloudflare Tunnel](#92-cloudflare-tunnel)
+  - [10. Certificate management](#10-certificate-management)
+  - [11. Ingress — Traefik (planned)](#11-ingress--traefik-planned)
+  - [12. Cross-cluster wiring](#12-cross-cluster-wiring)
+  - [13. Operator tooling](#13-operator-tooling)
+  - [14. Known issues and drift](#14-known-issues-and-drift)
+    - [14.1 proxmox-ccm / proxmox-csi / cloudflare-tunnel — ContainerCreating](#141-proxmox-ccm--proxmox-csi--cloudflare-tunnel--containercreating)
+    - [14.2 k3s version drift](#142-k3s-version-drift)
+    - [14.3 Web-search-derived version pins](#143-web-search-derived-version-pins)
+  - [15. How to re-run any phase](#15-how-to-re-run-any-phase)
+  - [See also](#see-also)
 
 ---
 
@@ -40,14 +58,14 @@ documented here.
 | `cicd` | CI/CD workloads (GitLab, runners, registry, ArgoCD) | `10.0.0.30` | `10.42.0.0/16` | `10.43.0.0/16` | cicd-cp-1 (CP), cicd-w-1 (worker) |
 | `apps`  | End-user apps reachable via Cloudflare Tunnel | `10.0.0.40` | `10.44.0.0/16` | `10.45.0.0/16` | apps-cp-1 (CP), apps-w-1 (worker) |
 
-Both clusters run on the same Proxmox host (`kvm.bruj0.net`).
+Both clusters run on the same Proxmox host (`kvm.example.net`).
 Each cluster has exactly one control-plane VM and one worker VM;
 the bootstrap module supports scaling workers via the
 [`scale-workers` runbook](runbooks/scale-workers.md).
 
 ```mermaid
 flowchart TB
-  subgraph BigBertha["kvm.bruj0.net (BigBertha, PVE 9.2.3)"]
+  subgraph BigBertha["kvm.exmple.net (BigBertha, PVE 9.2.3)"]
     Template["VMID 900<br/>ubuntu-noble-template<br/>Proxmox template"]
     subgraph SDN["SDN zone 'intranet' (vnet0)"]
       cicdcp["VMID 112<br/>cicd-cp-1<br/>10.0.0.65"]
@@ -80,7 +98,7 @@ flowchart TB
 | `10.0.0.1`  | PVE API (intended) | `proxmox-ccm` / `proxmox-csi-plugin` target (see §14) |
 
 > **Note**: the PVE API URL pinned in `infra/tokens/` and read by
-> `tools/secret_loader.py` is `https://kvm.bruj0.net:8006/api2/json`
+> `tools/secret_loader.py` is `https://kvm.example.net:8006/api2/json`
 > (public hostname), not the SDN-internal `10.0.0.1`. The PVE
 > node has both; choose whichever the cluster network can reach.
 
@@ -89,7 +107,7 @@ flowchart TB
 - **Internal**: PowerDNS @ `10.0.0.3:8081` (LXC 101, API) /
   `:53` (resolver). Manages `intranet` zone records and the
   reverse `0.0.10.in-addr.arpa` zone.
-- **External**: Cloudflare authoritative DNS for `bruj0.net`.
+- **External**: Cloudflare authoritative DNS for `example.net`.
   Records are managed by OpenTofu (`infra/tokens/cloudflare.tf`)
   and synced back to PowerDNS by `scripts/sync_dns_to_sdn.py`
   (the SDN IPAM allocates 10.0.0.50–200 regardless of `var.ip_start`,
@@ -100,7 +118,7 @@ flowchart TB
 The CPs are on `10.0.0.0/24` (SDN), the operator host is on
 `10.0.10.0/24` (eth0). The CPs are **not directly reachable**;
 all operator-to-cluster traffic flows through the Proxmox host
-(`kvm.bruj0.net`) using `PveSshProxy` port-forwarding (see §13).
+(`kvm.example.net`) using `PveSshProxy` port-forwarding (see §13).
 
 This is why the bootstrap script uses `ssh -L 127.0.0.1:<port>:<cp>:6443`
 tunnels through PVE for every apiserver call.
@@ -339,8 +357,8 @@ cluster. See §14.
 |---|---|
 | Chart | `oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller` |
 | Version | `0.0.23` |
-| Tunnel | `kvm-bruj0-net-cicd` / `kvm-bruj0-net-apps` |
-| Public hostname(s) | `*.kvm.bruj0.net` (managed via Cloudflare) |
+| Tunnel | `kvm-example-net-cicd` / `kvm-example-net-apps` |
+| Public hostname(s) | `*.kvm.example.net` (managed via Cloudflare) |
 
 The tunnel is **not yet installed** on the live cluster — the
 `remaining_releases()` call installs it after the CCM/CSI,
@@ -448,9 +466,9 @@ Root cause: the `--region intranet --credentials.url
 https://10.0.0.1:8006` values reach a PVE API endpoint that
 the cluster network cannot route to. Two paths forward:
 
-1. **Fix the credentials URL** to `https://kvm.bruj0.net:8006/api2/json`
+1. **Fix the credentials URL** to `https://kvm.example.net:8006/api2/json`
    (the public hostname) and re-apply the chart. The credentials
-   token will work as long as the cluster can reach `kvm.bruj0.net`
+   token will work as long as the cluster can reach `kvm.example.net`
    (which it can, via the SDN default route).
 2. **Install the CCM with `--set node.label.override`** to bypass
    the zone-label requirement until the network is fixed.

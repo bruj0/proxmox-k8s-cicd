@@ -7,10 +7,10 @@ genuinely unavailable for an extended period.**
 
 ## Prerequisites
 
-- The proxmox host reachable at `root@kvm.bruj0.net` (or its
+- The proxmox host reachable at `root@kvm.example.net` (or its
   internal IP `10.0.0.1`) on port **6022** (the non-default
   SSH port for this Proxmox host). The PVE web/API endpoint is
-  `https://kvm.bruj0.net:8006/api2/json`.
+  `https://kvm.example.net:8006/api2/json`.
 - The cluster module is already applied (`tofu state list` shows
   `module.proxmox_k3s_cluster.cicd`).
 - The cluster is currently serving Cloudflare-mediated traffic.
@@ -30,9 +30,9 @@ genuinely unavailable for an extended period.**
 2. Add the DNAT rules on the proxmox host:
 
    ```bash
-   ssh root@kvm.bruj0.net -p 6022 \
+   ssh root@kvm.example.net -p 6022 \
      nft add rule ip nat prerouting tcp dport 443 dnat to 10.0.0.30:443
-   ssh root@kvm.bruj0.net -p 6022 \
+   ssh root@kvm.example.net -p 6022 \
      nft add rule ip nat prerouting tcp dport 80  dnat to 10.0.0.30:80
    ```
 
@@ -52,7 +52,7 @@ genuinely unavailable for an extended period.**
 
    (PowerDNS is the cluster's upstream nameserver; per FR-034 internal
    clients use `10.0.0.3`. `151.80.34.63` is the proxmox host's
-   public IP `vmbr0`, aliased to `kvm.bruj0.net` for inbound HTTPS.)
+   public IP `vmbr0`, aliased to `kvm.example.net` for inbound HTTPS.)
 
 ## Verify
 
@@ -71,7 +71,7 @@ Reverse the four steps:
 2. Delete the nft DNAT rules:
 
    ```bash
-   ssh root@kvm.bruj0.net -p 6022 \
+   ssh root@kvm.example.net -p 6022 \
      nft delete rule ip nat prerouting handle <handle>
    ```
 

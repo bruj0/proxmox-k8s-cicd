@@ -1,4 +1,4 @@
-# Verification note — VIP configuration state on `kvm.bruj0.net` (2026-07-08)
+# Verification note — VIP configuration state on `kvm.example.net` (2026-07-08)
 
 Author of this note: the agent writing [docs/install-k3s-plan.md](install-k3s-plan.md).
 Goal: nail down the live-host state of the API VIP paths (`10.0.0.30`
@@ -31,7 +31,7 @@ installation that will eventually bind those IPs has not happened
 yet, and until it does, every kubeconfig pulled from a server
 node will reference an unreachable apiserver.
 
-## What I checked (live, on `kvm.bruj0.net`, 2026-07-08)
+## What I checked (live, on `kvm.example.net`, 2026-07-08)
 
 I did not run any k3s install — only read-only probes. All SSH went
 through the Bitwarden agent (`SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock`)
@@ -109,7 +109,7 @@ either IP. This is expected: nothing binds a VIP until kube-vip
 elects, and kube-vip doesn't elect until `helm install` in the
 `helm` phase of `bootstrap_cluster`.
 
-### 4. DNS records exist in `intranet.local`, not in `bruj0.net`
+### 4. DNS records exist in `intranet.local`, not in `example.net`
 
 `pdnsutil list-zone intranet.local` on LXC 101 (PowerDNS) shows
 both VIP records **already provisioned** by Phase 2 apply-time:
@@ -138,9 +138,9 @@ The 5-min TTL was probably chosen so a future VIP move converges
 quickly; for the install recipe we hit the **literal** `10.0.0.30`
 and `10.0.0.40` IPs, not the hostname, so the TTL is moot here.
 
-`nslookup cicd-vip.bruj0.net 10.0.0.3` returned `*** Can't find
-cicd-vip.bruj0.net: No answer`. That is NOT a bug — the zone is
-`intranet.local`, not `bruj0.net`. The skill's
+`nslookup cicd-vip.example.net 10.0.0.3` returned `*** Can't find
+cicd-vip.example.net: No answer`. That is NOT a bug — the zone is
+`intranet.local`, not `example.net`. The skill's
 `PHASES`-ordering text and the `externalname` phase both depend
 on the apps cluster's CoreDNS forwarding to `10.0.0.3` (PowerDNS),
 which itself reads `intranet.local`. The cross-cluster wiring is
@@ -169,7 +169,7 @@ required.
 |---|---|---|---|
 | `kubectl` | yes | v1.36.1 | Compatible with k3s v1.34.x (forward across one minor). |
 | `helm` | yes | v4.2.0 | Newer than the `helm 3.x` floor in the skill. `helm upgrade --install` works for the cilium / kube-vip chart shapes. |
-| Bitwarden SSH agent | yes (when running) | — | Holds the `kvm.bruj0.net` key fingerprint (SHA256:YKoadsao…). |
+| Bitwarden SSH agent | yes (when running) | — | Holds the `kvm.example.net` key fingerprint (SHA256:YKoadsao…). |
 
 The skill says `Step 0c`: `helm: 3.x`. Helm 4 will be required
 for some CRD helpers; for our flat-recipe release set (cilium
@@ -266,32 +266,32 @@ treat the answers as authoritative.
 SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock
 
 # 1. Are the four VMs up?
-ssh -p 6022 root@kvm.bruj0.net 'qm list | awk "/(111|112|113|114)/ {print}"'
+ssh -p 6022 root@kvm.example.net 'qm list | awk "/(111|112|113|114)/ {print}"'
 # Expect: 4 rows, all `running`.
 
 # 2. Are the agents alive?
 for vmid in 111 112 113 114; do
-  ssh -p 6022 root@kvm.bruj0.net "qm agent $vmid ping"
+  ssh -p 6022 root@kvm.example.net "qm agent $vmid ping"
 done
 # Expect: silent (zero exit), no output.
 
 # 3. What IPs did DHCP hand out?
-ssh -p 6022 root@kvm.bruj0.net \
+ssh -p 6022 root@kvm.example.net \
   "qm agent 112 network-get-interfaces | jq '.[1].\"ip-addresses\"'"
 # Expect: [{"ip-address":"10.0.0.65", ...}], not 10.0.1.0.
 
 # 4. Does the VIP answer?
-ssh -p 6022 root@kvm.bruj0.net \
+ssh -p 6022 root@kvm.example.net \
   "qm agent 112 exec 'curl -sk --max-time 3 -o /dev/null -w %{http_code} https://10.0.0.30:6443/healthz'"
 # Expect: 000 (connection refused).
 
 # 5. Does DNS resolve the VIP?
-ssh -p 6022 root@kvm.bruj0.net \
+ssh -p 6022 root@kvm.example.net \
   "qm agent 112 exec 'getent hosts cicd-vip.intranet.local'"
 # Expect: 10.0.0.30.
 
 # 6. Is k3s installed on cicd-cp-1?
-ssh -p 6022 root@kvm.bruj0.net \
+ssh -p 6022 root@kvm.example.net \
   "qm agent 112 exec 'systemctl is-active k3s; ls /etc/rancher/k3s 2>&1'"
 # Expect: inactive; "No such file or directory".
 ```
