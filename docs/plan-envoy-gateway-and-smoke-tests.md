@@ -1,6 +1,11 @@
 # Plan — Envoy Gateway API + smoke tests (GitLab-readiness)
 
-> **Status**: APPROVED 2026-07-08 — proceeding to implementation.
+> **Status**: APPROVED 2026-07-08; **REVISED 2026-07-08** for WP08
+> (kube-vip removed, cilium cgroup host root pinned). Proceeding to
+> implementation. See `docs/cilium-installation.md` for the Cilium
+> on-k3s recipe (which this plan depends on for `gatewayAPI.enabled=true`
+> + cilium-operator eBPF readiness).
+>
 > **Captured**: 2026-07-08.
 > **Author**: agent (read-only design pass; no code touched).
 > **Owner**: operator.
@@ -13,6 +18,13 @@
 > 2. **GatewayClass name = `envoy`** (chart default; no override).
 > 3. **Pin the upstream standard Gateway API CRDs** as a separate
 >    bootstrap phase (not as a chart dependency).
+> 4. **WP08 update**: **no kube-vip, no Talos** — the cluster runs
+>    single-CP (cicd-cp-1 = 10.0.0.65; apps-cp-1 = 10.0.0.67) and
+>    agents join on the CP host IP directly. Cilium 1.16.1 is
+>    installed per the canonical Cilium-on-k3s recipe (see
+>    `docs/cilium-installation.md`) with `--disable-kube-proxy`,
+>    `kubeProxyReplacement=true`, `cgroup.hostRoot=/sys/fs/cgroup`,
+>    `k8sServiceHost=<cp_ip>`.
 >
 > **WP00 (context7-auto-research) — completed 2026-07-08**:
 > full evidence in

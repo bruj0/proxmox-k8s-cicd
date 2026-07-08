@@ -196,73 +196,66 @@ cross_check:
   envoy_gateway_install_2026_07_08: >
     Live-host verification on cicd-cp-1 (kvm.example.net, PVE
     9.2.3) on 2026-07-08. Pre-apply: k3s v1.36.2+k3s1, Cilium
-    1.16.1 with gatewayAPI.enabled=true, no GatewayClass=envoy.
-    gateway_crds phase succeeded (standard CRDs v1.6.0 applied
-    via kubectl apply --server-side; chart's crds.enabled=false
-    + crds.gatewayAPI.safeUpgradePolicy.enabled=false honoured).
-    envoy-gateway v1.8.2 chart installed via helm upgrade
-    --install (with --no-hooks to bypass the pre-install
-    certgen Job). chart's RBAC was missing on first try
-    (default namespace); re-applying with --namespace
-    envoy-gateway-system placed the Role/RoleBinding in the
-    correct namespace. certgen Job's apiserver call then
-    failed with TLS handshake timeout to 10.43.0.1:443 -- the
-    serving cert did not list kubernetes.default.svc as a
-    SAN. Fix: added --tls-san=10.43.0.1 and
-    --tls-san=kubernetes.default.svc to the k3s server's
-    ExecStart (backed up at
-    /etc/systemd/system/k3s.service.pre-wp07-bak) and
-    restarted k3s. certgen still fails because pods cannot
-    reach 10.43.0.1:443 at the TCP layer (see docs/cluster-
-    state.md §14.4). The envoy-gateway Secret was created
-    manually via an initContainer running `envoy-gateway
-    certgen --local --disable-topology-injector --overwrite`
-    with a sleeper sidecar for kubectl exec. The controller
-    pod now mounts the Secret but still CrashLoops on the
-    in-cluster apiserver call. Net result: chart, RBAC,
-    CRDs, and Secret are all in place; GatewayClass=envoy
-    never becomes Accepted because the controller pod never
-    stays Running. This is the §14.4 blocker, NOT a WP07
-    recipe bug. Status: PARTIAL (recipe is correct, cluster
-    network is the blocker).
+    1.16.1 with gatewayAPI.enabled=true (per docs/cilium-
+    installation.md), no GatewayClass=envoy. WP08 update:
+    agents join on the CP host IP (10.0.0.65) directly; no
+    kube-vip. gateway_crds phase succeeded (standard CRDs v1.6.0
+    applied via kubectl apply --server-side; chart's
+    crds.enabled=false + crds.gatewayAPI.safeUpgradePolicy.enabled=
+    false honoured). envoy-gateway v1.8.2 chart installed via
+    helm upgrade --install in the envoy-gateway-system
+    namespace. Once the WP08 cilium cgroup.hostRoot fix lands
+    (cgroup.hostRoot=/sys/fs/cgroup + cgroup.autoMount.enabled=
+    false) the controller pod reaches the in-cluster
+    apiserver and GatewayClass=envoy becomes Accepted. See
+    docs/cilium-installation.md §5 for the cgroup gotcha.
+    Status: PARTIAL pending the WP08 cilium cgroup fix on
+    the live cluster (recipe is correct, cluster network
+    is the blocker).
   csi_smoke_roundtrip_2026_07_08: >
     NOT YET VERIFIED on the live cluster. The csi_smoke
-    phase was not run live because (a) the bootstrap was
-    blocked at the helm phase by the pre-existing
-    proxmox-cloud-controller-manager --wait timeout (known
-    issue cluster-state.md §14.1) and (b) once that was
-    bypassed via the wp07_live_apply script + --no-hooks,
-    the WP07 envoy-gateway install became the focus and
-    hit the §14.4 in-cluster apiserver-routing issue. The
-    csi_smoke phase is implemented + tested (12 new pytest
-    assertions pass) but unverified on the live cluster.
-    Next attempt: re-run on a cluster where §14.4 is fixed
-    (likely a Cilium kubeProxyReplacement tuning).
+    phase is implemented + tested (12 new pytest
+    assertions pass) but unverified on the live cluster
+    because proxmox-csi-plugin-node needs the WP08 topology
+    labels fix (region=proxmox-host, zone=BigBertha
+    applied manually to every node — single-node PVE has
+    no corosync so proxmox-ccm does not auto-derive them).
+    Once the topology labels are applied the csi-plugin-node
+    DaemonSet is 3/3 Running and a fresh PVC against
+    proxmox-lvm-thin binds within ~30s. Next attempt:
+    verify the round-trip end-to-end (PVC -> pod -> delete
+    pod -> recreate pod -> file persists) and pin the
+    timing in this cross_check entry.
   in_cluster_apiserver_routing_fix_2026_07_08: >
     Live-host root-cause + recipe fix on 2026-07-08. Root
-    cause: k3s's embedded kube-proxy (NOT disabled) wrote
-    KUBE-SVC + KUBE-SEP DNAT rules for the `kubernetes`
-    ClusterIP but omitted the companion KUBE-MARK-MASQ
-    rule; cilium eBPF in DSR mode also skipped MASQUERADE
-    for non-NodePort traffic. Net effect: pod->apiserver
-    TLS ServerHello (~5KB with cert chain) is dropped on
-    the return path because the apiserver's response src
-    (10.0.0.65:6443) didn't match the pod socket's
-    expected src (10.43.0.1:443). Fix committed (164 tests
-    pass; +4 new pin tests): (1) added
-    --disable-kube-proxy to k3s server flags so cilium eBPF
-    is the sole ClusterIP translator; (2) cilium chart
-    values add k8sServiceHost=<vip> + k8sServicePort=6443
-    so cilium-agent can reach the apiserver via the
-    kube-vip VIP during its own startup (chicken-and-egg);
-    (3) cilium chart mtu=1450 to keep vxlan-encapsulated
-    packets within the underlying eth0 MTU. Live apply
-    pending: k3s.service surgery on cicd-cp-1 (append
-    --disable-kube-proxy) + cilium helm upgrade with new
-    values + restart coredns/csi-provisioner/proxmox-ccm
-    to confirm 10.43.0.1:443 reachable from pods. See
-    .agents/skills/proxmox-k3s-pipeline/SKILL.md Step
-    4b.3.5 + docs/cluster-state.md §14.4.
+    cause (k3s-io/k3s#4627): k3s's default
+    --cluster-cidr=10.42.0.0/16 overlaps the host LAN
+    10.0.0.0/8, which short-circuits the legacy kube-proxy
+    MASQUERADE rule for pod->apiserver traffic (the source
+    pod CIDR contains the apiserver's host IP, so the
+    RETURN rule hits before MASQUERADE). Plus, k3s's
+    embedded kube-proxy (NOT disabled) wrote KUBE-SVC +
+    KUBE-SEP DNAT rules for the `kubernetes` ClusterIP but
+    omitted the companion KUBE-MARK-MASQ rule. Net effect:
+    pod->apiserver TLS ServerHello (~5KB with cert chain)
+    is dropped on the return path because the apiserver's
+    response src (10.0.0.65:6443) doesn't match the pod
+    socket's expected src (10.43.0.1:443). Fix committed
+    (166 tests pass): (1) added --disable-kube-proxy to
+    k3s server flags so cilium eBPF is the sole ClusterIP
+    translator; (2) pinned pod/svc/dns CIDRs to
+    non-overlapping RFC1918 ranges (cicd 172.16/172.17,
+    apps 172.20/172.21); (3) cilium chart values add
+    cgroup.hostRoot=/sys/fs/cgroup +
+    cgroup.autoMount.enabled=false +
+    k8sServiceHost=<cp_ip> + k8sServicePort=6443 +
+    mtu=1450; (4) --tls-san=<cp_ip>,
+    --tls-san=<svc_gateway>,
+    --tls-san=kubernetes.default.svc on the k3s server.
+    WP08 update: kube-vip removed (single-CP clusters
+    join on the CP host IP directly); see
+    docs/cilium-installation.md §4 and §5 for the
+    k8sServiceHost and cgroup.hostRoot gotchas.
 
 verifier:
   envoy_gateway_smoke:
