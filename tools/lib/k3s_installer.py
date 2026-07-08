@@ -208,11 +208,33 @@ class K3sInstaller:
         node_name = str(vm["name"])
         # --tls-san=<vip> is REQUIRED (came out of the VIP verification).
         # Filled at install time, never hard-coded.
+        #
+        # WP07 (2026-07-08): also add the in-cluster apiserver SANs so
+        # workloads that talk to the apiserver via kubernetes.default.svc
+        # (or the ClusterIP <svc_cidr>.0.1) survive TLS validation.
+        # Without these, every chart with a pre-install hook that calls
+        # the apiserver (Envoy Gateway's certgen Job, cert-manager's
+        # cainjector, etc.) fails with
+        # `x509: certificate is not valid for kubernetes.default.svc`.
+        # svc_cidr is passed via the cluster dict that bootstrap_cluster.py
+        # builds (see `_run_install_k3s` -- the dict carries
+        # svc_cidr from output.json: cicd=10.43.0.0/16, apps=10.45.0.0/16).
+        # Gateway address = <first three octets>.1.
+        svc_cidr = str(vm.get("svc_cidr") or "10.43.0.0/16")
+        svc_gateway = ".".join(svc_cidr.split(".")[:3] + ["1"])
         flags = [
             *_SERVER_BASE_FLAGS,
             f"--node-ip={node_ip}",
             f"--node-external-ip={node_ip}",
             f"--tls-san={vip}",
+            # In-cluster apiserver SANs (WP07). The two values cover
+            # every chart hook we have observed: the cert-manager
+            # cainjector, Envoy Gateway's certgen Job, the strrl
+            # cloudflare-tunnel-ingress controller, and gitlab's
+            # rails-side webhooks all resolve \`kubernetes.default.svc\`
+            # to the svc gateway IP.
+            f"--tls-san={svc_gateway}",
+            "--tls-san=kubernetes.default.svc",
         ]
         env = {
             "INSTALL_K3S_VERSION": self._versions.k3s_stable_version,

@@ -270,6 +270,12 @@ def _run_install_k3s(
     cluster_dict = {
         "name": topo.name,
         "vip": topo.vip,
+        # WP07 (2026-07-08): pass the per-cluster svc_cidr so the
+        # installer can add `--tls-san=<svc_gateway>` (see the
+        # gotcha in docs/cluster-state.md §14.4). Without this,
+        # any chart with a pre-install hook that calls the apiserver
+        # via kubernetes.default.svc fails TLS validation.
+        "svc_cidr": topo.svc_cidr,
         "vms": [
             # Use the SDN IP we got at output.json time. The installer
             # reads --node-ip from this; if the live IP differs (it can
@@ -307,6 +313,12 @@ def _run_install_k3s(
                 "vmid": int(cp.get("vmid", 0)),
                 "role": "control_plane",
                 "ip": cp["ip"],
+                # WP07: pass svc_cidr into the per-VM dict so the
+                # installer can add the in-cluster apiserver SANs.
+                # The installer reads svc_cidr from the first VM
+                # it's installed on; we pass it on every call so
+                # multi-CP clusters stay consistent.
+                "svc_cidr": topo.svc_cidr,
             }
             installer.install_server(node, vip=topo.vip)
         # 2) Read the join token off the first CP. If the server is

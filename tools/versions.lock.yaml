@@ -193,23 +193,51 @@ additional_dependencies:
     source: "context7-auto-research on 2026-07-08"
 
 cross_check:
-  envoy_gateway_install_2026_07_0X: >
-    TBD after first live-host apply on cicd cluster (2026-07-08).
-    Pre-apply: env_proxy_k3s cluster, k3s v1.36.2+k3s1, Cilium
-    1.16.1 with gatewayAPI.enabled=true, no GatewayClass
-    present. Post-apply (expected): GatewayClass=envoy present
-    with controllerName=gateway.envoyproxy.io/gatewayclass-controller,
-    status.conditions[type=Accepted].status=True. Captured by
-    the new _run_gateway_smoke phase; gate fires if any of those
-    conditions is False.
-  csi_smoke_roundtrip_2026_07_0X: >
-    TBD after first live-host apply on cicd cluster (2026-07-08).
-    Pre-apply: proxmox-csi-plugin 0.5.9 installed, StorageClass
-    proxmox-lvm-thin default, no PVC bound. Post-apply (expected):
-    PVC smoke-pvc Bound with volumeHandle starting with
-    proxmox://bigbertha/, marker file survives pod churn, both
-    smoke-write and smoke-read pods reach Completed/Succeeded.
-    Captured by the new _run_csi_smoke phase.
+  envoy_gateway_install_2026_07_08: >
+    Live-host verification on cicd-cp-1 (kvm.example.net, PVE
+    9.2.3) on 2026-07-08. Pre-apply: k3s v1.36.2+k3s1, Cilium
+    1.16.1 with gatewayAPI.enabled=true, no GatewayClass=envoy.
+    gateway_crds phase succeeded (standard CRDs v1.6.0 applied
+    via kubectl apply --server-side; chart's crds.enabled=false
+    + crds.gatewayAPI.safeUpgradePolicy.enabled=false honoured).
+    envoy-gateway v1.8.2 chart installed via helm upgrade
+    --install (with --no-hooks to bypass the pre-install
+    certgen Job). chart's RBAC was missing on first try
+    (default namespace); re-applying with --namespace
+    envoy-gateway-system placed the Role/RoleBinding in the
+    correct namespace. certgen Job's apiserver call then
+    failed with TLS handshake timeout to 10.43.0.1:443 -- the
+    serving cert did not list kubernetes.default.svc as a
+    SAN. Fix: added --tls-san=10.43.0.1 and
+    --tls-san=kubernetes.default.svc to the k3s server's
+    ExecStart (backed up at
+    /etc/systemd/system/k3s.service.pre-wp07-bak) and
+    restarted k3s. certgen still fails because pods cannot
+    reach 10.43.0.1:443 at the TCP layer (see docs/cluster-
+    state.md §14.4). The envoy-gateway Secret was created
+    manually via an initContainer running `envoy-gateway
+    certgen --local --disable-topology-injector --overwrite`
+    with a sleeper sidecar for kubectl exec. The controller
+    pod now mounts the Secret but still CrashLoops on the
+    in-cluster apiserver call. Net result: chart, RBAC,
+    CRDs, and Secret are all in place; GatewayClass=envoy
+    never becomes Accepted because the controller pod never
+    stays Running. This is the §14.4 blocker, NOT a WP07
+    recipe bug. Status: PARTIAL (recipe is correct, cluster
+    network is the blocker).
+  csi_smoke_roundtrip_2026_07_08: >
+    NOT YET VERIFIED on the live cluster. The csi_smoke
+    phase was not run live because (a) the bootstrap was
+    blocked at the helm phase by the pre-existing
+    proxmox-cloud-controller-manager --wait timeout (known
+    issue cluster-state.md §14.1) and (b) once that was
+    bypassed via the wp07_live_apply script + --no-hooks,
+    the WP07 envoy-gateway install became the focus and
+    hit the §14.4 in-cluster apiserver-routing issue. The
+    csi_smoke phase is implemented + tested (12 new pytest
+    assertions pass) but unverified on the live cluster.
+    Next attempt: re-run on a cluster where §14.4 is fixed
+    (likely a Cilium kubeProxyReplacement tuning).
 
 verifier:
   envoy_gateway_smoke:

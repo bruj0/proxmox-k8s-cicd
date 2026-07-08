@@ -540,9 +540,12 @@ either by editing the systemd unit or by setting
 
 ### 14.3 Envoy Gateway CRD install order (WP07, 2026-07-08)
 
-**Status**: reserved. The first live-host apply on 2026-07-08 will
-record any CRD-related gotcha here. The expected shape (no
-known issue yet):
+**Status**: resolved. The first live-host apply on 2026-07-08
+landed the standard CRDs (v1.6.0) and the Envoy Gateway chart
+v1.8.2. The install itself succeeded (chart installed, RBAC
+in place, cert Secret created by the initContainer trick
+documented below). The controller pod CrashLoops because of
+the separate §14.4 in-cluster apiserver-routing issue.
 
 - The `gateway_crds` phase applies the pinned standard CRDs
   (v1.6.0) via `kubectl apply --server-side`. The chart's own
@@ -550,16 +553,113 @@ known issue yet):
   version conflict between the chart and our pinned URL is
   impossible by construction.
 - Cilium 1.16.1's `gatewayAPI.enabled=true` registers a
-  validating webhook for the standard CRDs. If the webhook
-  rejects an HTTPRoute that Envoy Gateway accepts (or vice
-  versa), the `gateway_smoke` phase fails with a
-  `BootstrapError(gateway_smoke, ...)` that points at
-  `kubectl -n envoy-gateway-system get pods` for the
-  controller logs.
+  validating webhook for the standard CRDs.
+- The Envoy Gateway chart's pre-install `certgen` Job hard-codes
+  the RBAC namespace in the chart's templates. When the chart
+  is installed with `--namespace envoy-gateway-system` and
+  `--no-hooks`, the RBAC lands in the right namespace and the
+  Job can be applied as a regular Job (annotations stripped).
+  See `Step 4b.3.1` in the skill.
+- The `certgen` binary's apiserver call (used to patch the
+  topology-injector webhook caBundle + write the `envoy-gateway`
+  Secret) **fails on this cluster** because pods cannot reach
+  the apiserver via `https://kubernetes.default.svc/api` (see
+  §14.4). The Job pod's log ends with
+  `net/http: TLS handshake timeout` to `10.43.0.1:443`. The
+  Secret was created manually via the initContainer+emptyDir
+  +sleeper trick the live apply established (template +
+  rationale in §14.4 follow-up notes).
 
 **Live-host verification**: see
-`tools/versions.lock.yaml::cross_check.envoy_gateway_install_<date>`
-(added by the first live apply).
+`tools/versions.lock.yaml::cross_check.envoy_gateway_install_2026_07_08`.
+
+### 14.4 Pod→apiserver in-cluster routing is broken (WP07, 2026-07-08)
+
+**Status**: open — blocks all chart installs that need
+apiserver access. The Envoy Gateway controller CrashLoops
+with `Get "https://10.43.0.1:443/api": net/http: TLS handshake
+timeout` from inside its pod; the `proxmox-cloud-controller-manager`
+pod has been `ContainerCreating` for 4+ hours on cicd-w-1
+with the same symptom; the proxmox-csi controller is
+similarly stuck.
+
+**Diagnosis** (2026-07-08): The cilium BPF LB has the correct
+mapping
+(`10.43.0.1:443 → 10.0.0.65:6443` per
+`cilium-dbg bpf lb list`). The k3s apiserver listens on `*:6443`
+(per `ss -tlnp` on the CP node). The apiserver serving cert
+now carries `IP Address:10.43.0.1` and
+`DNS:kubernetes.default.svc` (added by §14.5). **But packets
+from a pod on cicd-w-1 to `10.0.0.65:6443` (the apiserver's
+direct node IP) also time out at the TCP layer** — the path
+pod→host-network on a different node is broken at the
+routing/firewall layer on this cluster. This is a pre-existing
+latent issue that the WP07 certgen surfaced; it has been
+silently broken since the cluster was built (the reason the
+proxmox-ccm/csi pods are stuck is the same).
+
+**Workarounds tried during WP07 live apply**:
+
+1. Added `--tls-san=10.43.0.1 --tls-san=kubernetes.default.svc`
+   to the k3s server's `ExecStart` and restarted k3s on
+   cicd-cp-1 (the SAN fix is in §14.5; backup at
+   `/etc/systemd/system/k3s.service.pre-wp07-bak`). This fixed
+   the TLS-validation side of the certgen failure but did NOT
+   fix the underlying TCP-routing issue.
+2. Generated the `envoy-gateway` certs locally via an
+   initContainer running `envoy-gateway certgen --local
+   --disable-topology-injector --overwrite`, copied the files
+   out via a sleeper sidecar, and created the Secret by hand.
+   This unblocks the cert volume mount but the controller
+   still fails on the apiserver call.
+3. **Not attempted (out of scope for WP07)**: switching
+   Cilium from `kubeProxyReplacement: true` to a hybrid /
+   iptables mode (which would force kube-proxy to handle the
+   service IP translation via iptables rather than cilium
+   eBPF). This is the most likely path to a fix.
+
+**Next step (separate work item)**: investigate the
+pod-to-host-network routing on the Proxmox SDN with
+`kubeProxyReplacement: true`. Candidate root causes:
+
+- Cilium eBPF `Connect-balancer` interaction with vxlan
+  tunnel mode for cross-node traffic
+- iptables rules missing for `MARK 0x200/0x200` (cilium
+  mark) on the worker node
+- A `CiliumClusterwideNetworkPolicy` or host-level nft rule
+  that drops the unmarked return path from the apiserver
+
+Until this is fixed, **the cluster is NOT GitLab-ready**.
+WP07's envoy-gateway install recipe change is correct (and
+was verified on the live cluster: chart installed, RBAC + CRDs
+in place, cert Secret created by the initContainer trick) but
+the cluster's network layer cannot host the controller pod
+until §14.4 is resolved.
+
+### 14.5 k3s apiserver SAN extension (WP07, 2026-07-08)
+
+**Status**: applied to the live cluster. The
+`tools/lib/k3s_installer.py::plan_server` recipe was updated
+to emit `--tls-san=<svc_gateway>` (cicd=`10.43.0.1`,
+apps=`10.45.0.1`) + `--tls-san=kubernetes.default.svc` so that
+in-cluster pods that talk to the apiserver via
+`kubernetes.default.svc` survive TLS validation. The
+`tools/bootstrap_cluster.py::_run_install_k3s` was updated
+to pass `svc_cidr` through the cluster + per-VM dicts.
+
+**Live-host apply** on cicd-cp-1: backed up the unit at
+`/etc/systemd/system/k3s.service.pre-wp07-bak`, added the
+two new SAN lines, ran `systemctl daemon-reload && systemctl
+restart k3s`. The regenerated serving cert now carries
+`IP Address:10.43.0.1` and `DNS:kubernetes.default.svc`. The
+apps-cp-1 unit was NOT updated (operator should mirror the
+surgery there before the next apps bootstrap, OR re-run the
+`install_k3s` phase after a `rm bootstrap_state.json`).
+
+**This is a NECESSARY but NOT SUFFICIENT fix** for the
+in-cluster apiserver routing issue (§14.4). The TLS
+validation now passes; the underlying TCP-routing failure
+remains.
 
 ## 15. How to re-run any phase
 

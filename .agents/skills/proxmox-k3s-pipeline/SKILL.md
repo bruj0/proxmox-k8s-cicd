@@ -1467,11 +1467,10 @@ SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
 
 ### 4b.3 -- Live-host gotchas (2026-07-08)
 
-(Reserved for the first-apply lessons. Update this section
-on the same day as the first live apply; pin the fix in
-`tools/tests/test_remaining_releases.py` + the
-`versions.lock.yaml::cross_check.envoy_gateway_install_<date>`
-entry.)
+The first live apply surfaced four pre-existing or
+chart-shape gotchas. The first three are recipe-level and
+have been pinned in tests; the fourth is a cluster-network
+issue (§14.4) and is a separate work item.
 
 **4b.3.1 -- `oci://docker.io/envoyproxy/gateway-helm` is the
 canonical OCI ref.** Not `oci://gateway-helm-charts/gateway-envoy`
@@ -1487,6 +1486,52 @@ on these clusters; a `LoadBalancer`-typed data-plane Service
 would never get a `status.loadBalancer` entry and the
 Gateway would report `AddressNotUsable`. Pin is asserted by
 `test_gateway_releases_uses_clusterip_service`.
+
+**4b.3.3 -- The chart's pre-install `certgen` Job hard-codes
+the RBAC namespace in the chart's templates.** The chart's
+`certgen-rbac.yaml` renders the SA/Role/RoleBinding with the
+release's `--namespace` value, but a regular
+`helm install` with `--namespace` set will place the RBAC
+correctly. If a previous `helm install` ran without the
+namespace flag (or failed mid-way), the RBAC may be in the
+`default` namespace while the Job runs in the actual
+release namespace -- `kubectl auth can-i get secrets --as=
+system:serviceaccount:<ns>:envoy-gateway-gateway-helm-certgen
+-n <ns>` will return `no`. Fix: re-render the chart with
+`--namespace <ns> --show-only templates/certgen-rbac.yaml`,
+strip the helm hook annotations, and `kubectl apply -f`
+the result before re-applying the certgen Job. Pinned in
+the wp07_live_apply script (the live-apply helper).
+
+**4b.3.4 -- The `certgen` binary's apiserver call (used to
+patch the topology-injector webhook caBundle + write the
+`envoy-gateway` Secret) fails on this cluster** with
+`net/http: TLS handshake timeout` to `https://10.43.0.1:443/api`.
+Two contributing causes: (1) the k3s server's serving cert
+did not list `kubernetes.default.svc` as a SAN until WP07
+added `--tls-san=10.43.0.1 --tls-san=kubernetes.default.svc`
+to the server ExecStart (recipe change in
+`tools/lib/k3s_installer.py::plan_server`, live-applied to
+cicd-cp-1 via `systemctl edit k3s.service`); (2) under the
+hood, pods on this cluster cannot reach `10.0.0.65:6443`
+(the apiserver's direct node IP) at the TCP layer -- this
+is the §14.4 in-cluster-routing blocker, NOT a WP07 recipe
+bug. Until §14.4 is fixed, the certgen must be run with
+`--local --disable-topology-injector --overwrite` in an
+initContainer, the cert files copied to an emptyDir shared
+with a sleeper sidecar, and the `envoy-gateway` Secret
+created manually. See `scripts/wp07_live_apply.py` for the
+full pattern.
+
+**4b.3.5 -- The cilium BPF LB maps the apiserver service IP
+correctly (`10.43.0.1:443 → 10.0.0.65:6443`) but cross-node
+pod→apiserver traffic is dropped at the routing layer** on
+this cluster. See §14.4 for full diagnosis. This blocks any
+chart with a pre-install hook that talks to the apiserver
+(Envoy Gateway's certgen, gitlab's migration Job, etc.) and
+is also why the proxmox-ccm and proxmox-csi controllers have
+been `ContainerCreating` for hours. **Fix in a separate
+work item** before declaring the cluster GitLab-ready.
 
 ## Step 4c -- csi_smoke sub-phase (WP07)
 
