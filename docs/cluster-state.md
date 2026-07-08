@@ -45,7 +45,6 @@ documented here.
   - [14. Known issues and drift](#14-known-issues-and-drift)
     - [14.1 proxmox-ccm / proxmox-csi / cloudflare-tunnel — ContainerCreating](#141-proxmox-ccm--proxmox-csi--cloudflare-tunnel--containercreating)
     - [14.2 k3s version drift](#142-k3s-version-drift)
-    - [14.3 Web-search-derived version pins](#143-web-search-derived-version-pins)
   - [15. How to re-run any phase](#15-how-to-re-run-any-phase)
   - [See also](#see-also)
 
@@ -499,19 +498,6 @@ To freeze a cluster at a specific patch (e.g. for an audit
 window) the operator can opt out of the upgrade controller
 either by editing the systemd unit or by setting
 `INSTALL_K3S_SKIP_START=true` and managing upgrades manually.
-
-### 14.3 Web-search-derived version pins
-
-The sergelogvinov chart versions (`0.14.0` and `0.19.0`) that
-landed in `tools/lib/helm_client.py` were **wrong** — neither
-tag exists on the OCI registry. The live-validated versions
-are `0.2.29` (CCM) and `0.5.9` (CSI). The skill text and the
-test pins were updated to match (`tools/tests/test_agent_skill.py`).
-
-The lesson: when a library moves to a non-default registry, do
-**not** trust web search results for the version number.
-Verify with `ghcr.io/v2/<repo>/tags/list` and an authenticated
-bearer token (see the comment in commit `a828f24`).
 
 ## 15. How to re-run any phase
 
