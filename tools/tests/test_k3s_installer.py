@@ -1,6 +1,6 @@
 """Red-first tests for tools.lib.k3s_installer.K3sInstaller.
 
-These encode the contract from docs/install-k3s-plan.md:
+These pin the contract that landed on 2026-07-08:
 
   * per-VM Python orchestration; no shell scripts
   * idempotent (refuses to re-install if k3s is healthy)
@@ -9,6 +9,9 @@ These encode the contract from docs/install-k3s-plan.md:
   * control-plane installs with --tls-san=<vip>
   * no token / secret ever logged
   * survives on real SSH (paramiko-style invoke through `ssh` binary)
+
+The recipe is canonicalized in the SKILL.md Step 4a gotchas and
+implemented in tools/lib/k3s_installer.py.
 """
 from __future__ import annotations
 
@@ -43,8 +46,8 @@ def cluster() -> dict[str, Any]:
     The values here mirror the live cicd cluster on kvm.bruj0.net as of
     2026-07-08 (VMID 112, SDN IP 10.0.0.65, VIP 10.0.0.30). The agent IPs
     intentionally use the live DHCP-pool values rather than the stale
-    10.0.1.x/10.0.2.x that output.json carried — this matches the
-    SDN-IPAM reality documented in docs/install-k3s-vip-verification.md.
+    10.0.1.x/10.0.2.x that output.json carried -- this matches the
+    SDN-IPAM reality documented in the SKILL.md Step 4a.3.x gotchas.
     """
     return {
         "name": "cicd",
@@ -143,7 +146,7 @@ def test_plan_for_agent_joins_vip_not_eth0(installer: K3sInstaller) -> None:
 
     The VIP is what kube-vip will elect; pinning to a single CP eth0 IP
     breaks failover. This test pins the contract from
-    docs/install-k3s-plan.md § 2.
+    tools/lib/k3s_installer.py.plan_agent.
     """
     worker = next(v for v in installer.cluster["vms"] if v["role"] == "worker")
     plan = installer.plan_agent(worker, vip=installer.cluster["vip"], token="NODE::TOKEN")

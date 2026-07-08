@@ -101,13 +101,13 @@ cross_check:
     K3S_TOKEN set), apps-cp-1 (k3s server up), apps-w-1 (k3s-agent
     service activating, env file populated with K3S_URL=https://10.0.0.40:6443
     and K3S_TOKEN set). Agent activation waits on kube-vip; helm
-    phase must complete for the agent to register. See
-    docs/install-k3s-plan.md and docs/install-k3s-vip-verification.md.
-    Gotchas discovered during the live-host run (now pinned in
-    Step 4a.3.x): SSH user is ubuntu not root (sudo -n bash -c);
-    sudo strips caller env (export K=V INSIDE the bash -c);
-    k3s-agent rejects --flannel-backend; use ProxyCommand rather
-    than -W for the SSH tunnel when a remote command is needed.
+    phase must complete for the agent to register. Gotchas
+    discovered during the live-host run (now pinned in Step
+    4a.3.x of the SKILL.md): SSH user is ubuntu not root
+    (sudo -n bash -c); sudo strips caller env (export K=V
+    INSIDE the bash -c); k3s-agent rejects --flannel-backend;
+    use ProxyCommand rather than -W for the SSH tunnel when a
+    remote command is needed.
 
   k3s_reconcile_2026_07_08: >
     Bumped k3s_stable_version to v1.36.2+k3s1 (latest stable on

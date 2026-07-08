@@ -34,7 +34,7 @@ agent installed and `activating`. The Phase-4 sub-phases were
 renamed from `talos` to `cloudinit` when the OS pivot landed
 (2026-07-07), and `install_k3s` was added between `cloudinit` and
 `k3s` when the canonical install plan landed on 2026-07-08 (see
-[docs/install-k3s-plan.md](../../../docs/install-k3s-plan.md)).
+`tools/lib/k3s_installer.py` + the Step 4a block below).
 
 ## When to load this skill
 
@@ -1207,8 +1207,8 @@ Assert ALL before proceeding:
 
 ## Step 4a -- install_k3s sub-phase
 
-Lands on 2026-07-08 (per [docs/install-k3s-plan.md](../../../docs/install-k3s-plan.md)).
-The recipe is implemented in [tools/lib/k3s_installer.py](../../../tools/lib/k3s_installer.py)
+Lands on 2026-07-08. The recipe is implemented in
+[tools/lib/k3s_installer.py](../../../tools/lib/k3s_installer.py)
 and wired into the dispatcher by `_run_install_k3s` in
 [tools/bootstrap_cluster.py](../../../tools/bootstrap_cluster.py). Versions come
 from `tools/versions.lock.yaml::k3s_stable_version` (currently
@@ -1261,9 +1261,10 @@ K3s generates a serving cert whose SANs include `--node-ip` /
 `--node-external-ip` by default. Without `--tls-san=<vip>` the
 kubeconfig pulled from the server has `server: https://<vip>:6443`
 but the serving cert does NOT carry the VIP SAN, so external
-clients fail with `x509: certificate is not valid for <vip>`. The
-verification note [docs/install-k3s-vip-verification.md](../../../docs/install-k3s-vip-verification.md)
-records the live-host probe that surfaced this.
+clients fail with `x509: certificate is not valid for <vip>`. Live
+probe on 2026-07-08 surfaced this; fixed by appending
+`--tls-san=<vip>` to the server-side `INSTALL_K3S_EXEC`
+(see Step 4a.3.1 below).
 
 **4a.3.2 -- The VM IP comes from the SDN DHCP lease, not from
 `output.json::nodes[i].ip`.** Phase 2 still emits the intended

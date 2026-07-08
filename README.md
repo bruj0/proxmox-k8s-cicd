@@ -350,13 +350,12 @@ make test-infra-clusters  # tofu test for every instance under infra/clusters
 - **Phase 4 (bootstrap) verified end-to-end** on both clusters
   with the 7-sub-phase split:
   `cloudinit -> install_k3s -> k3s -> helm -> kubeconfig -> host_ports -> externalname`.
-  The new `install_k3s` sub-phase runs the upstream
+  The `install_k3s` sub-phase runs the upstream
   `https://get.k3s.io` installer over the PVE-jump-host SSH proxy
-  (with `INSTALL_K3S_VERSION=v1.34.9+k3s1`, `--tls-san=<vip>`,
+  (with `INSTALL_K3S_VERSION=v1.36.2+k3s1`, `--tls-san=<vip>`,
   `--flannel-backend=none`, agent join via `https://<vip>:6443`).
   Idempotent: re-running sees the systemd unit active and skips.
-  See [`docs/install-k3s-plan.md`](docs/install-k3s-plan.md) and
-  the `Step 4a` block in
+  See the `Step 4a` block in
   [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md)
   for the live-host gotchas (SSH user is `ubuntu`, sudo strips
   caller env, `k3s agent` rejects `--flannel-backend`, use

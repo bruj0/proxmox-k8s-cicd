@@ -17,8 +17,10 @@ Key contracts (pinned by tests/test_k3s_installer.py):
     would break failover.
   * Control-plane installs with `--tls-san=<vip>` so a kubeconfig
     pulled from the server references a SAN the apiserver's serving
-    cert actually carries. (See docs/install-k3s-vip-verification.md
-    § 1: VIP records exist but no listener until now.)
+    cert actually carries. Live 2026-07-08 probe: VIP records exist
+    in PowerDNS but the apiserver has no listener until kube-vip comes
+    up; the first external client (kubectl) gets
+    `x509: certificate is not valid for <vip>` without this flag.
   * No token / secret ever logged (M7). StructuredLogger scrubs at the
     boundary; we ALSO pass the join token as an environment variable
     on the SSH command so it doesn't appear in argv / process list.

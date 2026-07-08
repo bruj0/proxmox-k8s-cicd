@@ -313,10 +313,12 @@ def test_skill_documents_install_k3s_subphase() -> None:
         "SKILL.md must document the INSTALL_K3S_VERSION env var the"
         " upstream installer reads"
     )
-    # The mandatory --tls-san=<vip> flag (came out of the VIP verification).
+    # The mandatory --tls-san=<vip> flag (came out of the 2026-07-08
+    # live-host VIP probe; the verification note has since been
+    # folded into this skill as Step 4a.3.1).
     assert "--tls-san=" in text and "<vip>" in text, (
         "SKILL.md Step 4a must call out --tls-san=<vip> as mandatory for"
-        " server installs (see docs/install-k3s-vip-verification.md)"
+        " server installs"
     )
 
 
