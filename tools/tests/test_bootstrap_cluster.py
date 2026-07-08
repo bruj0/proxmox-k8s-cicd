@@ -165,6 +165,31 @@ def test_bootstrap_full_happy_path(
     monkeypatch.setenv("CF_API_TOKEN", "fake-cf")
     monkeypatch.setenv("CF_ACCOUNT_ID", "fake-account")
 
+    # Pre-populate ~/.kube/config with a non-empty existing config so
+    # the merger's "kubectl config view --flatten" branch fires. Without
+    # this the merger takes the empty-file shortcut (just copies the
+    # new kubeconfig verbatim) and the test's assertion that kubectl
+    # config view was called would be flaky against any test that runs
+    # earlier and leaves a 0-byte config behind (e.g. a previous
+    # bootstrap run in this pytest session).
+    kube_dir = Path.home() / ".kube"
+    kube_dir.mkdir(parents=True, exist_ok=True)
+    default_kc = kube_dir / "config"
+    backup_path = None
+    if default_kc.exists():
+        backup_path = default_kc.with_suffix(
+            f".bak.{default_kc.stat().st_mtime_ns}"
+        )
+        # Move aside so we can restore later. Use copy so the test
+        # cleanup is just "delete the temp file".
+        import shutil as _shutil
+
+        _shutil.copy2(default_kc, backup_path)
+    default_kc.write_text(
+        "apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\n"
+        "users: []\ncurrent-context: \"\"\n"
+    )
+
     calls: list[tuple[str, ...]] = []
 
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -173,6 +198,17 @@ def test_bootstrap_full_happy_path(
         # kubectl --kubeconfig ... get --raw /healthz needs to return 'ok'.
         if cmd and cmd[0] == "kubectl" and "/healthz" in cmd:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+        # kubectl config view --flatten --kubeconfig X:Y must return a
+        # merged document so default.write_text() below sees real bytes.
+        if cmd and cmd[0] == "kubectl" and "config" in cmd and "view" in cmd:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="apiVersion: v1\nkind: Config\n"
+                "clusters: [{name: fake, cluster: {server: https://127.0.0.1:16443}}]\n"
+                "contexts: []\nusers: []\n",
+                stderr="",
+            )
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -292,6 +328,17 @@ def test_bootstrap_full_happy_path(
     kc = cluster / "kubeconfig"
     assert kc.exists()
     assert "https://127.0.0.1:16443" in kc.read_text()
+    # Restore the operator's real ~/.kube/config (we moved it aside
+    # above so the merger would take the "kubectl config view" branch).
+    if backup_path is not None and backup_path.exists():
+        import shutil as _shutil
+
+        _shutil.copy2(backup_path, default_kc)
+        backup_path.unlink()
+    else:
+        # We wrote a stub config; remove it so we don't pollute the
+        # operator's actual ~/.kube/config.
+        default_kc.unlink(missing_ok=True)
 
 
 def test_bootstrap_logs_redact_secret_tokens(

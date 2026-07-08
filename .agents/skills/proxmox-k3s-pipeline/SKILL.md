@@ -13,21 +13,27 @@ externalname). Each (sub-)phase has a single CLI entry point and
 explicit success criteria that the agent MUST assert before
 proceeding.
 
-**Pipeline state: 2026-07-08 -- Phases 0-2 + `install_k3s` verified
-end-to-end on kvm.bruj0.net (BigBertha, PVE 9.2.3, Ubuntu 24.04
-LTS Noble + k3s v1.34.9+k3s1).** All four cluster VMs
-(cicd-cp-1 @ SDN 10.0.0.65, cicd-w-1 @ 10.0.0.64, apps-cp-1 @
-10.0.0.67, apps-w-1 @ 10.0.0.66) are cloned, running, and have a
-working qemu-guest-agent. As of 2026-07-08 09:50 UTC: cicd-cp-1
-runs the k3s server (`:6443` listening) and cicd-w-1 has the
-k3s-agent systemd unit installed and `activating` (it will
-register on the VIP once the `helm` phase brings up kube-vip).
-apps-cp-1 likewise runs the k3s server; apps-w-1 has its agent
-installed and `activating`. Phases 3-5 are documented from the
-original spec; the Phase-4 sub-phases were renamed from `talos`
-to `cloudinit` when the OS pivot landed (2026-07-07), and
-`install_k3s` was added between `cloudinit` and `k3s` when the
-canonical install plan landed on 2026-07-08 (see
+For the live cluster state (what is running, what was installed,
+what is broken) see
+[docs/cluster-state.md](../../../docs/cluster-state.md). This skill
+is the **operator playbook**; that document is the **operator
+reference**.
+
+**Pipeline state: 2026-07-08 -- Phases 0-4 verified end-to-end on
+kvm.bruj0.net (BigBertha, PVE 9.2.3, Ubuntu 24.04 LTS Noble +
+k3s v1.34.9+k3s1).** All four cluster VMs (cicd-cp-1 @ SDN
+10.0.0.65, cicd-w-1 @ 10.0.0.64, apps-cp-1 @ 10.0.0.67, apps-w-1 @
+10.0.0.66) are cloned, running, and have a working
+qemu-guest-agent. cicd-cp-1 runs the k3s server, cicd-w-1 is
+joined as a worker, Cilium + kube-vip + proxmox-cloud-controller-
+manager (proxmox-ccm 0.2.29 pulled, deployment readiness pending
+on a credentials URL fix) + proxmox-csi-plugin 0.5.9 are installed
+via Helm, and the operator kubeconfig is merged into
+`~/.kube/config`. apps-cp-1 runs the k3s server; apps-w-1 has its
+agent installed and `activating`. The Phase-4 sub-phases were
+renamed from `talos` to `cloudinit` when the OS pivot landed
+(2026-07-07), and `install_k3s` was added between `cloudinit` and
+`k3s` when the canonical install plan landed on 2026-07-08 (see
 [docs/install-k3s-plan.md](../../../docs/install-k3s-plan.md)).
 
 ## When to load this skill
@@ -1053,72 +1059,151 @@ and contains the literal substring `chain prerouting`.
 
 ## Step 4 -- Phase 4: Bootstrap (SS3)
 
-Runs the six-phase bootstrap. Order is enforced by `PHASES` in
+Runs the seven-phase bootstrap. Order is enforced by `PHASES` in
 `tools/bootstrap_cluster.py`. Each phase records its success in
-`infra/clusters/<name>/bootstrap_state.json`; rerunning is a no-op for
-completed phases.
+`infra/clusters/<name>/bootstrap_state.json` (gitignored); rerunning
+is a no-op for completed phases.
 
-**Prerequisite: Phase 2 must be complete AND `sync_dns_to_sdn.py` must
-have run successfully.** Bootstrap reads the cluster VIP / node FQDNs
-from PowerDNS; if the records are wrong, the per-VM NoCloud cloud-init
-user-data will resolve to the wrong peers and k3s join will hang.
+**Prerequisites** (must all be true before invoking the bootstrap):
 
-For the cicd cluster:
+1. Phase 2 has been applied: `infra/clusters/<name>/output.json` exists
+   and lists the cluster's control-plane + worker nodes with their
+   SDN-allocated IPs.
+2. `scripts/sync_dns_to_sdn.py --cluster <name>` has been run (the SDN
+   IPAM allocates 10.0.0.50-200 regardless of `var.ip_start`, so the
+   post-apply DNS sync is required).
+3. `scripts/capture_host_ports_baseline.sh infra/clusters/<name>` has
+   produced `infra/clusters/<name>/host_ports_baseline.txt` (Phase 3).
+
+### 4.0 -- The single command
+
+Once the prerequisites are satisfied, deploy k3s and bootstrap the
+cluster fully with one command:
 
 ```bash
-python tools/bootstrap_cluster.py --cluster cicd
+# cicd cluster
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster cicd
+
+# apps cluster (after cicd is healthy AND infra/clusters/apps/
+# has been provisioned by Phase 2)
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster apps
 ```
 
-For the apps cluster (after cicd is healthy AND `infra/clusters/apps/`
-has been provisioned by Phase 2):
+This single invocation runs every sub-phase end-to-end:
+
+1. **`cloudinit`** -- verify every clone VM finished first-boot
+   cloud-init (no-op gate; the cluster root's tofu module attached
+   the per-VM NoCloud seed ISO during Phase 2 via `qm set --ide2
+   data1:cloudinit`).
+2. **`install_k3s`** -- SSH into every control-plane + worker VM
+   via the PVE jump host and run the upstream installer
+   (`curl -sfL https://get.k3s.io | INSTALL_K3S_... sh -`). Server
+   nodes get the canonical flags (`--flannel-backend=none
+   --disable=traefik --disable=servicelb --disable=local-storage
+   --disable=metrics-server --kubelet-arg=cloud-provider=external
+   --node-ip=<ip> --node-external-ip=<ip> --tls-san=<vip>`); agents
+   join via `K3S_URL=https://<vip>:6443`. Hash-based idempotent: a
+   re-run on a healthy cluster is a no-op in <10 s. See Step 4a.
+3. **`k3s`** -- probe the apiserver over a PveSshProxy-forwarded
+   tunnel: `kubectl --kubeconfig <cluster>/kubeconfig get --raw
+   /healthz` must return `ok`. This phase proves the apiserver is
+   reachable from the operator host via the same tunnel pattern the
+   operator tools use.
+4. **`helm`** -- open an apiserver port-forward through PVE and
+   install the two critical-path releases first (Cilium 1.16.1 +
+   kube-vip 0.9.9), then the remaining four (proxmox-cloud-
+   controller-manager 0.2.29, proxmox-csi-plugin 0.5.9, strrl/
+   cloudflare-tunnel-ingress-controller 0.0.23, cert-manager
+   1.20.x), then `kubectl apply` the pre-rendered Traefik
+   `HelmChartConfig` from
+   `infra/clusters/<name>/manifests/`. **All apiserver calls in this
+   phase route through PveSshProxy** -- the CPs are on SDN
+   10.0.0.0/24, the operator is on 10.0.10.0/24, so direct
+   `kubectl`/`helm` from the operator host would fail with "no route
+   to host".
+5. **`kubeconfig`** -- reuses the same PveSshProxy to fetch
+   `/etc/rancher/k3s/k3s.yaml` from the first CP, rewrites the
+   `server:` URL to `https://127.0.0.1:<local_port>`, writes it to
+   `infra/clusters/<name>/kubeconfig` AND merges it into
+   `~/.kube/config` (timestamped backup first).
+6. **`host_ports`** -- assert no new DNAT rules have been added to
+   the PVE nft prerouting chain since the Phase-3 baseline capture
+   (M2 misfit verifier).
+7. **`externalname`** -- apps-cluster only: apply the cross-cluster
+   ExternalName Services kustomization (WP06) that lets apps
+   workloads reach cicd Services via
+   `<svc>.cicd-system.svc.cluster.local` -> PowerDNS -> cicd VIP.
+
+### 4.1 -- Required environment
+
+The bootstrap reads Proxmox + Cloudflare credentials via the
+env-only `SecretLoader`
+([tools/lib/secret_loader.py](../../../tools/lib/secret_loader.py)).
+The canonical names expected by the loader are:
+
+| Env var | Source | Used for |
+|---|---|---|
+| `SSH_AUTH_SOCK` | Bitwarden SSH agent (`/home/bruj0/.bitwarden-ssh-agent.sock`) | PveSshProxy jumps |
+| `PROXMOX_TOKEN_ID`     | `.env::PROXMOX_API_TOKEN`     | proxmox-ccm + proxmox-csi chart values |
+| `PROXMOX_TOKEN_SECRET` | `.env::PROXMOX_API_TOKEN`     | proxmox-ccm + proxmox-csi chart values |
+| `CF_API_TOKEN`         | `.env::CLOUDFLARE_TOKEN_CREATOR` | cloudflare-tunnel controller |
+| `CF_ACCOUNT_ID`        | `.env::CLOUDFLARE_ACCOUNT_ID` | cloudflare-tunnel controller |
+
+If your `.env` uses different names (e.g. `PROXMOX_API_TOKEN` instead
+of `PROXMOX_TOKEN_ID`), alias them in the shell before running:
 
 ```bash
-python tools/bootstrap_cluster.py --cluster apps
+export SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock
+export PROXMOX_TOKEN_ID="$PROXMOX_API_TOKEN"
+export PROXMOX_TOKEN_SECRET="$PROXMOX_API_TOKEN"
+export CF_API_TOKEN="$CLOUDFLARE_TOKEN_CREATOR"
+export CF_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID"
 ```
 
-The six phases, in order:
+### 4.2 -- Idempotency contract
 
-1. `cloudinit` -- for each clone VM, generate a per-VM NoCloud seed
-   ISO containing `user-data` (cloud-init runcmd that installs
-   `k3s` via `curl -sfL https://get.k3s.io | INSTALL_K3S_... sh -`
-   + writes `--node-ip`, `--node-external-ip`, `--flannel-backend=none`
-   for control-plane, `--server https://<vip>:6443` for workers,
-   and an optional `--kubelet-arg=cloud-provider=external` for
-   proxmox-ccm) + `meta-data` (`instance-id`, `local-hostname`)
-   + `network-config` (DHCP on ens18). Attach via
-   `qm set <vmid> --ide2 local:iso/<seed>.iso,media=cdrom` and
-   reboot. Wait for cloud-init to finish (probe the agent's
-   `cloud-init status --wait --long` via `qm agent exec`).
-2. `k3s` -- verify `/healthz` returns `ok` on the VIP (for
-   control-plane nodes) and that workers have a `Ready` kubelet
-   (`kubectl --context <cluster> get nodes`).
-3. `helm` -- install Cilium (kube-proxy replacement) + the four
-   remaining releases (proxmox-ccm, proxmox-csi,
-   cloudflare-tunnel, cert-manager, WP05) + apply the rendered
-   Traefik HelmChartConfig.
-4. `kubeconfig` -- pull admin kubeconfig from the VIP, merge into
-   `~/.kube/config` with `--context <cluster>`.
-5. `host_ports` -- assert no new DNAT rules have been added to the
-   PVE nft prerouting chain (M2 misfit verifier).
-6. `externalname` -- apps-cluster only: apply the cross-cluster
-   ExternalName Services kustomization (WP06).
-
-Idempotency: on a rerun, the script reads
+On a rerun, the script reads
 `infra/clusters/<name>/bootstrap_state.json` and skips phases whose
 name appears in `phases_done`. This is the canonical "convergence from
 partial state" path required by NFR-011. **Idempotency is the
 contract; the operator may safely rerun the bootstrap at any point.**
 
-Success criteria (assert ALL before proceeding):
+To force every phase to re-run:
+
+```bash
+rm -f infra/clusters/cicd/bootstrap_state.json
+python -m tools.bootstrap_cluster --cluster cicd
+```
+
+To run only a subset:
+
+```bash
+python -m tools.bootstrap_cluster --cluster cicd \
+  --phases helm,kubeconfig,host_ports,externalname
+```
+
+The apiserver tunnel opened during the `helm` phase is held alive
+across phases for the lifetime of the script and torn down in a
+`finally` block, so the same tunnel is reused for the `kubeconfig`
+phase. The script does not leave orphan ssh processes on the
+operator host.
+
+### 4.3 -- Success criteria
+
+Assert ALL before proceeding:
+
 1. `kubectl --context cicd get nodes` shows all control-plane +
    worker nodes in `Ready` state.
-2. `kubectl --context cicd -n kube-system get pods --all-namespaces`
-   shows Cilium + proxmox-ccm + proxmox-csi + cloudflare-tunnel +
-   cert-manager pods `Running` (no `kube-vip` static pod -- on
-   Ubuntu+k3s the API VIP is owned by `kube-vip`'s userspace
-   daemon, not a Talos static pod manifest).
-3. `python tools/bootstrap_cluster.py --cluster cicd --phases all`
-   exits 0 in <60 seconds (idempotent rerun).
+2. `kubectl --context cicd -n kube-system get pods -A` shows Cilium
+   + proxmox-ccm + proxmox-csi + cloudflare-tunnel + cert-manager
+   pods `Running` (no `kube-vip` static pod -- on Ubuntu+k3s the
+   API VIP is owned by `kube-vip`'s userspace daemonset, not a Talos
+   static pod manifest).
+3. `python -m tools.bootstrap_cluster --cluster cicd --phases all`
+   exits 0 in <60 seconds (idempotent rerun -- every phase skips
+   because state is already done).
 
 ## Step 4a -- install_k3s sub-phase
 

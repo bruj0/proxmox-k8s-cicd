@@ -211,6 +211,79 @@ def test_skill_md_documents_rerun_and_partial_state() -> None:
     )
 
 
+# ---------- Phase 4: bootstrap contract (2026-07-08) ----------
+
+
+def test_skill_documents_seven_phase_bootstrap() -> None:
+    """The Phase 4 bootstrap must list ALL seven sub-phases in order.
+
+    Phases (from `tools/bootstrap_cluster.py::PHASES`):
+      cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, externalname
+
+    The skill must use the canonical phrase "seven-phase bootstrap" so
+    the operator cannot regress to the pre-pivot "six phases" wording.
+    """
+    text = SKILL_PATH.read_text().lower()
+    assert "seven-phase" in text or "seven phase" in text, (
+        "SKILL.md must describe the bootstrap as 'seven-phase' (the "
+        "PHASES tuple in tools/bootstrap_cluster.py has seven entries: "
+        "cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, "
+        "externalname)."
+    )
+    # All seven phase names must appear in the Step 4 body.
+    required = [
+        "cloudinit",
+        "install_k3s",
+        "k3s",
+        "helm",
+        "kubeconfig",
+        "host_ports",
+        "externalname",
+    ]
+    missing = [p for p in required if p not in text]
+    assert not missing, (
+        f"Step 4 must mention every phase name in PHASES. Missing: {missing}"
+    )
+
+
+def test_skill_documents_single_command_bootstrap() -> None:
+    """Step 4 must show `python -m tools.bootstrap_cluster --cluster <name>`
+    as the canonical way to deploy k3s AND bootstrap the cluster fully.
+
+    This pins the contract that one command brings the cluster from
+    "Phase 2 applied" to "Ready + Cilium + kube-vip installed + kubeconfig
+    merged". Regressions to multi-step / multi-runbook workflows should
+    fail this test.
+    """
+    text = SKILL_PATH.read_text()
+    canonical = "python -m tools.bootstrap_cluster --cluster"
+    assert canonical in text, (
+        f"Step 4 must show the single-command bootstrap recipe ({canonical!r}). "
+        f"Operators should be able to deploy k3s + bootstrap fully with one "
+        f"`python -m tools.bootstrap_cluster --cluster <name>` invocation."
+    )
+
+
+def test_skill_documents_required_env_vars() -> None:
+    """Step 4 must enumerate the env vars the SecretLoader expects.
+
+    Without this list the operator cannot tell that PROXMOX_TOKEN_ID
+    (not PROXMOX_API_TOKEN) is the canonical name the bootstrap reads.
+    """
+    text = SKILL_PATH.read_text()
+    expected = [
+        "PROXMOX_TOKEN_ID",
+        "PROXMOX_TOKEN_SECRET",
+        "CF_API_TOKEN",
+        "CF_ACCOUNT_ID",
+        "SSH_AUTH_SOCK",
+    ]
+    missing = [v for v in expected if v not in text]
+    assert not missing, (
+        f"Step 4 must enumerate the SecretLoader env vars. Missing: {missing}"
+    )
+
+
 # ---------- install_k3s sub-phase (2026-07-08) ----------
 
 
