@@ -243,31 +243,58 @@ adding a new worker) is idempotent: `python -m tools.bootstrap_cluster
 Two short Python CLIs make day-to-day work against the live
 clusters possible from the operator's host — which is on the public
 internet, NOT on the SDN. Both tunnel through the PVE jump host
-(`root@kvm.bruj0.net -p 6022`, configurable in
+(`root@pve.example.net -p 6022`, configurable in
 [`tools/lib/pve_ssh.py`](tools/lib/pve_ssh.py)) into the cluster's
 SDN subnet (10.0.0.50-200) using a `ProxyCommand=ssh -W %h:%p`
 double-ssh. The cloud image refuses root login, so we land as
 `ubuntu` and `sudo -n` for any root-level ops.
 
+### Install the tools with `uv tool install`
+
+```bash
+# One-time install from the repo root
+uv tool install .
+
+# Or from a clone anywhere on disk
+uv tool install /path/to/proxmox-k8s-cicd
+
+# This registers two short commands on PATH:
+which ssh-proxy kubeconfig-puller
+#   ~/.local/bin/ssh-proxy
+#   ~/.local/bin/kubeconfig-puller
+```
+
+The package is `proxmox-k8s-cicd-tools`. The wheel only ships the two
+CLIs and the `tools/lib/*` modules they depend on (no tests, no
+build-image, no bootstrap script). Re-run the same `uv tool install`
+after a `git pull` to refresh the installed binaries; pass `--reinstall`
+if the version number didn't change.
+
 ### SSH into a VM
 
 ```bash
+# Set once per shell so the tools can find the repo
+export PROXMOX_K8S_REPO=/path/to/proxmox-k8s-cicd
+export SSH_AUTH_SOCK=~/.bitwarden-ssh-agent.sock   # if you use a keyring agent
+
 # Land on the first control-plane VM of the cicd cluster
-python -m tools.ssh_proxy --cluster cicd
+ssh-proxy --cluster cicd
 
 # Land on the first worker
-python -m tools.ssh_proxy --cluster cicd --role worker
+ssh-proxy --cluster cicd --role worker
 
 # A specific node by name (overrides --role)
-python -m tools.ssh_proxy --cluster apps --name apps-cp-1
+ssh-proxy --cluster apps --name apps-cp-1
 
 # One-off command (non-interactive)
-python -m tools.ssh_proxy --cluster cicd -- hostname
+ssh-proxy --cluster cicd -- hostname
 ```
 
 Pure interactive shells are exec'd via `os.execvp` so the operator's
 TTY, resize signals, and `~/.ssh/config` aliases all behave the same
-as a plain `ssh user@host`.
+as a plain `ssh user@host`. Without `uv tool install`, the same
+commands work as `python -m tools.ssh_proxy --cluster cicd` from
+the repo root.
 
 ### Pull a kubectl config that talks to a cluster
 
@@ -275,7 +302,7 @@ as a plain `ssh user@host`.
 # Opens an ssh -L forward 127.0.0.1:16443 -> cicd-cp-1:6443
 # (k3s binds the apiserver on the CP loopback pre-kube-vip), then
 # writes a kubeconfig whose server: URL points at the forward.
-python -m tools.kubeconfig_puller --cluster cicd
+kubeconfig-puller --cluster cicd
 
 # In another terminal (or background job) -- the tunnel is up:
 KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy kubectl get nodes
@@ -285,9 +312,9 @@ KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy k9s
 The puller blocks until you Ctrl-C; on exit it tears the forward
 down so a stale kubeconfig can't accidentally talk to a
 decommissioned cluster. If you'd rather start the tunnel yourself
-(via `tools/ssh_proxy --port-forward 16443:127.0.0.1:6443`) and
-just rewrite the kubeconfig, pass `--no-tunnel --local-port 16443`
-to the puller.
+(via `ssh-proxy --port-forward 16443:127.0.0.1:6443`) and just
+rewrite the kubeconfig, pass `--no-tunnel --local-port 16443` to
+the puller.
 
 ## Development
 

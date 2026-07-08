@@ -17,6 +17,10 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Build artefacts (uv build -> dist/)
+dist/
+*.egg-info/
+
 # Operational logs (scripts/apply.py, scripts/apply_cluster.py).
 # Captured per-cluster tofu plan/apply output. NOT for CI upload.
 logs/
