@@ -1,5 +1,30 @@
-"""kubeconfig_puller -- produce a kubectl config that talks to a cluster
-through a localhost port-forwarded to the control-plane's apiserver.
+"""kubeconfig_puller -- pull /etc/rancher/k3s/k3s.yaml from a cluster's
+first control-plane VM through the PVE jump host, rewrite the
+`server:` URL to point at a localhost port, and write it where
+kubectl can find it.
+
+Two modes:
+
+  Default (no flag)
+    Open a short-lived `ssh -e` exec session through PVE, run
+    `sudo cat /etc/rancher/k3s/k3s.yaml` on the first CP, capture
+    the file body, kill the session, write the kubeconfig, exit.
+    NO background process is left running. The kubeconfig's
+    `server:` URL still points at a localhost port (auto-picked,
+    or as requested via `--local-port`); that port is NOT yet
+    listening, so `kubectl` will be unable to reach the apiserver
+    until the operator opens a tunnel themselves (typically with
+    `tools/ssh_proxy.py` later, or a future invocation of
+    `kubeconfig_puller --port-forward` with the same `--local-port`).
+
+  `--port-forward` (opt-in)
+    Same as above, but BEFORE pulling the kubeconfig we open an
+    `ssh -L` tunnel through PVE (a detached bg process whose pid
+    is printed at startup). The tunnel points at the kubeconfig's
+    server: URL, so kubectl/k9s can use it from another terminal
+    right away. The puller exits; the tunnel outlives it.
+    Kill it with `kill <pid>` (printed at startup) or
+    `pkill -f 'ssh.*-L <local_port>'`.
 
 Why this exists:
   - k3s binds the apiserver to the CP node's loopback (127.0.0.1) on
@@ -15,23 +40,32 @@ Why this exists:
 This tool:
   1. Reads `infra/clusters/<name>/output.json` and picks the first
      control-plane VM.
-  2. Opens an `ssh -L` tunnel via PVE: <local_port> -> 127.0.0.1:6443
-     on the CP node.
+  2. Either:
+       a. (--port-forward) opens a long-lived `ssh -L` tunnel via
+          PVE: <local_port> -> 127.0.0.1:6443 on the CP node; OR
+       b. (default) opens nothing -- just a one-shot ssh exec.
   3. `scp`-style fetches `/etc/rancher/k3s/k3s.yaml` from the CP node
      (also through the PVE proxy), using the same SSH argv pattern.
   4. Rewrites the `server:` URL in the kubeconfig to
      `https://127.0.0.1:<local_port>`.
   5. Writes the kubeconfig to the requested path and prints the
-     local port + a ready-to-run `KUBECONFIG=…` suggestion.
+     local port + a ready-to-run `KUBECONFIG=...` suggestion.
 
-The forward lives until the operator kills this process (Ctrl-C).
-After that, the local port closes and the kubeconfig no longer
-works -- that's intentional: we don't want stale creds around if
-the cluster is decommissioned.
+When `--port-forward` is given, the forward lives until the operator
+kills it (printed pid). With no flag, no process is left around --
+that's intentional: we don't want stale creds sitting on a listening
+port when the cluster is decommissioned.
 
 Usage:
+  # Pull kubeconfig; no bg tunnel left.
   python -m tools.kubeconfig_puller --cluster cicd
-  python -m tools.kubeconfig_puller --cluster apps --kubeconfig ~/.kube/cicd
+
+  # Pull kubeconfig AND leave a bg tunnel running for kubectl/k9s.
+  python -m tools.kubeconfig_puller --cluster cicd --port-forward
+
+  # Same, but pick a specific local port.
+  python -m tools.kubeconfig_puller --cluster apps --port-forward --local-port 16443
+
   KUBECONFIG=~/.kube/cicd kubectl get nodes
 """
 from __future__ import annotations
@@ -60,15 +94,17 @@ class PullerConfig:
     repo_root: Path
     output_path: Path
     local_port: int | None
-    keep_tunnel: bool
+    port_forward: bool
 
 
 def _parse_args(argv: Sequence[str] | None) -> PullerConfig:
     parser = argparse.ArgumentParser(
         prog="tools.kubeconfig_puller",
         description=(
-            "Forward a cluster's apiserver through PVE and emit a "
-            "kubectl config that talks to it via 127.0.0.1:<port>."
+            "Pull a cluster's k3s.yaml through the PVE jump host and "
+            "write a kubectl config that talks to it via 127.0.0.1:<port>. "
+            "Pass --port-forward to leave a background tunnel running "
+            "so kubectl/k9s can use the kubeconfig right away."
         ),
     )
     parser.add_argument("--cluster", required=True)
@@ -85,23 +121,28 @@ def _parse_args(argv: Sequence[str] | None) -> PullerConfig:
         help=(
             "operator-side port to forward 127.0.0.1:6443 to. "
             "Default: pick a free port. The kubeconfig's server: "
-            "URL always points at this port so the operator can "
-            "start the tunnel themselves later."
+            "URL always points at this port; with --port-forward "
+            "that's where the bg tunnel is listening; without it, "
+            "run `tools.ssh_proxy ... --port-forward <port>:...` "
+            "later to populate the same port."
         ),
     )
     parser.add_argument(
-        "--no-tunnel",
+        "--port-forward",
         action="store_true",
         help=(
-            "skip starting the ssh -L forward (you want to start "
-            "one yourself with `ssh-proxy --port-forward` later, "
-            "or you're running in a non-interactive context). The "
-            "kubeconfig is still written, and a free local port is "
-            "picked for its server: URL -- re-run with the same "
-            "`--local-port` later so the tunnel lines up. Default: "
-            "start the tunnel as a detached background process so "
-            "`kubectl` works immediately from another terminal. "
-            "The pid is printed so you can `kill` it when done."
+            "OPT IN: open an `ssh -L` tunnel through PVE that "
+            "forwards <local_port> on this host to 127.0.0.1:6443 "
+            "on the cluster's first control-plane VM. The tunnel "
+            "is started as a detached background process; this "
+            "script then exits. kubectl/k9s can hit "
+            "https://127.0.0.1:<local_port> immediately. The bg "
+            "pid is printed at startup for cleanup "
+            "(`kill <pid>` or `pkill -f 'ssh.*-L <local_port>'`). "
+            "Default: NO background process is left -- the "
+            "kubeconfig is pulled and the SSH session is closed; "
+            "you'd start a tunnel yourself later when you actually "
+            "want to talk to the cluster."
         ),
     )
     parser.add_argument(
@@ -136,7 +177,7 @@ def _parse_args(argv: Sequence[str] | None) -> PullerConfig:
         repo_root=repo_root,
         output_path=out_path,
         local_port=args.local_port,
-        keep_tunnel=not args.no_tunnel,
+        port_forward=args.port_forward,
     )
 
 
@@ -242,16 +283,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     forward = None
     local_port = cfg.local_port
-    if cfg.keep_tunnel:
-        # Start the apiserver forward and KEEP IT ALIVE across the
-        # process exit. The operator wants to use the kubeconfig
-        # from another terminal; the tunnel must outlive us.
-        # We do this by spawning a long-lived detached child
-        # process (a tiny `python -c` that calls port_forward
-        # and parks on a sleep), printing the child pid, and
-        # returning 0 immediately. The operator kills the
-        # detached child with `kill <pid>` or
-        # `pkill -f "ssh.*-L <local_port>"` when done.
+    if cfg.port_forward:
+        # OPT-IN: start the apiserver forward and KEEP IT ALIVE
+        # across the process exit. The operator wants to use the
+        # kubeconfig from another terminal; the tunnel must
+        # outlive us. We do this by calling
+        # `proxy.port_forward()`, which spawns a detached child
+        # process (Popen with start_new_session=True) and returns
+        # a ForwardedPort. We just `del forward` on the way out so
+        # the operator's `kill <pid>` is what tears it down.
         forward = proxy.port_forward(
             target_ip,
             remote_port=6443,
@@ -263,15 +303,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("port_forward returned local_port=0; refusing")
         print(
             f"[kubeconfig_puller] apiserver forward ready: "
-            f"https://127.0.0.1:{local_port} -> {cp['name']}:6443",
+            f"https://127.0.0.1:{local_port} -> {cp['name']}:6443 "
+            f"(pid={forward.proc.pid})",
             file=sys.stderr,
         )
     else:
-        # No tunnel started. We still need a local_port so the
-        # kubeconfig's server: URL is addressable -- either the
-        # operator passed --local-port, or we pick a free one
-        # (the operator will start the tunnel on the same port
-        # later, e.g. `ssh-proxy --port-forward <port>:127.0.0.1:6443`).
+        # DEFAULT: no tunnel left running. The kubeconfig's
+        # `server:` URL still needs a valid port to point at, so
+        # we either honor the operator's `--local-port` or pick
+        # a free one; the operator can start a tunnel on that
+        # port later (`ssh-proxy ... --port-forward
+        # <port>:127.0.0.1:6443` or another puller invocation
+        # with `--port-forward --local-port <port>`).
         if local_port is None:
             local_port = _pick_unused_local_port()
 
@@ -284,6 +327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "kubeconfig_puller.wrote",
         path=str(cfg.output_path),
         server_url=f"https://127.0.0.1:{local_port}",
+        port_forward=cfg.port_forward,
     )
     print(f"[kubeconfig_puller] wrote {cfg.output_path}")
     print(
@@ -301,13 +345,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"(or: pkill -f 'ssh.*-L {local_port}')"
         )
         # Forget the forward object; the detached child is now
-        # the operator's responsibility. The finally block below
-        # would have killed it.
+        # the operator's responsibility. A finally block here
+        # would have killed it on the way out, which is the
+        # opposite of what we want.
         forward = None  # noqa: F841 -- intentionally drop the reference
     else:
+        # No background tunnel. Print the exact command the
+        # operator can paste to open one later (matching the
+        # port the kubeconfig already points at).
         print(
-            f"[kubeconfig_puller] start the tunnel when you need it:  "
-            f"ssh-proxy --cluster {cfg.cluster} "
+            f"[kubeconfig_puller] no tunnel left running (default). "
+            f"To talk to the apiserver, open one:  "
+            f"python -m tools.ssh_proxy --cluster {cfg.cluster} "
             f"--port-forward {local_port}:127.0.0.1:6443"
         )
     return 0

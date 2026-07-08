@@ -83,10 +83,11 @@ def test_parse_args_default_output_path(tmp_path) -> None:
     assert cfg.output_path == (
         tmp_path / "infra" / "clusters" / "cicd" / "kubeconfig.pveproxy"
     )
-    # Default is "tunnel up": the kubeconfig-puller starts the
-    # apiserver forward as a detached background process. Tests
-    # that want to opt out use --no-tunnel.
-    assert cfg.keep_tunnel is True
+    # Default is "no bg tunnel": the puller fetches the kubeconfig
+    # over a short-lived exec session, writes the file, and exits.
+    # No long-lived ssh process is left behind. Tests that want
+    # the bg tunnel behavior use --port-forward.
+    assert cfg.port_forward is False
     assert cfg.local_port is None
 
 
@@ -100,30 +101,38 @@ def test_parse_args_explicit_output_path(tmp_path) -> None:
     )
     assert cfg.output_path == tmp_path / "kubeconfig"
     assert cfg.local_port == 16443
+    # Still default-off even with --local-port set: --local-port
+    # by itself just gives the kubeconfig a stable address; the
+    # tunnel is opt-in via --port-forward.
+    assert cfg.port_forward is False
 
 
-def test_parse_args_with_tunnel_flag() -> None:
-    """Default: the apiserver forward is started as a detached
-    background process. No flag is required. The tool returns
-    immediately and the operator can use the kubeconfig from
-    another terminal."""
+def test_parse_args_default_does_not_leave_bg_process() -> None:
+    """`kubeconfig-puller --cluster <name>` (no flags) must NOT
+    leave a bg ssh -L tunnel running. The whole point of moving
+    the flag off ssh_proxy.py was to make the default safe --
+    pulling a kubeconfig should be a one-shot op that leaves no
+    listening port on the host.
+    """
     cfg = _parse_args(["--cluster", "cicd"])
-    assert cfg.keep_tunnel is True
+    assert cfg.port_forward is False
 
 
-def test_parse_args_default_does_not_block() -> None:
-    """`kubeconfig-puller --cluster <name>` (no flags) must not
-    block. The tunnel is started as a detached background
-    process; the tool returns immediately. Pinning the default
-    so a future refactor can't reintroduce the original
-    `while True: sleep(3600)` blocking loop."""
-    cfg = _parse_args(["--cluster", "cicd"])
-    assert cfg.keep_tunnel is True  # default is "tunnel up by default"
+def test_parse_args_port_forward_opt_in() -> None:
+    """`--port-forward` is the opt-in: open a long-lived ssh -L
+    tunnel through PVE, write the kubeconfig pointing at its
+    local port, exit. The bg tunnel outlives the puller so the
+    operator can hit the apiserver from another terminal."""
+    cfg = _parse_args(["--cluster", "cicd", "--port-forward"])
+    assert cfg.port_forward is True
 
 
-def test_parse_args_no_tunnel_flag() -> None:
-    """`--no-tunnel` is the opt-out: pull the kubeconfig, write
-    it, print a one-liner the operator can paste to start the
-    tunnel later, exit. No background process is left behind."""
-    cfg = _parse_args(["--cluster", "cicd", "--no-tunnel"])
-    assert cfg.keep_tunnel is False
+def test_parse_args_port_forward_with_local_port() -> None:
+    """Combine --port-forward with --local-port to pin the bg
+    tunnel to a known local port. Useful when other tooling
+    (e.g. k9s sessions in other tabs) already expects that port."""
+    cfg = _parse_args(
+        ["--cluster", "cicd", "--port-forward", "--local-port", "16443"]
+    )
+    assert cfg.port_forward is True
+    assert cfg.local_port == 16443

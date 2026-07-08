@@ -16,17 +16,10 @@ Usage examples:
   # Run a one-off command non-interactively
   python -m tools.ssh_proxy --cluster apps --role control_plane -- hostname
 
-  # Forward the k8s apiserver to a local port (great for k9s).
-  # Bare --port-forward (no value) defaults to local 6443 -> first CP's
-  # loopback 6443, the canonical k3s apiserver forward.
-  python -m tools.ssh_proxy --cluster cicd --port-forward
-
-  # Custom forward (e.g. to a non-standard local port)
-  python -m tools.ssh_proxy --cluster cicd --port-forward 6444:127.0.0.1:6443
-
-  # Multiple forwards (one bare, one explicit)
-  python -m tools.ssh_proxy --cluster cicd --port-forward \
-      --port-forward 9001:127.0.0.1:9001
+  # For an apiserver port-forward (the canonical "I want kubectl/k9s
+  # to talk to a cluster"), use `kubeconfig-puller --port-forward`
+  # instead -- it persists the tunnel across its own exit, so kubectl
+  # works in another terminal immediately.
 
 Why a CLI and not just a shell alias: the operator's machine is on
 10.x.x.x, NOT on the SDN. The cluster VMs (10.0.0.50-200) need a
@@ -38,21 +31,22 @@ double-ssh through PVE. This script bakes in:
     for exec targets; the ProxyCommand form is mandatory)
 
 When `--port-forward` is given, an `ssh -L` tunnel is opened in the
-background and the script blocks on a foreground `ssh` exec target.
-Ctrl-C kills the foreground ssh; the background tunnel is left running
-on purpose (use `lsof -iTCP:6443 -sTCP:LISTEN` to find it; pid is
-printed at startup). The forwarded port makes the apiserver reachable
-at `https://127.0.0.1:<local_port>` for kubectl/k9s without exposing
-any host port on PVE.
-
-This tool does NOT modify cluster state. It is read-only with respect
-to the bootstrap pipeline; safe to run any time.
+background and the script blocks on the tunnel processes:
+  - with no extra command, the bg tunnels ARE the point -- the
+    script just blocks until Ctrl-C. kubectl/k9s can hit
+    `https://127.0.0.1:<local_port>` while it runs.
+  - with a command appended, the script runs that command through
+    the tunneled argv (so it lands on the remote VM) and exits
+For an apiserver port-forward (the canonical "I want kubectl/k9s
+to talk to a cluster"), use `tools.kubeconfig_puller --port-forward`
+instead. The port-forward feature lives there now: the puller
+opens a background tunnel, writes a kubeconfig that points at it,
+and exits; the tunnel outlives the puller so kubectl works in
+another terminal immediately. Run `kill <pid>` (printed at startup)
+to tear it down
 """
-from __future__ import annotations
-
 import argparse
 import os
-import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Sequence
@@ -65,7 +59,7 @@ from tools.lib.talos_client import ClusterTopology
 
 @dataclass(frozen=True)
 class ParsedForward:
-    """`<local_port>:[<remote_bind>]:<remote_port>` triple.
+    """Triple `<local_port>:<remote_bind>:<remote_port>`.
 
     Same shape kubectl/SSH use for the `-L` spec; a missing remote_bind
     defaults to `127.0.0.1` (because k3s binds the apiserver on the
@@ -141,27 +135,15 @@ def _build_argv(
     proxy: PveSshProxy,
     target_ip: str,
     command: str | None,
-    extra_port_forwards: Sequence[ParsedForward] = (),
 ) -> list[str]:
     """Build the final ssh argv.
 
-    For interactive shells we want ProxyCommand + a tty. For port
-    forwards we add `-L` flags (multiple). For one-off commands we
-    append them after `--`.
+    For interactive shells we want ProxyCommand + a tty. For one-off
+    commands we append them after the destination hop (no `--`).
     """
     base = proxy.ssh_argv(target_ip)
     argv: list[str] = []
-    # Strip the trailing `ubuntu@<ip>` token (last) from base so we
-    # can splice in `-L` flags BEFORE the destination hop (ssh
-    # requires that ordering).
     argv.extend(base[:-1])
-    for fwd in extra_port_forwards:
-        argv.extend(
-            [
-                "-L",
-                f"{fwd.local_port}:{fwd.remote_bind}:{fwd.remote_port}",
-            ]
-        )
     argv.extend(
         [
             "-o",
@@ -174,39 +156,6 @@ def _build_argv(
     if command is not None:
         argv.append(command)
     return argv
-
-
-def _start_port_forward(
-    proxy: PveSshProxy,
-    target_ip: str,
-    fwd: ParsedForward,
-) -> "subprocess.Popen[bytes]":
-    """Open an `ssh -L` tunnel; return the background Popen.
-
-    Lives for the life of the script; killed by the atexit handler
-    we register in main() so Ctrl-C of the foreground ssh leaves
-    the tunnel up (intentional -- you can keep your k9s session).
-    """
-    argv = proxy.ssh_argv(target_ip, command="true")  # placeholder dest
-    # Replace the placeholder `true` with `-N -L` flags. ssh puts
-    # flags BEFORE the destination; "true" was the destination.
-    argv = argv[:-2] + [
-        "-N",
-        "-L",
-        f"{fwd.local_port}:{fwd.remote_bind}:{fwd.remote_port}",
-        "-o",
-        "ServerAliveInterval=15",
-        "-o",
-        "ServerAliveCountMax=4",
-    ]
-    proc = subprocess.Popen(  # noqa: S603 -- forward-only tunnel.
-        argv,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
-    return proc
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -239,22 +188,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "repo root containing infra/clusters/<name>/output.json. "
             "Defaults to PROXMOX_K8S_REPO, then the current working "
             "directory, then walks up looking for infra/clusters/."
-        ),
-    )
-    parser.add_argument(
-        "--port-forward",
-        action="append",
-        nargs="?",
-        const="6443:127.0.0.1:6443",
-        default=[],
-        metavar="LOCAL[:BIND]:REMOTE",
-        help=(
-            "open an ssh -L tunnel before exec'ing the foreground ssh. "
-            "Pass the flag with no value to use the default k3s apiserver "
-            "tunnel (local 6443 -> first CP's loopback 6443). Pass a "
-            "value (e.g. 6444:127.0.0.1:6443) for a custom forward. "
-            "Repeatable. Bind defaults to 127.0.0.1 (k3s binds the "
-            "apiserver on the CP node's loopback pre-kube-vip)."
         ),
     )
     parser.add_argument(
@@ -305,17 +238,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         port_forwards=list(args.port_forward),
     )
     proxy = PveSshProxy(logger=logger)
-    forwards = [ParsedForward.parse(s) for s in args.port_forward]
-    bg_procs: list[subprocess.Popen[bytes]] = []
-    for fwd in forwards:
-        bg = _start_port_forward(proxy, target_ip, fwd)
-        bg_procs.append(bg)
-        print(
-            f"[ssh_proxy] forward: 127.0.0.1:{fwd.local_port} -> "
-            f"{target['name']}:{fwd.remote_bind}:{fwd.remote_port} "
-            f"(pid={bg.pid})",
-            file=sys.stderr,
-        )
 
     # Build the foreground argv. For an interactive shell, command is
     # None. For a one-off, the user passed a command after `--`.
@@ -330,34 +252,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     final_argv = _build_argv(proxy, target_ip, command)
 
-    if not bg_procs:
-        # Pure interactive (or one-off) shell -- replace the current
-        # process with ssh so the operator's tty behaves naturally.
-        try:
-            os.execvp(final_argv[0], final_argv)
-        except OSError as exc:
-            logger.error(
-                "ssh_proxy.exec_failed",
-                error=str(exc),
-                resolution="check that `ssh` is on PATH and the jump host is reachable",
-                argv=final_argv,
-            )
-            return 1
-        return 0  # unreachable
-
-    # With background port-forwards we stay in the parent so we can
-    # clean up on exit. Re-execing would orphan the bg processes.
+    # Pure interactive (or one-off) shell -- replace the current
+    # process with ssh so the operator's tty behaves naturally.
     try:
-        rc = subprocess.call(final_argv)  # noqa: S603
-    finally:
-        for bg in bg_procs:
-            if bg.poll() is None:
-                bg.terminate()
-                try:
-                    bg.wait(timeout=2)
-                except Exception:
-                    bg.kill()
-    return int(rc)
+        os.execvp(final_argv[0], final_argv)
+    except OSError as exc:
+        logger.error(
+            "ssh_proxy.exec_failed",
+            error=str(exc),
+            resolution="check that `ssh` is on PATH and the jump host is reachable",
+            argv=final_argv,
+        )
+        return 1
+    return 0  # unreachable
 
 
 if __name__ == "__main__":

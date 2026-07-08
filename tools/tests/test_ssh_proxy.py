@@ -80,19 +80,13 @@ def test_build_argv_interactive_no_forwards() -> None:
 
 
 def test_build_argv_with_port_forwards() -> None:
-    """-L flags must appear BEFORE the destination hop."""
+    """No more --port-forward on this CLI; the flag moved to
+    `tools.kubeconfig_puller`. Sanity-check that the simplified
+    `_build_argv` (now no `extra_port_forwards` parameter) still
+    omits `-L` for a plain interactive invocation."""
     proxy = PveSshProxy(jump_host="root@kvm.bruj0.net -p 6022")
-    argv = _build_argv(
-        proxy,
-        "10.0.0.65",
-        command=None,
-        extra_port_forwards=[ParsedForward.parse("6443:127.0.0.1:6443")],
-    )
-    # The -L flag must appear BEFORE the destination.
-    l_idx = argv.index("-L")
-    dest_idx = argv.index("ubuntu@10.0.0.65")
-    assert l_idx < dest_idx
-    assert argv[l_idx + 1] == "6443:127.0.0.1:6443"
+    argv = _build_argv(proxy, "10.0.0.65", command=None)
+    assert "-L" not in argv
 
 
 def test_build_argv_with_one_off_command() -> None:
@@ -124,52 +118,3 @@ def _mk_topo(
         def all_nodes(self):
             return [*cps, *wks]
     return _T()
-
-
-# ---------- argparse --port-forward (2026-07-08) ----------
-
-
-def test_argparse_port_forward_no_value_uses_default() -> None:
-    """`--port-forward` with no value defaults to the k3s apiserver
-    tunnel (local 6443 -> first CP's loopback 6443). This is the
-    canonical day-to-day invocation -- the operator should not have
-    to type the value when they always want the apiserver.
-    """
-    # We can't actually run main() (it would try to open an SSH
-    # session), so we test the underlying argparse shape directly by
-    # constructing the parser the same way main() does. Mirror the
-    # argument block from main() so this test fails if the argparse
-    # shape regresses.
-    import argparse
-    parser = argparse.ArgumentParser(prog="ssh_proxy")
-    parser.add_argument("--cluster", required=True)
-    parser.add_argument(
-        "--port-forward",
-        action="append",
-        nargs="?",
-        const="6443:127.0.0.1:6443",
-        default=[],
-    )
-    # 1) Bare flag (no value) -- the operator's intent.
-    args = parser.parse_args(["--cluster", "cicd", "--port-forward"])
-    assert args.port_forward == ["6443:127.0.0.1:6443"]
-    # 2) Flag with explicit value -- backwards compat.
-    args = parser.parse_args(
-        ["--cluster", "cicd", "--port-forward", "16443:127.0.0.1:6443"]
-    )
-    assert args.port_forward == ["16443:127.0.0.1:6443"]
-    # 3) Repeated flag -- still works.
-    args = parser.parse_args(
-        [
-            "--cluster", "cicd",
-            "--port-forward",  # default apiserver tunnel
-            "--port-forward", "9001:127.0.0.1:9001",  # + a custom one
-        ]
-    )
-    assert args.port_forward == [
-        "6443:127.0.0.1:6443",
-        "9001:127.0.0.1:9001",
-    ]
-    # 4) Flag absent -- no forwards.
-    args = parser.parse_args(["--cluster", "cicd"])
-    assert args.port_forward == []
