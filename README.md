@@ -84,8 +84,10 @@ flowchart TB
 The skill at
 [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md)
 walks an Operator (human or AI agent) through five top-level
-phases — and the bootstrap phase further decomposes into six
-sub-phases — so every step is reproducible and reviewable.
+phases — and the bootstrap phase further decomposes into seven
+sub-phases (`cloudinit, install_k3s, k3s, helm, kubeconfig,
+host_ports, externalname`) — so every step is reproducible and
+reviewable.
 
 ## What you get after running the skill
 
@@ -110,6 +112,10 @@ After a successful end-to-end run, your Proxmox host has:
   cicd VIP via PowerDNS).
 - **PowerDNS A + PTR records** aligned with the IPs the SDN actually
   assigned (see [`scripts/sync_dns_to_sdn.py`](scripts/sync_dns_to_sdn.py)).
+- **Day-to-day operator tooling** to SSH into any cluster VM or
+  pull a working kubectl context through the PVE jump host:
+  [`tools/ssh_proxy.py`](#operating-the-clusters) and
+  [`tools/kubeconfig_puller.py`](#operating-the-clusters) below.
 
 ## Repository layout
 
@@ -155,7 +161,7 @@ After a successful end-to-end run, your Proxmox host has:
 | 1 | Image Build | Proxmox template at VMID 900 + `build/image-id.txt` | `python -m tools.build_image` (or `make build-image`) |
 | 2 | Cluster Provisioning | 4 cloned VMs (111-114) + PowerDNS A/PTR records | `python scripts/apply_tofu.py cicd && python scripts/apply_tofu.py apps` |
 | 3 | Host-ports baseline | `logs/host-ports-baseline.json` snapshot | `bash scripts/capture_host_ports_baseline.sh` |
-| 4 | Cluster Bootstrap | working k3s clusters with all Helm releases | `python -m tools.bootstrap_cluster --cluster {cicd|apps}` |
+| 4 | Cluster Bootstrap | working k3s clusters with all Helm releases (7 sub-phases: `cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, externalname`) | `python -m tools.bootstrap_cluster --cluster {cicd|apps}` |
 | 5 | Final verification | SC-001..SC-007 + NFR-010..NFR-014 checks | see [`docs/verification.md`](docs/verification.md) |
 
 The skill ([`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md))
@@ -228,32 +234,107 @@ python -m tools.bootstrap_cluster --cluster apps
 
 After step 5, `~/.kube/config` contains contexts for both clusters and
 the cicd cluster is reachable from the public internet via the
-Cloudflare Tunnel.
+Cloudflare Tunnel. Re-running any individual sub-phase (e.g. after
+adding a new worker) is idempotent: `python -m tools.bootstrap_cluster
+--cluster cicd --phases install_k3s,k3s` will skip everything else.
+
+## Operating the clusters
+
+Two short Python CLIs make day-to-day work against the live
+clusters possible from the operator's host — which is on the public
+internet, NOT on the SDN. Both tunnel through the PVE jump host
+(`root@kvm.bruj0.net -p 6022`, configurable in
+[`tools/lib/pve_ssh.py`](tools/lib/pve_ssh.py)) into the cluster's
+SDN subnet (10.0.0.50-200) using a `ProxyCommand=ssh -W %h:%p`
+double-ssh. The cloud image refuses root login, so we land as
+`ubuntu` and `sudo -n` for any root-level ops.
+
+### SSH into a VM
+
+```bash
+# Land on the first control-plane VM of the cicd cluster
+python -m tools.ssh_proxy --cluster cicd
+
+# Land on the first worker
+python -m tools.ssh_proxy --cluster cicd --role worker
+
+# A specific node by name (overrides --role)
+python -m tools.ssh_proxy --cluster apps --name apps-cp-1
+
+# One-off command (non-interactive)
+python -m tools.ssh_proxy --cluster cicd -- hostname
+```
+
+Pure interactive shells are exec'd via `os.execvp` so the operator's
+TTY, resize signals, and `~/.ssh/config` aliases all behave the same
+as a plain `ssh user@host`.
+
+### Pull a kubectl config that talks to a cluster
+
+```bash
+# Opens an ssh -L forward 127.0.0.1:16443 -> cicd-cp-1:6443
+# (k3s binds the apiserver on the CP loopback pre-kube-vip), then
+# writes a kubeconfig whose server: URL points at the forward.
+python -m tools.kubeconfig_puller --cluster cicd
+
+# In another terminal (or background job) -- the tunnel is up:
+KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy kubectl get nodes
+KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy k9s
+```
+
+The puller blocks until you Ctrl-C; on exit it tears the forward
+down so a stale kubeconfig can't accidentally talk to a
+decommissioned cluster. If you'd rather start the tunnel yourself
+(via `tools/ssh_proxy --port-forward 16443:127.0.0.1:6443`) and
+just rewrite the kubeconfig, pass `--no-tunnel --local-port 16443`
+to the puller.
 
 ## Development
 
 ```bash
-make test           # 92 pytest tests
+make test           # 132 pytest tests
 make lint           # ruff + mypy on tools/
 make test-infra-tokens    # tofu test for infra/tokens
 make test-infra-modules   # tofu test for every module under infra/modules
 make test-infra-clusters  # tofu test for every instance under infra/clusters
 ```
 
-## Status (2026-07-07)
+## Status (2026-07-08)
 
-- **Phases 0-2 verified end-to-end** on `pve.example.net` (PVE 9.2.3,
+- **Phases 0-2 verified end-to-end** on `kvm.bruj0.net` (PVE 9.2.3,
   kernel 7.0.6-2-pve) with the canonical Proxmox+Ubuntu
   recipe: `virt-customize` bakes `qemu-guest-agent` into the cloud
   image BEFORE the VM is created, Proxmox's native cloud-init drive
   (`--ide2 data1:cloudinit`) replaces the custom NoCloud seed ISO.
   4 cluster VMs (111-114) are cloned, running, and report
   `qm agent ping` OK.
-- **Phases 3-5** are documented from the original spec; the
-  Phase-4 sub-phases are `cloudinit, k3s, helm, kubeconfig, host_ports,
-  externalname`.
-- **92 pytest tests pass**; the test suite pins every load-bearing
-  recipe change against the live host.
+- **Phase 4 (bootstrap) verified end-to-end** on both clusters
+  with the 7-sub-phase split:
+  `cloudinit -> install_k3s -> k3s -> helm -> kubeconfig -> host_ports -> externalname`.
+  The new `install_k3s` sub-phase runs the upstream
+  `https://get.k3s.io` installer over the PVE-jump-host SSH proxy
+  (with `INSTALL_K3S_VERSION=v1.34.9+k3s1`, `--tls-san=<vip>`,
+  `--flannel-backend=none`, agent join via `https://<vip>:6443`).
+  Idempotent: re-running sees the systemd unit active and skips.
+  See [`docs/install-k3s-plan.md`](docs/install-k3s-plan.md) and
+  the `Step 4a` block in
+  [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](.agents/skills/proxmox-k3s-pipeline/SKILL.md)
+  for the live-host gotchas (SSH user is `ubuntu`, sudo strips
+  caller env, `k3s agent` rejects `--flannel-backend`, use
+  `ProxyCommand` not `-W`).
+- **Day-to-day operator tooling live-validated:**
+  [`tools/ssh_proxy.py`](tools/ssh_proxy.py) lands on any cluster
+  VM (all 4 nodes reachable) and
+  [`tools/kubeconfig_puller.py`](tools/kubeconfig_puller.py) opens
+  the kube-apiserver forward in 0.6s and `kubectl get nodes`
+  succeeds through the tunnel. Both share a single
+  [`tools/lib/pve_ssh.py`](tools/lib/pve_ssh.py) module that owns
+  the PVE-jump-host ProxyCommand pattern (also reused by
+  `K3sInstaller`).
+- **132 pytest tests pass** (24 new for the operator tooling: 9
+  `pve_ssh`, 9 `ssh_proxy`, 7 `kubeconfig_puller`); ruff clean;
+  mypy `--strict` clean. The new test for `-L` ordering before the
+  destination is a regression guard against a subtle ssh argv bug.
 - The pipeline pivoted off Talos Linux on 2026-07-07 because the
   serial-console debug loop on PVE 9.2.3 was unworkable. The
   full pivot history is at the bottom of
