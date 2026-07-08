@@ -93,17 +93,49 @@ def _write_cluster(tmp_path: Path) -> Path:
     return cluster
 
 
-def test_list_phases_returns_all_seven() -> None:
-    """Acceptance: phases enum is [cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, externalname]."""
+def test_list_phases_returns_all_ten() -> None:
+    """Acceptance: phases enum is the 10-phase WP07 ordering.
+
+    WP07 (2026-07-08) added three phases for GitLab-readiness:
+      - gateway_crds: pinned standard Gateway API CRDs (v1.6.0)
+      - gateway_smoke: real L7 round-trip via Envoy Gateway
+      - csi_smoke: real PVC round-trip via proxmox-csi-plugin
+
+    They slot in around the existing 7 phases so the apiserver
+    tunnel opened by `_run_helm` is reused by the new smoke
+    phases. See docs/plan-envoy-gateway-and-smoke-tests.md for
+    the rationale.
+    """
     assert list_phases() == [
         "cloudinit",
         "install_k3s",
         "k3s",
+        "gateway_crds",
         "helm",
+        "gateway_smoke",
         "kubeconfig",
+        "csi_smoke",
         "host_ports",
         "externalname",
     ]
+
+
+def test_gateway_crds_phase_runs_before_helm() -> None:
+    """WP07: gateway_crds must precede helm (chart install needs CRDs)."""
+    phases = list_phases()
+    assert phases.index("gateway_crds") < phases.index("helm")
+
+
+def test_gateway_smoke_phase_runs_after_helm() -> None:
+    """WP07: gateway_smoke must follow helm (controller needs to be installed)."""
+    phases = list_phases()
+    assert phases.index("gateway_smoke") > phases.index("helm")
+
+
+def test_csi_smoke_phase_runs_after_kubeconfig() -> None:
+    """WP07: csi_smoke must follow kubeconfig (uses ~/.kube/config, not the tunnel)."""
+    phases = list_phases()
+    assert phases.index("csi_smoke") > phases.index("kubeconfig")
 
 
 def test_bootstrap_missing_output_json_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

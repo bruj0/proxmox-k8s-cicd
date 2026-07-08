@@ -40,12 +40,15 @@ documented here.
     - [9.2 Cloudflare Tunnel](#92-cloudflare-tunnel)
   - [10. Certificate management](#10-certificate-management)
   - [11. Ingress — Traefik (planned)](#11-ingress--traefik-planned)
+  - [11.1 Gateway API — Envoy Gateway (WP07, 2026-07-08)](#111-gateway-api--envoy-gateway-wp07-2026-07-08)
   - [12. Cross-cluster wiring](#12-cross-cluster-wiring)
   - [13. Operator tooling](#13-operator-tooling)
   - [14. Known issues and drift](#14-known-issues-and-drift)
     - [14.1 proxmox-ccm / proxmox-csi / cloudflare-tunnel — ContainerCreating](#141-proxmox-ccm--proxmox-csi--cloudflare-tunnel--containercreating)
     - [14.2 k3s version drift](#142-k3s-version-drift)
+    - [14.3 Envoy Gateway CRD install order (WP07, 2026-07-08)](#143-envoy-gateway-crd-install-order-wp07-2026-07-08)
   - [15. How to re-run any phase](#15-how-to-re-run-any-phase)
+    - [15.1 -- WP07 phase re-run examples (2026-07-08)](#151----wp07-phase-re-run-examples-2026-07-08)
   - [See also](#see-also)
 
 ---
@@ -400,6 +403,42 @@ the bootstrap script (SS3) would require re-running the entire
 SS2 cluster module just to update the manifest, which is
 slower than a `tofu apply`.
 
+## 11.1 Gateway API — Envoy Gateway (WP07, 2026-07-08)
+
+The cluster has **two ingress surfaces** that do not conflict:
+
+- **Traefik** (the legacy `IngressClass` default) — what existing
+  apps use, rendered by the SS2 module as a `HelmChartConfig`.
+- **Envoy Gateway** (the `GatewayClass=envoy` implementation) —
+  what the GitLab chart will program against for `*.local.<domain>`.
+  Installed by the bootstrap's `helm` phase
+  (`tools/lib/helm_client.py::gateway_releases`).
+
+| Property | Value | Source |
+|---|---|---|
+| Chart | `oci://docker.io/envoyproxy/gateway-helm` | WP00 context7 snippet |
+| Chart version | `v1.8.2` (latest stable, 2026-07-01) | `tools/versions.lock.yaml` |
+| Namespace | `envoy-gateway-system` | chart default |
+| GatewayClass | `envoy` | operator decision 2026-07-08 |
+| Controller | `gateway.envoyproxy.io/gatewayclass-controller` | chart default (pinned) |
+| Service type | `ClusterIP` | chart default; no LoadBalancer provisioner |
+| Standard CRDs | `v1.6.0/standard-install.yaml` (pinned, applied by `gateway_crds` phase) | operator decision 2026-07-08 |
+| Cilium GAMMA | `gatewayAPI.enabled=true` (unchanged) | already pinned |
+
+The chart's own CRD install is **disabled** (`crds.enabled=false`
++ `crds.gatewayAPI.safeUpgradePolicy.enabled=false`); the
+bootstrap's `gateway_crds` phase applies the standard CRDs itself
+via `kubectl apply --server-side -f <pinned URL>`. The reason for
+the indirection: a CRD-version drift surfaces as a `kubectl diff`
+rather than a silent helm-upgrade side-effect (see
+`docs/plan-envoy-gateway-and-smoke-tests.md §3.1`).
+
+The `gateway_smoke` phase proves the L7 round-trip end-to-end on
+each apply: it deploys a temporary `Gateway`+`HTTPRoute`+echo pod
+in the `proxmox-k8s-cicd-smoke` namespace, curls the
+Gateway's data-plane Service ClusterIP, and asserts the echo
+body comes back. Cleans up at the end.
+
 ## 12. Cross-cluster wiring
 
 The `apps` cluster reaches `cicd` Services via ExternalName +
@@ -499,6 +538,29 @@ window) the operator can opt out of the upgrade controller
 either by editing the systemd unit or by setting
 `INSTALL_K3S_SKIP_START=true` and managing upgrades manually.
 
+### 14.3 Envoy Gateway CRD install order (WP07, 2026-07-08)
+
+**Status**: reserved. The first live-host apply on 2026-07-08 will
+record any CRD-related gotcha here. The expected shape (no
+known issue yet):
+
+- The `gateway_crds` phase applies the pinned standard CRDs
+  (v1.6.0) via `kubectl apply --server-side`. The chart's own
+  CRD install is disabled (`crds.enabled=false`), so a CRD
+  version conflict between the chart and our pinned URL is
+  impossible by construction.
+- Cilium 1.16.1's `gatewayAPI.enabled=true` registers a
+  validating webhook for the standard CRDs. If the webhook
+  rejects an HTTPRoute that Envoy Gateway accepts (or vice
+  versa), the `gateway_smoke` phase fails with a
+  `BootstrapError(gateway_smoke, ...)` that points at
+  `kubectl -n envoy-gateway-system get pods` for the
+  controller logs.
+
+**Live-host verification**: see
+`tools/versions.lock.yaml::cross_check.envoy_gateway_install_<date>`
+(added by the first live apply).
+
 ## 15. How to re-run any phase
 
 The bootstrap script is fully re-runnable. Each phase tracks
@@ -536,6 +598,35 @@ Then run the bootstrap:
 python -m tools.bootstrap_cluster --cluster <name> --phases <comma-separated>
 ```
 
+### 15.1 -- WP07 phase re-run examples (2026-07-08)
+
+The bootstrap gained three new phases for GitLab-readiness. The
+phase order matters: `gateway_crds` must precede `helm` (so the
+Envoy Gateway chart's `--skip-crds` install finds the CRDs
+already present); `gateway_smoke` must follow `helm`; `csi_smoke`
+must follow `kubeconfig` (it uses the operator's
+`~/.kube/config`, not the in-script apiserver tunnel).
+
+```bash
+# First-time install of the WP07 stack on cicd
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster cicd \
+  --phases cloudinit,install_k3s,k3s,gateway_crds,helm,gateway_smoke,kubeconfig,csi_smoke,host_ports
+
+# Re-run only the envoy-gateway portion (idempotent)
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster cicd \
+  --phases gateway_crds,helm,gateway_smoke
+
+# Re-run only the csi smoke (uses ~/.kube/config; no tunnel needed)
+python -m tools.bootstrap_cluster --cluster cicd --phases csi_smoke
+```
+
+Both clusters (cicd + apps) run the WP07 phases. The
+`gateway_crds` phase is cluster-independent in practice (the same
+CRDs are installed on both clusters), but applying them twice
+is a no-op via `kubectl apply --server-side`.
+
 To open an interactive session into a node:
 
 ```bash
@@ -560,3 +651,5 @@ kubectl get nodes
 - [`docs/runbooks/decommission-cluster.md`](runbooks/decommission-cluster.md) — removing a cluster
 - [`docs/runbooks/cloudflare-fallback.md`](runbooks/cloudflare-fallback.md) — Cloudflare outage recovery
 - [`.agents/skills/proxmox-k3s-pipeline/SKILL.md`](../.agents/skills/proxmox-k3s-pipeline/SKILL.md) — operator playbook
+- [`docs/plan-envoy-gateway-and-smoke-tests.md`](plan-envoy-gateway-and-smoke-tests.md) — WP07 design + rationale
+- [`specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research-log-v8.json`](../specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research-log-v8.json) — WP00 context7 evidence

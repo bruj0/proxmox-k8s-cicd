@@ -161,3 +161,73 @@ verifier:
     baseline_file: "infra/clusters/<name>/host_ports_baseline.txt"
     transport: "ssh -p 6022 root@10.0.0.1 nft list chain ip nat prerouting"
     raising: "HostPortsAddedError -> BootstrapError"
+
+# ---- WP07 append (2026-07-08) — Envoy Gateway + smoke tests ----
+# Adds the GatewayClass=envoy implementation (Envoy Gateway v1.8.2)
+# and the two real smoke tests required for GitLab-readiness. See
+# docs/plan-envoy-gateway-and-smoke-tests.md for the full design
+# and specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research-log-v8.json
+# for the WP00 context7-auto-research evidence.
+additional_dependencies:
+  - name: envoy-gateway
+    version: "v1.8.2"
+    rationale: >
+      Chart OCI ref oci://docker.io/envoyproxy/gateway-helm
+      v1.8.2 (released 2026-07-01, latest stable as of 2026-07-08
+      on registry-1.docker.io). Implements GatewayClass=envoy so
+      the GitLab chart's gateway-helm sub-chart finds a
+      GatewayClass=envoy admission path. Verified via context7
+      + live registry probe.
+    source: "context7-auto-research on 2026-07-08"
+
+  - name: gateway-api-standard-crds
+    version: "v1.6.0"
+    rationale: >
+      Upstream standard-channel Gateway API CRDs, pinned by
+      operator decision 2026-07-08 ("pin them"). Applied via
+      `kubectl apply --server-side -f
+      https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml`
+      in the bootstrap's `gateway_crds` phase. The Envoy Gateway
+      chart is installed with `crds.enabled=false` so the chart
+      does NOT also install CRDs (would risk version drift).
+    source: "context7-auto-research on 2026-07-08"
+
+cross_check:
+  envoy_gateway_install_2026_07_0X: >
+    TBD after first live-host apply on cicd cluster (2026-07-08).
+    Pre-apply: env_proxy_k3s cluster, k3s v1.36.2+k3s1, Cilium
+    1.16.1 with gatewayAPI.enabled=true, no GatewayClass
+    present. Post-apply (expected): GatewayClass=envoy present
+    with controllerName=gateway.envoyproxy.io/gatewayclass-controller,
+    status.conditions[type=Accepted].status=True. Captured by
+    the new _run_gateway_smoke phase; gate fires if any of those
+    conditions is False.
+  csi_smoke_roundtrip_2026_07_0X: >
+    TBD after first live-host apply on cicd cluster (2026-07-08).
+    Pre-apply: proxmox-csi-plugin 0.5.9 installed, StorageClass
+    proxmox-lvm-thin default, no PVC bound. Post-apply (expected):
+    PVC smoke-pvc Bound with volumeHandle starting with
+    proxmox://bigbertha/, marker file survives pod churn, both
+    smoke-write and smoke-read pods reach Completed/Succeeded.
+    Captured by the new _run_csi_smoke phase.
+
+verifier:
+  envoy_gateway_smoke:
+    phase: "gateway_smoke"
+    namespace: "proxmox-k8s-cicd-smoke"
+    manifest: "infra/clusters/<name>/manifests/_smoke/envoy-gateway-smoke.yaml"
+    assertions:
+      - "kubectl get gatewayclass envoy returns controllerName=gateway.envoyproxy.io/gatewayclass-controller"
+      - "kubectl wait --for=condition=Programmed=True gateway/smoke-gw within 60s"
+      - "wget http://<gateway-data-plane-clusterip>/ returns proxmox-k8s-cicd-smoke-envoy-gateway"
+    raising: "BootstrapError(gateway_smoke, ...)"
+
+  csi_smoke:
+    phase: "csi_smoke"
+    namespace: "proxmox-k8s-cicd-smoke"
+    manifest: "infra/clusters/<name>/manifests/_smoke/csi-smoke.yaml"
+    assertions:
+      - "kubectl wait --for=jsonpath={.status.phase}=Bound pvc/smoke-pvc within 60s"
+      - "kubectl wait --for=jsonpath={.status.phase}=Succeeded pod/smoke-read within 60s"
+      - "kubectl logs smoke-read contains 'marker survived pod churn'"
+    raising: "BootstrapError(csi_smoke, ...)"

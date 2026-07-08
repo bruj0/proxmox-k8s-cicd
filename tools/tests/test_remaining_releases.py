@@ -13,6 +13,11 @@ Extends WP04's bootstrap_cluster suite with the WP05 acceptance criteria:
     prerouting chain is unchanged vs the captured baseline and fails
     when a new DNAT rule is introduced.
 
+WP07 (2026-07-08) adds the Envoy Gateway (GatewayClass=envoy)
+acceptance criteria. The `gateway_releases()` function returns a
+single release with the chart OCI ref + version pinned against the
+live host (cross_check in tools/versions.lock.yaml).
+
 Side-effect guarantee: tests use `tmp_path` and monkeypatch subprocess.
 No real network calls. No real PVE calls.
 """
@@ -27,7 +32,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.host_ports import HostPortsAddedError, verify_no_new_dnat_rules  # noqa: E402
-from lib.helm_client import remaining_releases  # noqa: E402
+from lib.helm_client import (  # noqa: E402
+    GATEWAY_API_STANDARD_CRDS_URL,
+    gateway_releases,
+    remaining_releases,
+)
 
 NS = "kube-system"
 
@@ -262,3 +271,81 @@ def test_verify_no_new_dnat_rules_ssh_failure_propagates(
         )
     assert captured.get("phase") == "host_ports"
     assert captured.get("ssh_target") == "root@10.0.0.1"
+
+
+# ---------- WP07: gateway_releases + standard CRDs URL ----------
+
+
+def test_gateway_releases_returns_envoy_gateway() -> None:
+    """WP07: gateway_releases() returns exactly one release, pinned at v1.8.2."""
+    rels = gateway_releases()
+    assert len(rels) == 1
+    gw = rels[0]
+    # Canonical OCI ref per WP00 context7 snippet. NOT
+    # oci://gateway-helm-charts/gateway-envoy (a non-existent
+    # path that the plan originally guessed).
+    assert gw.chart == "oci://docker.io/envoyproxy/gateway-helm"
+    assert gw.namespace == "envoy-gateway-system"
+    # Version string is non-empty, follows semver (with optional
+    # 'v' prefix), and has no -rc / -beta suffix.
+    assert gw.version
+    assert "-" not in gw.version, (
+        f"stable version must not contain a pre-release suffix, got {gw.version!r}"
+    )
+    # Strip a leading 'v' for the structural assertion (the live
+    # registry returns 'v1.8.2'; helm accepts both forms).
+    stripped = gw.version[1:] if gw.version.startswith("v") else gw.version
+    parts = stripped.split(".")
+    assert len(parts) == 3 and all(p.isdigit() for p in parts), (
+        f"expected semver X.Y.Z (with optional v prefix), got {gw.version!r}"
+    )
+
+
+def test_gateway_releases_disables_chart_crds() -> None:
+    """WP07: chart must NOT install CRDs (we install them ourselves).
+
+    The bootstrap applies the pinned standard CRDs URL in
+    `_run_gateway_crds` before the helm phase; if the chart
+    also installs them, a CRD-version drift surfaces as a
+    silent helm upgrade rather than a `kubectl diff`.
+    """
+    rels = gateway_releases()
+    gw = rels[0]
+    assert gw.values.get("crds.enabled") == "false"
+    # Safe-upgrade policy conflicts with our pinned CRDs;
+    # disable it.
+    assert gw.values.get("crds.gatewayAPI.safeUpgradePolicy.enabled") == "false"
+
+
+def test_gateway_releases_pins_controller_name() -> None:
+    """WP07: the GatewayClass controller name is pinned explicitly.
+
+    A future upstream rename would otherwise silently create
+    a different GatewayClass (e.g. `envoy-gateway`) and the
+    GitLab chart's `gatewayClassName=envoy` would never
+    resolve.
+    """
+    rels = gateway_releases()
+    gw = rels[0]
+    assert gw.values.get(
+        "config.envoyGateway.gateway.controllerName"
+    ) == "gateway.envoyproxy.io/gatewayclass-controller"
+
+
+def test_gateway_releases_uses_clusterip_service() -> None:
+    """WP07: service.type=ClusterIP (no LoadBalancer provisioner)."""
+    rels = gateway_releases()
+    gw = rels[0]
+    assert gw.values.get("service.type") == "ClusterIP"
+
+
+def test_gateway_api_standard_crds_url_is_v1_6_0() -> None:
+    """WP07: standard-channel CRDs pinned at v1.6.0.
+
+    Operator decision 2026-07-08: 'pin them'. The bootstrap
+    applies this URL via `kubectl apply --server-side` in the
+    `gateway_crds` phase. If a future operator wants to bump
+    to v1.7.0, this is the single string to edit.
+    """
+    assert "v1.6.0/standard-install.yaml" in GATEWAY_API_STANDARD_CRDS_URL
+    assert "github.com/kubernetes-sigs/gateway-api" in GATEWAY_API_STANDARD_CRDS_URL

@@ -261,3 +261,96 @@ def apply_manifest(
         dry_run=dry_run,
     )
     subprocess.run(cmd, check=True)
+
+
+# ---------- WP07: Envoy Gateway (GatewayClass=envoy implementation) ----------
+#
+# Pinned to v1.8.2 (latest stable on
+# oci://docker.io/envoyproxy/gateway-helm as of 2026-07-08; see
+# specs/001-build-a-kubernetes-k3s-cluster-on-proxmo/research-log-v8.json
+# for the WP00 context7-auto-research evidence).
+#
+# The chart normally installs the upstream standard Gateway API CRDs
+# itself (crds.enabled=true). We disable that and apply the CRDs
+# separately in the `gateway_crds` bootstrap phase (pinned at
+# v1.6.0 via kubectl --server-side), so a CRD drift surfaces as a
+# `kubectl diff` rather than a silent helm-upgrade side-effect.
+#
+# GatewayClass=envoy is the chart default; we pin it explicitly so
+# the test_remaining_releases contract test catches any future
+# upstream rename.
+#
+# service.type=ClusterIP is the chart default and is correct for a
+# cluster without a LoadBalancer provisioner (the live Proxmox+k3s
+# clusters have none). The data-plane Service is reachable from
+# inside the cluster on its ClusterIP; the gateway_smoke phase
+# curls that ClusterIP, not a public hostname.
+
+
+def gateway_releases() -> list[HelmRelease]:
+    """WP07: Envoy Gateway as the GatewayClass=envoy implementation.
+
+    Returns a single HelmRelease. The bootstrap script's `_run_helm`
+    installs it after `remaining_releases` in the same
+    `install_or_upgrade` call so a single helm run lands every
+    release atomically (and the per-release audit log line is
+    preserved).
+
+    Values are minimal: the defaults cover k8s 1.28+, Cilium 1.16.1
+    coexistence, and the GatewayClass name the GitLab chart's
+    templates expect.
+
+    Pinned against the live host (cicd + apps clusters,
+    2026-07-08 cross_check in tools/versions.lock.yaml). The chart
+    OCI ref + values were verified via context7-auto-research and a
+    registry probe (research-log-v8.json).
+    """
+    return [
+        HelmRelease(
+            name="envoy-gateway",
+            chart="oci://docker.io/envoyproxy/gateway-helm",
+            namespace="envoy-gateway-system",
+            version="v1.8.2",
+            values={
+                # We install the standard CRDs ourselves (see
+                # bootstrap_cluster._run_gateway_crds), so disable
+                # the chart's own CRD install and the safe-upgrade
+                # policy to avoid a CRD-version drift between the
+                # two paths.
+                "crds.enabled": "false",
+                "crds.gatewayAPI.safeUpgradePolicy.enabled": "false",
+                # Pin the controller name explicitly so a chart
+                # default change surfaces as a contract-test
+                # failure.
+                "config.envoyGateway.gateway.controllerName": (
+                    "gateway.envoyproxy.io/gatewayclass-controller"
+                ),
+                # ClusterIP (default; explicit because we don't
+                # have a LoadBalancer provisioner and want drift
+                # visible).
+                "service.type": "ClusterIP",
+                # Single replica is correct for a 1-CP cluster;
+                # HPA is off by default.
+                "deployment.replicas": "1",
+            },
+        ),
+    ]
+
+
+# Standard-channel Gateway API CRD URL pinned at v1.6.0 (operator
+# decision 2026-07-08: "pin them"). Applied by the bootstrap's
+# `gateway_crds` phase via `kubectl apply --server-side`, which is
+# idempotent (server resolves conflicts; re-apply is a no-op).
+#
+# Why pin and ship the YAML at runtime (vs. vendoring under
+# infra/): the file is 20K lines, gitignored by our .gitignore for
+# third-party blobs, and we want a single source of truth so
+# `kubectl diff` after a future v1.7.0 release points exactly at
+# the upstream tarball. If we ever need offline-install support,
+# vendor the file at infra/clusters/<name>/manifests/_pinned/
+# gateway-api-v1.6.0-standard-install.yaml and switch the constant
+# below to a `Path` argument.
+GATEWAY_API_STANDARD_CRDS_URL = (
+    "https://github.com/kubernetes-sigs/gateway-api/releases/"
+    "download/v1.6.0/standard-install.yaml"
+)

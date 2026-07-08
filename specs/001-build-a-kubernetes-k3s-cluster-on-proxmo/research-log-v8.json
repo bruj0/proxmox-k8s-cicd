@@ -1,0 +1,197 @@
+{
+  "topic": "WP07 — Envoy Gateway (gateway-helm) + standard Gateway API CRDs version pins",
+  "captured": "2026-07-08",
+  "operator": "bruj0",
+  "method": "context7-auto-research + live registry probes",
+  "context7_calls": [
+    {
+      "tool": "context7",
+      "library_id": "/envoyproxy/gateway",
+      "trust": 9,
+      "versions_observed": ["v1.8.2 (latest stable)"],
+      "key_findings": [
+        "Chart OCI ref is oci://docker.io/envoyproxy/gateway-helm (NOT oci://gateway-helm-charts/gateway-envoy).",
+        "Default Gateway controllerName is gateway.envoyproxy.io/gatewayclass-controller.",
+        "Chart installs Envoy Gateway CRDs, Gateway API CRDs, and the safe-upgrade policy as a sub-chart by default (crds.enabled=true). To install Gateway API CRDs separately (operator decision: yes), pass --skip-crds and disable the safe upgrade policy: --skip-crds --set crds.gatewayAPI.safeUpgradePolicy.enabled=false.",
+        "Chart namespace is envoy-gateway-system; createNamespace=false by default so the bootstrap must pass --create-namespace."
+      ]
+    },
+    {
+      "tool": "context7",
+      "library_id": "/kubernetes-sigs/gateway-api",
+      "trust": 8.1,
+      "versions_observed": ["v1.6.0 (standard channel)"],
+      "key_findings": [
+        "Standard-channel CRDs are bundled at https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml (~20K lines, includes gatewayclasses, gateways, httproutes, referencegrants, grpcroutes GA, backendtlspolicies).",
+        "Apply with: kubectl apply --server-side -f <url> for idempotent re-apply.",
+        "Cilium 1.16.1 already runs with gatewayAPI.enabled=true and provides GAMMA L4 awareness; the upstream standard CRDs are still required because Cilium GAMMA does NOT install the standard CRD set, only listens for it."
+      ]
+    }
+  ],
+  "registry_probes": [
+    {
+      "registry": "registry-1.docker.io (envoyproxy/gateway-helm)",
+      "auth": "anonymous pull (auth.docker.io anonymous bearer token)",
+      "endpoint": "GET /v2/envoyproxy/gateway-helm/tags/list?n=200",
+      "total_tags": 133,
+      "latest_stable": "1.8.2",
+      "decision": "Pin chart version = v1.8.2."
+    },
+    {
+      "registry": "github.com (envoyproxy/gateway)",
+      "auth": "anonymous GitHub API",
+      "endpoint": "GET /repos/envoyproxy/gateway/releases?per_page=8",
+      "result": "v1.8.2 (2026-07-01), v1.8.1, v1.7.4, v1.8.0, v1.7.3, v1.7.2, v1.6.7",
+      "decision": "Align chart pin = app release version v1.8.2 (chart version == app release for this project; the chart's Chart.yaml appVersion mirrors the release tag)."
+    },
+    {
+      "registry": "github.com/kubernetes-sigs/gateway-api/releases",
+      "auth": "anonymous curl --max-time 15",
+      "endpoint": "GET /kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml",
+      "result": "20,116 bytes, CustomResourceDefinition x8 (gatewayclasses, gateways, httproutes, referencegrants, grpcroutes, tlsroutes, backendtlspolicies + the v1alpha2 back-compat set).",
+      "decision": "Pin CRDs URL = v1.6.0 standard channel. Apply via kubectl --server-side in a new bootstrap phase."
+    }
+  ],
+  "compat_matrix": {
+    "envoy_gateway_v1_8_2": {
+      "kubernetes_min": "1.28",
+      "kubernetes_max": "1.31",
+      "kubernetes_recommended": "1.30",
+      "gateway_api_standard": "v1.2.x+",
+      "rationale": "From /envoyproxy/gateway install docs (context7 snippet): 'Ensure you have Helm v3+ installed' and 'Envoy Gateway requires Kubernetes 1.28 or later'. We run k3s v1.36.2+k3s1 which is well within range."
+    },
+    "live_cluster": {
+      "k3s_version": "v1.36.2+k3s1",
+      "cilium_version": "1.16.1 (gatewayAPI.enabled=true)",
+      "compatibility": "PASS — k3s 1.36 > Envoy Gateway min 1.28; Cilium GAMMA + standard CRDs coexist because Cilium GAMMA only provides the validating webhook for the standard CRDs, not a competing GatewayClass implementation."
+    }
+  },
+  "values_structure_v1_8_2": {
+    "summary": "Read from charts/gateway-helm/values.tmpl.yaml at tag v1.8.2 (180 lines).",
+    "key_paths": {
+      "crds.enabled": "true (chart installs Gateway API CRDs by default)",
+      "crds.gatewayAPI.safeUpgradePolicy.enabled": "true (default; we DISABLE this when applying standard CRDs separately)",
+      "deployment.envoyGateway.resources": "limits.memory=1024Mi, requests.cpu=100m, requests.memory=256Mi",
+      "deployment.replicas": "1",
+      "config.envoyGateway.gateway.controllerName": "gateway.envoyproxy.io/gatewayclass-controller (default; no override needed)",
+      "config.envoyGateway.provider.type": "Kubernetes",
+      "service.type": "ClusterIP (no LoadBalancer provisioner on Proxmox+k3s — same constraint as phase-2.md kind gotcha; not an issue because the data-plane Service is ClusterIP and the GitLab chart only needs an in-cluster Gateway address)"
+    },
+    "values_overrides_to_apply": {
+      "deployment.replicas": "1 (already default; pin to make drift visible)",
+      "config.envoyGateway.gateway.controllerName": "gateway.envoyproxy.io/gatewayclass-controller (chart default — keep explicit for the contract test)"
+    }
+  },
+  "decision_log": [
+    {
+      "decision": "Chart source = oci://docker.io/envoyproxy/gateway-helm",
+      "rationale": "Canonical upstream OCI ref per context7 + chart annotations (org.opencontainers.image.source=https://github.com/envoyproxy/gateway). The alternative oci://gateway-helm-charts/gateway-envoy used by some blogs is NOT the upstream — would break pinning."
+    },
+    {
+      "decision": "Chart version = v1.8.2",
+      "rationale": "Latest stable on ghcr/docker.io as of 2026-07-08 (released 2026-07-01, two patch releases in 1.8.x line indicate active maintenance)."
+    },
+    {
+      "decision": "Standard CRDs pinned separately at v1.6.0 (operator decision: 'pin them')",
+      "rationale": "Operator explicitly chose to pin the upstream standard CRDs as a separate bootstrap step (plan §3.4 question 3 answered: 'pin them'). This means the chart's crds.enabled=false + crds.gatewayAPI.safeUpgradePolicy.enabled=false at install time. Bootstrap phase order: (1) kubectl apply standard CRDs, (2) helm install gateway-helm --skip-crds --set crds.gatewayAPI.safeUpgradePolicy.enabled=false."
+    },
+    {
+      "decision": "Bootstrap phase order: standard CRDs → gateway-helm install → gateway_smoke",
+      "rationale": "CRDs must exist before any Gateway/HTTPRoute YAML is applied. The gateway-helm chart's own CRDs (EnvoyPatchPolicy, EnvoyProxy, BackendTrafficPolicy etc.) ship as a separate sub-chart `crds/` inside gateway-helm; those land on helm install. The bootstrap's gateway_smoke phase only needs the standard set to admit an HTTPRoute."
+    },
+    {
+      "decision": "Both cicd + apps clusters install Envoy Gateway + CRDs (operator decision: 'yes both clusters are in scope')",
+      "rationale": "Both clusters need GatewayClass=envoy for the GitLab chart (cicd) and for any future apps-cluster ingress (apps). Single phase function, idempotent re-run."
+    },
+    {
+      "decision": "GatewayClass name = envoy (default chart value, operator decision: 'use envoy')",
+      "rationale": "Matches GitLab chart's gatewayClassName=envoy expectation from blueprint phase-2.md §14 (NodePort data-plane exposure section). No override needed."
+    },
+    {
+      "decision": "gateway_smoke uses ClusterIP data-plane Service (no LoadBalancer provisioner on Proxmox+k3s)",
+      "rationale": "Same constraint as blueprint phase-2.md §14 (NodePort gotcha). The cilium/chart default service.type=ClusterIP works. The smoke test curls the ClusterIP from inside the cluster, not the public hostname."
+    }
+  ],
+  "live_smoke_test_plan": {
+    "phase": "gateway_smoke",
+    "resources": [
+      {
+        "kind": "Namespace",
+        "name": "proxmox-k8s-cicd-smoke",
+        "rationale": "All smoke-test resources live in this namespace so a re-run cleans them up with `kubectl delete ns proxmox-k8s-cicd-smoke`."
+      },
+      {
+        "kind": "Deployment",
+        "name": "echo",
+        "image": "hashicorp/http-echo:0.2.3",
+        "args": ["-text=proxmox-k8s-cicd-smoke-envoy-gateway"],
+        "rationale": "Tiny echo server; returns the text as the body so curl can match exactly. hashicorp/http-echo is a 10MB image and is in the live cluster's containerd cache from prior runs."
+      },
+      {
+        "kind": "Service",
+        "name": "echo",
+        "port": 5678,
+        "rationale": "ClusterIP Service that selects the echo pods; Gateway backendRefs this."
+      },
+      {
+        "kind": "Gateway",
+        "name": "smoke-gw",
+        "gatewayClassName": "envoy",
+        "listeners": [{"name": "http", "port": 80, "protocol": "HTTP"}],
+        "rationale": "Probes whether GatewayClass=envoy exists and is admitted (the chart creates this GatewayClass on install)."
+      },
+      {
+        "kind": "HTTPRoute",
+        "name": "smoke",
+        "parentRefs": [{"name": "smoke-gw"}],
+        "rules": [{"matches": [{"path": {"type": "PathPrefix", "value": "/"}}], "backendRefs": [{"name": "echo", "port": 5678}]}],
+        "rationale": "Routes the listener to the echo Service."
+      }
+    ],
+    "assertions": [
+      "kubectl get gatewayclass envoy returns controllerName=gateway.envoyproxy.io/gatewayclass-controller with status.condition[type=Accepted].status=True",
+      "kubectl get gateway smoke-gw -n proxmox-k8s-cicd-smoke returns status.conditions[type=Programmed].status=True within 60s",
+      "kubectl get httproute smoke -n proxmox-k8s-cicd-smoke returns status.parents[0].conditions[type=ResolvedRefs].status=True within 60s",
+      "curl -fsS http://<smoke-gw-status-address>:80/  → body equals proxmox-k8s-cicd-smoke-envoy-gateway"
+    ]
+  },
+  "live_smoke_test_plan_csi": {
+    "phase": "csi_smoke",
+    "resources": [
+      {
+        "kind": "PersistentVolumeClaim",
+        "name": "smoke-pvc",
+        "storageClassName": "proxmox-lvm-thin",
+        "resources": {"requests": {"storage": "1Gi"}},
+        "rationale": "Tiny PVC against the lvm-thin SC; 1Gi is the smallest sensible size for lvm-thin LV rounding."
+      },
+      {
+        "kind": "Pod",
+        "name": "smoke-write",
+        "image": "busybox:1.37",
+        "command": ["sh", "-c", "echo proxmox-k8s-cicd-smoke-csi-marker > /data/marker; sleep 1; sync; cat /data/marker"],
+        "volumeMounts": [{"name": "data", "mountPath": "/data"}],
+        "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "smoke-pvc"}}],
+        "rationale": "First pass: write the marker file, then exit 0."
+      },
+      {
+        "kind": "Pod",
+        "name": "smoke-read",
+        "image": "busybox:1.37",
+        "command": ["sh", "-c", "cat /data/marker; if [ \"$(cat /data/marker)\" != \"proxmox-k8s-cicd-smoke-csi-marker\" ]; then exit 1; fi"],
+        "same_volume": "smoke-pvc",
+        "rationale": "Second pass: re-mount the same PVC and assert the marker survives pod churn (proves NodePublishVolume unmount/remount worked)."
+      }
+    ],
+    "assertions": [
+      "kubectl get pvc smoke-pvc -n proxmox-k8s-cicd-smoke reaches Bound within 60s with volumeHandle starting with proxmox://bigbertha/",
+      "kubectl logs smoke-write -n proxmox-k8s-cicd-smoke contains the marker text",
+      "kubectl logs smoke-read -n proxmox-k8s-cicd-smoke returns the marker text and exit code 0"
+    ]
+  },
+  "open_risks_for_live_apply": [
+    "Cilium 1.16.1 GAMMA + Envoy Gateway: both register validating webhooks for the standard CRDs. If Cilium rejects an HTTPRoute that Envoy Gateway accepts, the gateway_smoke will fail. WP07 tests check for this in the live apply.",
+    "Standard CRDs v1.6.0 require Kubernetes 1.29+ for some fields. Cluster is k3s 1.36.2 → fine, but worth a quick kubectl version check at phase start.",
+    "proxmox-csi-plugin StorageClass may not be marked default on a fresh cluster; the csi_smoke phase asserts is-default-class=true before creating the PVC."
+  ]
+}

@@ -35,6 +35,13 @@ renamed from `talos` to `cloudinit` when the OS pivot landed
 (2026-07-07), and `install_k3s` was added between `cloudinit` and
 `k3s` when the canonical install plan landed on 2026-07-08 (see
 `tools/lib/k3s_installer.py` + the Step 4a block below).
+**WP07 (2026-07-08) adds three sub-phases for GitLab-readiness**:
+`gateway_crds` (apply pinned standard Gateway API CRDs),
+`gateway_smoke` (real L7 round-trip via Envoy Gateway v1.8.2),
+and `csi_smoke` (real PVC round-trip via proxmox-csi-plugin).
+See Step 4b/4c below and
+[`docs/plan-envoy-gateway-and-smoke-tests.md`](../../../docs/plan-envoy-gateway-and-smoke-tests.md)
+for the full design.
 
 ## When to load this skill
 
@@ -1111,30 +1118,51 @@ This single invocation runs every sub-phase end-to-end:
    /healthz` must return `ok`. This phase proves the apiserver is
    reachable from the operator host via the same tunnel pattern the
    operator tools use.
-4. **`helm`** -- open an apiserver port-forward through PVE and
+4. **`gateway_crds`** (WP07) -- apply the pinned upstream standard
+   Gateway API CRDs (v1.6.0) via `kubectl apply --server-side -f
+   https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml`.
+   Reuses the PveSshProxy apiserver tunnel. Idempotent
+   (server-side apply resolves conflicts). Runs before `helm` so
+   the Envoy Gateway chart's `--skip-crds` install finds the CRDs
+   already present. See Step 4b.
+5. **`helm`** -- open an apiserver port-forward through PVE and
    install the two critical-path releases first (Cilium 1.16.1 +
    kube-vip 0.9.9), then the remaining four (proxmox-cloud-
    controller-manager 0.2.29, proxmox-csi-plugin 0.5.9, strrl/
    cloudflare-tunnel-ingress-controller 0.0.23, cert-manager
-   1.20.x), then `kubectl apply` the pre-rendered Traefik
-   `HelmChartConfig` from
+   1.20.x), then **Envoy Gateway v1.8.2** (WP07, GatewayClass=
+   envoy implementation), then `kubectl apply` the pre-rendered
+   Traefik `HelmChartConfig` from
    `infra/clusters/<name>/manifests/`. **All apiserver calls in this
    phase route through PveSshProxy** -- the CPs are on SDN
    10.0.0.0/24, the operator is on 10.0.10.0/24, so direct
    `kubectl`/`helm` from the operator host would fail with "no route
    to host".
-5. **`kubeconfig`** -- reuses the same PveSshProxy to fetch
+6. **`gateway_smoke`** (WP07) -- real L7 round-trip via Envoy
+   Gateway. Deploys a temporary `Gateway`+`HTTPRoute`+echo pod in
+   the `proxmox-k8s-cicd-smoke` namespace, curls the
+   Gateway's data-plane Service `ClusterIP` and asserts the echo
+   body comes back. Cleans up at the end. See Step 4b.
+7. **`kubeconfig`** -- reuses the same PveSshProxy to fetch
    `/etc/rancher/k3s/k3s.yaml` from the first CP, rewrites the
    `server:` URL to `https://127.0.0.1:<local_port>`, writes it to
    `infra/clusters/<name>/kubeconfig` AND merges it into
    `~/.kube/config` (timestamped backup first).
-6. **`host_ports`** -- assert no new DNAT rules have been added to
+8. **`csi_smoke`** (WP07) -- real PVC round-trip via proxmox-csi-
+   plugin. Creates a `PersistentVolumeClaim` against the
+   `proxmox-lvm-thin` StorageClass, writes a marker file via a
+   busybox pod, deletes the pod, re-creates it, and asserts the
+   marker survived pod churn (proves `NodePublishVolume`
+   remount works). Uses `~/.kube/config` directly (does NOT
+   reuse the apiserver tunnel; that tunnel is for the in-script
+   phases only). Cleans up at the end. See Step 4c.
+9. **`host_ports`** -- assert no new DNAT rules have been added to
    the PVE nft prerouting chain since the Phase-3 baseline capture
    (M2 misfit verifier).
-7. **`externalname`** -- apps-cluster only: apply the cross-cluster
-   ExternalName Services kustomization (WP06) that lets apps
-   workloads reach cicd Services via
-   `<svc>.cicd-system.svc.cluster.local` -> PowerDNS -> cicd VIP.
+10. **`externalname`** -- apps-cluster only: apply the cross-cluster
+    ExternalName Services kustomization (WP06) that lets apps
+    workloads reach cicd Services via
+    `<svc>.cicd-system.svc.cluster.local` -> PowerDNS -> cicd VIP.
 
 ### 4.1 -- Required environment
 
@@ -1201,9 +1229,20 @@ Assert ALL before proceeding:
    pods `Running` (no `kube-vip` static pod -- on Ubuntu+k3s the
    API VIP is owned by `kube-vip`'s userspace daemonset, not a Talos
    static pod manifest).
-3. `python -m tools.bootstrap_cluster --cluster cicd --phases all`
+3. `kubectl --context cicd get gatewayclass envoy` shows
+   `controllerName=gateway.envoyproxy.io/gatewayclass-controller`
+   with `Accepted=True` (WP07).
+4. `kubectl --context cicd -n envoy-gateway-system get pods` shows
+   `envoy-gateway-*` pods `Running` (WP07 controller + data plane).
+5. `kubectl --context cicd get sc proxmox-lvm-thin -o
+   jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}'`
+   returns `true` (WP07).
+6. `python -m tools.bootstrap_cluster --cluster cicd --phases all`
    exits 0 in <60 seconds (idempotent rerun -- every phase skips
    because state is already done).
+7. `kubectl --context cicd get pods -n proxmox-k8s-cicd-smoke`
+   returns `No resources found` (smoke namespaces are cleaned up
+   by the smoke phases).
 
 ## Step 4a -- install_k3s sub-phase
 
@@ -1347,6 +1386,150 @@ install_k3s failure.
    `python -m tools.bootstrap_cluster --cluster cicd --phases install_k3s`
    exits 0 in <10 s with `k3s.skip_install` log entries -- the
    upstream installer is never invoked a second time.
+
+## Step 4b -- gateway_crds + gateway_smoke sub-phases (WP07)
+
+Lands on 2026-07-08. Adds the GatewayClass=envoy implementation
+that the GitLab chart's `gateway-helm` sub-chart will program
+against. Two sub-phases:
+
+- **`gateway_crds`** applies the pinned upstream standard
+  Gateway API CRDs (v1.6.0) via `kubectl apply --server-side
+  -f <pinned URL>`. Reuses the PveSshProxy tunnel.
+- **`gateway_smoke`** runs AFTER `helm` (which installs Envoy
+  Gateway v1.8.2 via `oci://docker.io/envoyproxy/gateway-helm`).
+  Deploys a temporary Gateway + HTTPRoute + hashicorp/http-echo
+  pod in the `proxmox-k8s-cicd-smoke` namespace, curls the
+  Gateway's data-plane Service ClusterIP and asserts the echo
+  body comes back. Cleans up at the end.
+
+**Recipe per cluster (cicd + apps)**
+
+| Cluster | `gateway_crds` | `gateway_smoke` |
+|---|---|---|
+| `cicd` | apply standard CRDs (one-time) | round-trip via GatewayClass=envoy |
+| `apps`  | apply standard CRDs (idempotent) | round-trip via GatewayClass=envoy |
+
+Both clusters install Envoy Gateway and run the smoke test
+(operator decision 2026-07-08: "yes both clusters are in scope").
+
+### 4b.1 -- Why pin the standard CRDs separately?
+
+The Envoy Gateway chart normally installs the standard
+Gateway API CRDs as a sub-chart (`crds.enabled=true` by
+default). We disable that (`crds.enabled=false` +
+`crds.gatewayAPI.safeUpgradePolicy.enabled=false`) and apply
+the pinned URL ourselves via `kubectl apply --server-side`
+for three reasons:
+
+1. **Reproducibility** -- the bootstrap's `tools/versions.lock.yaml`
+   pins the exact URL (`v1.6.0/standard-install.yaml`); a
+   future bump to `v1.7.0` is a single edit, not a chart
+   version bump.
+2. **Drift detection** -- if a future operator applies a
+   newer CRD manifest by hand, the next bootstrap run surfaces
+   the diff via `kubectl diff` rather than a silent helm
+   upgrade.
+3. **Cilium GAMMA coexistence** -- Cilium 1.16.1 runs with
+   `gatewayAPI.enabled=true` and registers a validating
+   webhook for the standard CRDs. The chart's CRD install
+   could race with Cilium's webhook; pinning + server-side
+   apply orders the operations deterministically.
+
+The chart still ships its own Envoy-specific CRDs
+(`EnvoyProxy`, `BackendTrafficPolicy`, `EnvoyPatchPolicy`,
+etc.) as a `crds/` sub-chart inside `gateway-helm`. Those
+land on `helm install` (no override).
+
+### 4b.2 -- Idempotency
+
+Both sub-phases are idempotent:
+
+- `gateway_crds`: `kubectl apply --server-side` resolves
+  conflicts and no-ops on re-apply.
+- `gateway_smoke`: detects existing smoke namespace + echo
+  pod and re-asserts the curl. On a successful curl, the
+  namespace is always deleted so the cluster ends clean.
+
+```bash
+# operator-driven invocation (canonical; runs both phases)
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster cicd \
+  --phases cloudinit,install_k3s,k3s,gateway_crds,helm,gateway_smoke
+
+# phase-only re-run on a healthy cluster is a no-op
+SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
+  python -m tools.bootstrap_cluster --cluster cicd \
+  --phases gateway_crds,gateway_smoke
+# Expect: log line "bootstrap.skip phase=gateway_crds reason=already_done"
+# followed by "bootstrap.skip phase=gateway_smoke reason=already_done"
+```
+
+### 4b.3 -- Live-host gotchas (2026-07-08)
+
+(Reserved for the first-apply lessons. Update this section
+on the same day as the first live apply; pin the fix in
+`tools/tests/test_remaining_releases.py` + the
+`versions.lock.yaml::cross_check.envoy_gateway_install_<date>`
+entry.)
+
+**4b.3.1 -- `oci://docker.io/envoyproxy/gateway-helm` is the
+canonical OCI ref.** Not `oci://gateway-helm-charts/gateway-envoy`
+(some blog posts use that; it does not exist on the registry
+and helm fails with `no chart version found for
+gateway-envoy-<x.y.z>`). Pin is asserted by
+`test_gateway_releases_returns_envoy_gateway` in
+`tools/tests/test_remaining_releases.py`.
+
+**4b.3.2 -- The chart's `service.type=ClusterIP` is the right
+default for Proxmox+k3s.** No LoadBalancer provisioner exists
+on these clusters; a `LoadBalancer`-typed data-plane Service
+would never get a `status.loadBalancer` entry and the
+Gateway would report `AddressNotUsable`. Pin is asserted by
+`test_gateway_releases_uses_clusterip_service`.
+
+## Step 4c -- csi_smoke sub-phase (WP07)
+
+Lands on 2026-07-08. One sub-phase:
+
+- **`csi_smoke`** runs AFTER `kubeconfig` (uses the operator's
+  `~/.kube/config`, NOT the in-script PveSshProxy tunnel). Creates
+  a `PersistentVolumeClaim` against `storageclass=
+  proxmox-lvm-thin`, writes a marker file via a busybox pod,
+  deletes the pod, re-creates it, and asserts the marker
+  survived pod churn (proves `NodePublishVolume` re-mount
+  works). Cleans up at the end.
+
+### 4c.1 -- Why a real PVC round-trip?
+
+The `helm` phase asserts the proxmox-csi-plugin pods are
+`Running` and the `proxmox-lvm-thin` StorageClass exists,
+but neither of those proves the plugin actually provisions
+volumes. The GitLab chart will create PVs for Gitaly +
+PostgreSQL + Redis + MinIO; a StorageClass that returns
+`Pending` indefinitely would surface as a GitLab chart
+install failure (`pod has unbound immediate PersistentVolumeClaims`).
+The smoke test catches that class of failure before the
+GitLab chart install runs.
+
+### 4c.2 -- Idempotency
+
+The phase materialises the smoke manifest at
+`infra/clusters/<name>/manifests/_smoke/csi-smoke.yaml`,
+applies it, and cleans up the `proxmox-k8s-cicd-smoke`
+namespace at the end. On a re-run:
+
+- If the smoke namespace still exists from a prior failed
+  run, the phase applies the manifest again (idempotent
+  `kubectl apply`) and re-asserts the lifecycle.
+- If the PVC is already `Bound`, the phase skips the
+  `kubectl wait` and proceeds to the writer pod.
+
+### 4c.3 -- Live-host gotchas (2026-07-08)
+
+(Reserved for the first-apply lessons. Update this section
+on the same day as the first live apply; pin the fix in
+`tools/versions.lock.yaml::cross_check.csi_smoke_roundtrip_<date>`.)
 
 ## Step 5 -- Phase 5: Final verification (SC-001..SC-006)
 

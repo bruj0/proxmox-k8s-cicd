@@ -1145,3 +1145,93 @@ def test_sync_dns_to_sdn_script_exists() -> None:
     assert "10.in-addr.arpa" in text, (
         "sync_dns_to_sdn.py must target the 10.in-addr.arpa. reverse zone"
     )
+
+
+# ---------- WP07: Envoy Gateway + smoke tests ----------
+
+
+def test_skill_documents_envoy_gateway_phase() -> None:
+    """WP07: SKILL.md Step 4b must document Envoy Gateway install.
+
+    The skill is the operator playbook; if the install recipe
+    is undocumented the operator falls back to blog posts
+    (which often pin a stale chart version). The contract:
+    the skill must mention both the OCI chart ref
+    (oci://docker.io/envoyproxy/gateway-helm) and the version
+    pin location (tools/versions.lock.yaml).
+    """
+    text = SKILL_PATH.read_text()
+    assert "oci://docker.io/envoyproxy/gateway-helm" in text, (
+        "Step 4b must pin the canonical OCI ref for Envoy Gateway; "
+        "the plan originally guessed oci://gateway-helm-charts/gateway-envoy "
+        "which does not exist on the registry."
+    )
+    assert "v1.8.2" in text, (
+        "Step 4b must pin the chart version (v1.8.2, latest stable as of 2026-07-08)."
+    )
+    assert "tools/versions.lock.yaml" in text, (
+        "Step 4b must mention where the version pin lives."
+    )
+
+
+def test_skill_documents_csi_smoke_phase() -> None:
+    """WP07: SKILL.md Step 4c must document the csi_smoke phase.
+
+    The PVC round-trip is the only thing that proves
+    proxmox-csi-plugin can serve a GitLab chart install.
+    If the skill omits this, an operator who skips the
+    smoke test will hit `pod has unbound
+    PersistentVolumeClaims` deep inside the GitLab chart
+    install.
+    """
+    text = SKILL_PATH.read_text()
+    assert "csi_smoke" in text, (
+        "Step 4c must include the csi_smoke phase name."
+    )
+    assert "proxmox-lvm-thin" in text, (
+        "Step 4c must name the StorageClass the smoke test exercises."
+    )
+    # The smoke test asserts the marker file survives pod
+    # churn; the skill must explain that invariant.
+    assert "marker" in text.lower() and "pod churn" in text.lower(), (
+        "Step 4c must explain the marker-file-survives-pod-churn invariant."
+    )
+
+
+def test_skill_documents_gateway_api_standard_crds_pin() -> None:
+    """WP07: SKILL.md must document the pinned standard CRDs URL.
+
+    Operator decision 2026-07-08: 'pin them'. The skill
+    must name the URL and the version so a future bump is
+    a single edit, not a chart-version bump.
+    """
+    text = SKILL_PATH.read_text()
+    assert "v1.6.0/standard-install.yaml" in text, (
+        "Step 4b must name the pinned standard CRDs URL (v1.6.0)."
+    )
+    assert "kubectl apply --server-side" in text, (
+        "Step 4b must show the apply command (server-side for idempotency)."
+    )
+
+
+def test_skill_documents_10_phase_ordering() -> None:
+    """WP07: the single-command list in Step 4.0 must include all 10 phases."""
+    text = SKILL_PATH.read_text()
+    # The single-command list is numbered 1..10 in Step 4.0.
+    # The 10 phases are: cloudinit, install_k3s, k3s, gateway_crds,
+    # helm, gateway_smoke, kubeconfig, csi_smoke, host_ports, externalname.
+    for phase in (
+        "cloudinit",
+        "install_k3s",
+        "k3s",
+        "gateway_crds",
+        "helm",
+        "gateway_smoke",
+        "kubeconfig",
+        "csi_smoke",
+        "host_ports",
+        "externalname",
+    ):
+        assert phase in text, (
+            f"Step 4.0 must mention phase {phase!r} in the numbered list."
+        )

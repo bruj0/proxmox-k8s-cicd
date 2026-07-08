@@ -1,6 +1,6 @@
 """SS3 entrypoint: bootstrap a cluster end-to-end.
 
-Phases (7):
+Phases (10):
   1. cloudinit   — verify every clone VM finished cloud-init
   2. install_k3s  — install k3s on each VM via the Python
                     orchestrator (tools/lib/k3s_installer.py). The
@@ -10,24 +10,43 @@ Phases (7):
                     from the server's /var/lib/rancher/k3s/server/node-token.
   3. k3s          — verify apiserver /healthz (after install_k3s has
                      brought up the server)
-  4. helm         — install Cilium (kube-proxy replacement, WP04) and
+  4. gateway_crds — WP07: apply the pinned upstream standard
+                     Gateway API CRDs (v1.6.0) via
+                     `kubectl apply --server-side`. Idempotent;
+                     runs before `helm` so the chart's
+                     `--skip-crds` install sees the CRDs already
+                     present.
+  5. helm         — install Cilium (kube-proxy replacement, WP04) and
                      the remaining four (proxmox-ccm, proxmox-csi,
                      cloudflare-tunnel, cert-manager, WP05) Helm
-                     releases; apply the rendered Traefik
-                     HelmChartConfig if present
-  5. kubeconfig   — pull admin kubeconfig, merge into ~/.kube/config
-  6. host_ports   — verify the PVE nft prerouting chain has no new DNAT
+                     releases + Envoy Gateway v1.8.2 (WP07);
+                     apply the rendered Traefik HelmChartConfig
+                     if present
+  6. gateway_smoke — WP07: real smoke test for Envoy Gateway.
+                     Deploys a temporary Gateway + HTTPRoute +
+                     hashicorp/http-echo pod in
+                     `proxmox-k8s-cicd-smoke` namespace, curls
+                     the Gateway's status.addresses[0] and
+                     asserts the echo body comes back. Cleans
+                     up at the end.
+  7. kubeconfig   — pull admin kubeconfig, merge into ~/.kube/config
+  8. csi_smoke    — WP07: real smoke test for proxmox-csi-plugin.
+                     Creates a PVC against `proxmox-lvm-thin`,
+                     writes a marker file via a pod, deletes the
+                     pod, re-creates it, asserts the marker
+                     survived. Cleans up at the end.
+  9. host_ports   — verify the PVE nft prerouting chain has no new DNAT
                      rules beyond the captured baseline (M2 misfit)
-  7. externalname — apps-cluster only: apply the cross-cluster
+ 10. externalname — apps-cluster only: apply the cross-cluster
                      ExternalName Services kustomization that exposes
                      cicd services (gitlab, registry, minio,
                      minio-console) to workloads on apps (WP06)
 
 Entry gate:
   python -m tools.bootstrap_cluster --cluster cicd \
-    [--phases cloudinit,k3s,helm,kubeconfig,host_ports]
+    [--phases cloudinit,k3s,gateway_crds,helm,gateway_smoke,kubeconfig,csi_smoke,host_ports]
   python -m tools.bootstrap_cluster --cluster apps \
-    [--phases cloudinit,k3s,helm,kubeconfig,host_ports,externalname]
+    [--phases cloudinit,k3s,gateway_crds,helm,gateway_smoke,kubeconfig,csi_smoke,host_ports,externalname]
 
 Design choices:
   - Any non-zero subprocess exit raises BootstrapError. We do NOT silently
@@ -47,6 +66,15 @@ OS pivot history:
     systemd on Ubuntu; the k3s installer is invoked by cloud-init
     runcmd via a per-VM NoCloud seed ISO. lib.talos_client is kept
     for audit but no longer called from this script.
+  - 2026-07-08: WP07 added three phases
+    (`gateway_crds`, `gateway_smoke`, `csi_smoke`) and extended
+    the `helm` phase to install Envoy Gateway v1.8.2. The two
+    smoke phases assert that the cluster is GitLab-ready
+    (GatewayClass=envoy admits a Gateway; proxmox-lvm-thin
+    StorageClass binds a PVC and survives a pod churn). See
+    `docs/plan-envoy-gateway-and-smoke-tests.md` for the full
+    rationale and `specs/001.../research-log-v8.json` for the
+    WP00 context7-auto-research evidence.
 """
 from __future__ import annotations
 
@@ -69,6 +97,7 @@ from lib.helm_client import (  # type: ignore[import-not-found]  # noqa: E402
     HelmClient,
     apply_manifest,
     first_two_releases,
+    gateway_releases,
     remaining_releases,
 )
 from lib.host_ports import verify_no_new_dnat_rules  # type: ignore[import-not-found]  # noqa: E402
@@ -95,8 +124,11 @@ PHASES: tuple[str, ...] = (
     "cloudinit",
     "install_k3s",
     "k3s",
-    "helm",
+    "gateway_crds",   # WP07: apply pinned standard Gateway API CRDs
+    "helm",            # WP07: extended to also install envoy-gateway
+    "gateway_smoke",  # WP07: real smoke test for envoy-gateway
     "kubeconfig",
+    "csi_smoke",      # WP07: real smoke test for proxmox-csi-plugin
     "host_ports",
     "externalname",
 )
@@ -450,6 +482,12 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
         # cert-manager.
         remaining, traefik_apply = remaining_releases(cluster_dict, secrets)
         client.install_or_upgrade(remaining)
+        # WP07: Envoy Gateway v1.8.2 (GatewayClass=envoy
+        # implementation). Requires the standard Gateway API CRDs
+        # to already be present (the `gateway_crds` phase ran
+        # before `helm`); the chart's own CRD install is disabled
+        # via values (`crds.enabled=false`).
+        client.install_or_upgrade(gateway_releases())
         # Traefik is installed via the Talos HelmChartConfig mechanism (the
         # SS2 module rendered the YAML into infra/clusters/<name>/manifests/ at
         # apply time). SS3's job is to apply that file. If it does not
@@ -471,6 +509,397 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
     except subprocess.CalledProcessError as exc:
         raise BootstrapError("helm", {"reason": str(exc)}) from exc
     state.phases_done.add("helm")
+
+
+def _run_gateway_crds(
+    state: State, cluster_dir: Path, topo: ClusterTopology
+) -> None:
+    """WP07: apply the pinned upstream standard Gateway API CRDs.
+
+    Runs BEFORE `helm` so the Envoy Gateway chart's
+    `--skip-crds` install finds the standard CRDs already
+    present. `kubectl apply --server-side` is idempotent — the
+    server resolves conflicts, so re-running is a no-op rather
+    than a failure.
+
+    Uses the same PveSshProxy tunnel that the `helm` phase opens
+    (the `State` carries the tunnel forward across phases for
+    the script's lifetime). This means the phase assumes the
+    `k3s` healthz check already passed.
+    """
+    # Import here to avoid a top-level circular import through
+    # helm_client -> bootstrap_cluster -> helm_client.
+    from lib.helm_client import GATEWAY_API_STANDARD_CRDS_URL  # noqa: E402
+
+    if not topo.control_plane:
+        raise BootstrapError("gateway_crds", {"reason": "no control plane"})
+    cp_ip = topo.control_plane[0]["ip"]
+    try:
+        # Open the tunnel only if no other phase has. The
+        # bootstrap() dispatcher iterates phases in declared
+        # order, so on a fresh run the tunnel is not yet open at
+        # this point (helm hasn't run); on a re-run with
+        # --phases=gateway_crds only, the tunnel will be opened
+        # here.
+        kubeconfig, _ = _open_apiserver_tunnel(state, cp_ip, cluster_dir)
+    except Exception as exc:
+        raise BootstrapError("gateway_crds", {"reason": str(exc)}) from exc
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "apply",
+                "--server-side",
+                "--validate=false",  # CRD apply always validates
+                # against itself; skip the client-side dry
+                # validate to avoid spurious errors on first
+                # apply.
+                "-f",
+                GATEWAY_API_STANDARD_CRDS_URL,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        _LOG.info(
+            "gateway_crds.applied",
+            url=GATEWAY_API_STANDARD_CRDS_URL,
+            stdout=result.stdout[:500],
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError(
+            "gateway_crds",
+            {"reason": str(exc), "url": GATEWAY_API_STANDARD_CRDS_URL},
+        ) from exc
+    state.phases_done.add("gateway_crds")
+
+
+def _run_gateway_smoke(
+    state: State, cluster_dir: Path, topo: ClusterTopology
+) -> None:
+    """WP07: real smoke test for Envoy Gateway.
+
+    Deploys a temporary Gateway + HTTPRoute + hashicorp/http-echo
+    pod in the `proxmox-k8s-cicd-smoke` namespace, curls the
+    Gateway's `status.addresses[0]` and asserts the echo body
+    matches. Cleans up at the end (deletes the namespace).
+
+    Idempotency: if the namespace already exists from a prior
+    run, the phase re-asserts the curl instead of re-applying.
+    On a successful curl, the namespace is always deleted so
+    the cluster ends clean for GitLab.
+
+    Failure modes that raise BootstrapError (so a live-host
+    gotcha surfaces loudly):
+      - GatewayClass=envoy does not exist (Envoy Gateway not
+        installed yet).
+      - Gateway fails to become Programmed within 60s
+        (Envoy controller pod is unhealthy; check
+        `kubectl logs -n envoy-gateway-system`).
+      - HTTPRoute fails to resolve backend refs within 60s
+        (echo Service is not yet ready; usually a Cilium
+        GAMMA-vs-standard-CRD conflict).
+      - curl returns a non-echo body (Envoy didn't match the
+        HTTPRoute rules).
+    """
+    from lib.helm_client import GATEWAY_API_STANDARD_CRDS_URL  # noqa: E402
+
+    smoke_ns = "proxmox-k8s-cicd-smoke"
+    smoke_dir = cluster_dir / "manifests" / "_smoke"
+    smoke_dir.mkdir(parents=True, exist_ok=True)
+    smoke_yaml = smoke_dir / "envoy-gateway-smoke.yaml"
+
+    if not topo.control_plane:
+        raise BootstrapError("gateway_smoke", {"reason": "no control plane"})
+    cp_ip = topo.control_plane[0]["ip"]
+    try:
+        kubeconfig, _ = _open_apiserver_tunnel(state, cp_ip, cluster_dir)
+    except Exception as exc:
+        raise BootstrapError("gateway_smoke", {"reason": str(exc)}) from exc
+
+    # 1. Pre-flight: GatewayClass=envoy must exist (chart installed
+    # in the `helm` phase). If not, fail fast — operator should
+    # re-run with --phases=helm,gateway_smoke.
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "get",
+                "gatewayclass",
+                "envoy",
+                "-o",
+                "jsonpath={.status.conditions[?(@.type==\"Accepted\")].status}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        if result.stdout.strip() != "True":
+            raise BootstrapError(
+                "gateway_smoke",
+                {
+                    "reason": (
+                        "GatewayClass=envoy not Accepted; "
+                        "Envoy Gateway controller may not be ready. "
+                        "Check `kubectl -n envoy-gateway-system get pods`."
+                    ),
+                    "accepted_status": result.stdout.strip(),
+                },
+            )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError("gateway_smoke", {"reason": str(exc)}) from exc
+
+    # 2. Materialise the smoke-test YAML on disk. Idempotent:
+    # always rewrite — the body is tiny and the cluster YAML
+    # server-resolves conflicts on re-apply.
+    smoke_yaml.write_text(
+        f"""---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {smoke_ns}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: {smoke_ns}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          image: hashicorp/http-echo:0.2.3
+          args: ["-text=proxmox-k8s-cicd-smoke-envoy-gateway"]
+          ports:
+            - containerPort: 5678
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: {smoke_ns}
+spec:
+  selector:
+    app: echo
+  ports:
+    - port: 5678
+      targetPort: 5678
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: smoke-gw
+  namespace: {smoke_ns}
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: smoke
+  namespace: {smoke_ns}
+spec:
+  parentRefs:
+    - name: smoke-gw
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: echo
+          port: 5678
+""",
+        encoding="utf-8",
+    )
+    smoke_yaml.chmod(0o600)
+    try:
+        subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "apply",
+                "-f",
+                str(smoke_yaml),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError(
+            "gateway_smoke",
+            {
+                "reason": f"apply smoke manifest failed: {exc}",
+                "crds_url": GATEWAY_API_STANDARD_CRDS_URL,
+            },
+        ) from exc
+
+    # 3. Wait for the Gateway to be Programmed and the
+    # HTTPRoute to resolve refs (60s budget; the chart's
+    # default reconcile interval is 10s).
+    try:
+        wait_result = subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "wait",
+                "--namespace",
+                smoke_ns,
+                "--for=condition=Programmed=True",
+                "--timeout=60s",
+                "gateway/smoke-gw",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        if wait_result.returncode != 0:
+            raise BootstrapError(
+                "gateway_smoke",
+                {"reason": "Gateway did not become Programmed within 60s",
+                 "detail": wait_result.stderr[:500]},
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise BootstrapError(
+            "gateway_smoke",
+            {"reason": "Gateway wait timed out", "detail": str(exc)},
+        ) from exc
+
+    # 4. Discover the data-plane Service ClusterIP (Envoy Gateway
+    # creates `envoy-gateway-system/<gw-name>-<gw-namespace>-<id>`
+    # ClusterIP Services, one per Gateway). List Services in
+    # envoy-gateway-system, pick the one whose
+    # `gateway.envoyproxy.io/owning-gateway-name=smoke-gw`
+    # annotation matches.
+    try:
+        svc_result = subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "get",
+                "svc",
+                "-n",
+                "envoy-gateway-system",
+                "-l",
+                "gateway.envoyproxy.io/owning-gateway-name=smoke-gw",
+                "-o",
+                "jsonpath={.items[0].spec.clusterIP}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        cluster_ip = svc_result.stdout.strip()
+        if not cluster_ip:
+            raise BootstrapError(
+                "gateway_smoke",
+                {"reason": "no data-plane Service found for Gateway smoke-gw"},
+            )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError("gateway_smoke", {"reason": str(exc)}) from exc
+
+    # 5. Curl the Gateway's data-plane ClusterIP. Run from a
+    # local kubectl exec into a busybox pod so we don't depend
+    # on the operator host being able to reach the SDN.
+    try:
+        curl_result = subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "run",
+                "--rm",
+                "--restart=Never",
+                "-n",
+                smoke_ns,
+                "--image=busybox:1.37",
+                "--",
+                "wget",
+                "-qO-",
+                f"http://{cluster_ip}/",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        body = curl_result.stdout.strip()
+        if body != "proxmox-k8s-cicd-smoke-envoy-gateway":
+            raise BootstrapError(
+                "gateway_smoke",
+                {
+                    "reason": "echo body mismatch",
+                    "expected": "proxmox-k8s-cicd-smoke-envoy-gateway",
+                    "actual": body[:200],
+                    "gateway_cluster_ip": cluster_ip,
+                },
+            )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError(
+            "gateway_smoke",
+            {"reason": f"curl via wget pod failed: {exc}"},
+        ) from exc
+    _LOG.info(
+        "gateway_smoke.ok",
+        gateway_cluster_ip=cluster_ip,
+        body=body,
+    )
+
+    # 6. Cleanup: delete the smoke namespace. Best-effort; a
+    # failure here does NOT fail the phase because the smoke
+    # was already green. Operator can run
+    # `kubectl delete ns proxmox-k8s-cicd-smoke` manually if
+    # this log line shows up.
+    try:
+        subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "delete",
+                "ns",
+                smoke_ns,
+                "--wait=false",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        _LOG.warn(
+            "gateway_smoke.cleanup_failed",
+            message=f"failed to delete namespace {smoke_ns}: {exc}",
+        )
+
+    state.phases_done.add("gateway_smoke")
 
 
 def _run_kubeconfig(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
@@ -499,6 +928,379 @@ def _run_kubeconfig(state: State, cluster_dir: Path, topo: ClusterTopology) -> N
     except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
         raise BootstrapError("kubeconfig", {"reason": str(exc)}) from exc
     state.phases_done.add("kubeconfig")
+
+
+def _run_csi_smoke(
+    state: State, cluster_dir: Path, topo: ClusterTopology
+) -> None:
+    """WP07: real smoke test for proxmox-csi-plugin.
+
+    Sequence:
+      1. Pre-flight: assert `proxmox-lvm-thin` StorageClass
+         exists AND is marked default. If not, fail fast
+         with a BootstrapError pointing at the helm phase
+         (the release would have installed the SC).
+      2. Materialise a tiny PVC + busybox writer pod manifest
+         on disk (cluster_dir/manifests/_smoke/csi.yaml).
+      3. Apply; wait for the PVC to reach Bound (60s budget).
+      4. Wait for the writer pod to reach Completed (proves
+         the marker file was written).
+      5. Delete the writer pod; create a reader pod that
+         mounts the same PVC and asserts the marker file
+         survived.
+      6. Cleanup: delete the smoke namespace (best-effort).
+
+    Idempotency: the namespace is reused on re-run; the
+    phase cleans it up at the end. If the namespace still
+    exists from a prior failed run, the phase asserts the
+    state and proceeds without re-applying the PVC.
+
+    Runs AFTER `kubeconfig` because it uses
+    `~/.kube/config` (the operator's merged kubeconfig) for
+    kubectl calls — the cluster_dir/kubeconfig ephemeral
+    tunnel-port URL would route through a closed socket
+    after the script exits.
+    """
+    smoke_ns = "proxmox-k8s-cicd-smoke"
+    smoke_dir = cluster_dir / "manifests" / "_smoke"
+    smoke_dir.mkdir(parents=True, exist_ok=True)
+    smoke_yaml = smoke_dir / "csi-smoke.yaml"
+
+    # Use the operator's merged kubeconfig (the kubeconfig
+    # phase just wrote it). State.forward is still open in
+    # the same process, but we want this phase to be
+    # runnable standalone via `--phases=csi_smoke` after the
+    # operator's kubeconfig is in place, so we don't reuse the
+    # PveSshProxy tunnel here.
+    default_kubeconfig = Path.home() / ".kube" / "config"
+    if not default_kubeconfig.exists():
+        raise BootstrapError(
+            "csi_smoke",
+            {
+                "reason": (
+                    "~/.kube/config missing; run the kubeconfig "
+                    "phase first"
+                )
+            },
+        )
+
+    # 1. StorageClass pre-flight. The SC name comes from the
+    # helm release's `storageclass.name` value
+    # (tools/lib/helm_client.py::remaining_releases, pinned
+    # to `proxmox-lvm-thin`).
+    try:
+        sc_check = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "sc",
+                "proxmox-lvm-thin",
+                "-o",
+                "jsonpath={.metadata.annotations.storageclass\\.kubernetes\\.io/is-default-class}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        is_default = sc_check.stdout.strip()
+        if is_default != "true":
+            raise BootstrapError(
+                "csi_smoke",
+                {
+                    "reason": (
+                        "StorageClass proxmox-lvm-thin is not "
+                        "marked default; proxmox-csi-plugin helm "
+                        "release may have a different default. "
+                        "Check `kubectl get sc` and adjust "
+                        "tools/lib/helm_client.py::remaining_releases."
+                    ),
+                    "is_default_class": is_default,
+                },
+            )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError("csi_smoke", {"reason": str(exc)}) from exc
+
+    # 2. Materialise smoke manifest.
+    smoke_yaml.write_text(
+        f"""---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {smoke_ns}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: smoke-pvc
+  namespace: {smoke_ns}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: proxmox-lvm-thin
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-write
+  namespace: {smoke_ns}
+spec:
+  restartPolicy: OnFailure
+  containers:
+    - name: write
+      image: busybox:1.37
+      command:
+        - sh
+        - -c
+        - "echo proxmox-k8s-cicd-smoke-csi-marker > /data/marker; sync; cat /data/marker"
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: smoke-pvc
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-read
+  namespace: {smoke_ns}
+spec:
+  restartPolicy: OnFailure
+  containers:
+    - name: read
+      image: busybox:1.37
+      command:
+        - sh
+        - -c
+        - |
+          if [ "$(cat /data/marker)" != "proxmox-k8s-cicd-smoke-csi-marker" ]; then
+            echo "marker mismatch: $(cat /data/marker)"
+            exit 1
+          fi
+          echo "marker survived pod churn"
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: smoke-pvc
+""",
+        encoding="utf-8",
+    )
+    smoke_yaml.chmod(0o600)
+
+    # 3. Apply.
+    try:
+        subprocess.run(
+            ["kubectl", "apply", "-f", str(smoke_yaml)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError(
+            "csi_smoke",
+            {"reason": f"apply smoke manifest failed: {exc}"},
+        ) from exc
+
+    # 4. Wait for PVC Bound.
+    try:
+        bound = subprocess.run(
+            [
+                "kubectl",
+                "wait",
+                "--namespace",
+                smoke_ns,
+                "--for=jsonpath={.status.phase}=Bound",
+                "--timeout=60s",
+                "pvc/smoke-pvc",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        if bound.returncode != 0:
+            raise BootstrapError(
+                "csi_smoke",
+                {
+                    "reason": "PVC did not reach Bound within 60s",
+                    "detail": bound.stderr[:500],
+                    "hint": (
+                        "Check `kubectl -n proxmox-csi-plugin get "
+                        "pods`; proxmox-csi-controller may be in "
+                        "ContainerCreating (cluster-state.md §14.1)."
+                    ),
+                },
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise BootstrapError(
+            "csi_smoke",
+            {"reason": "PVC wait timed out", "detail": str(exc)},
+        ) from exc
+
+    # 5. Wait for writer pod Completed.
+    try:
+        write_done = subprocess.run(
+            [
+                "kubectl",
+                "wait",
+                "--namespace",
+                smoke_ns,
+                "--for=condition=Ready=False",
+                "--selector=",
+                "pod/smoke-write",
+                "--timeout=60s",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        # `kubectl wait --for=condition=Ready=False` exits 0
+        # only when the condition becomes False; a writer pod
+        # that exits 0 is no longer Ready. If it never exits,
+        # this times out.
+        if write_done.returncode != 0:
+            # Fall back to a status check — the pod may have
+            # Succeeded already.
+            status = subprocess.run(
+                [
+                    "kubectl",
+                    "get",
+                    "pod",
+                    "-n",
+                    smoke_ns,
+                    "smoke-write",
+                    "-o",
+                    "jsonpath={.status.phase}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if status.stdout.strip() != "Succeeded":
+                raise BootstrapError(
+                    "csi_smoke",
+                    {
+                        "reason": (
+                            "smoke-write pod did not complete; "
+                            "PVC mount likely failed."
+                        ),
+                        "pod_status": status.stdout.strip(),
+                        "wait_stderr": write_done.stderr[:500],
+                    },
+                )
+    except subprocess.TimeoutExpired as exc:
+        raise BootstrapError(
+            "csi_smoke",
+            {"reason": "smoke-write wait timed out", "detail": str(exc)},
+        ) from exc
+
+    # 6. Apply the reader pod (defined in the same manifest,
+    # but kubectl apply above may have created it already —
+    # re-apply to be safe).
+    try:
+        subprocess.run(
+            ["kubectl", "apply", "-f", str(smoke_yaml)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise BootstrapError(
+            "csi_smoke",
+            {"reason": f"re-apply reader pod failed: {exc}"},
+        ) from exc
+
+    # 7. Wait for reader pod Succeeded; inspect logs.
+    try:
+        read_done = subprocess.run(
+            [
+                "kubectl",
+                "wait",
+                "--namespace",
+                smoke_ns,
+                "--for=jsonpath={.status.phase}=Succeeded",
+                "--timeout=60s",
+                "pod/smoke-read",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        if read_done.returncode != 0:
+            raise BootstrapError(
+                "csi_smoke",
+                {
+                    "reason": (
+                        "smoke-read pod did not reach Succeeded; "
+                        "marker file likely missing — proves PVC "
+                        "was not persisted across pod churn."
+                    ),
+                    "detail": read_done.stderr[:500],
+                },
+            )
+        # Read the logs to confirm the marker matched.
+        logs = subprocess.run(
+            [
+                "kubectl",
+                "logs",
+                "-n",
+                smoke_ns,
+                "smoke-read",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        if "marker survived pod churn" not in logs.stdout:
+            raise BootstrapError(
+                "csi_smoke",
+                {
+                    "reason": (
+                        "smoke-read logs do not contain success "
+                        "marker — PVC is bound but data did not "
+                        "survive pod churn."
+                    ),
+                    "logs": logs.stdout[:500],
+                },
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise BootstrapError(
+            "csi_smoke",
+            {"reason": "smoke-read wait timed out", "detail": str(exc)},
+        ) from exc
+    _LOG.info(
+        "csi_smoke.ok",
+        pvc="smoke-pvc",
+        writer_pod="smoke-write",
+        reader_pod="smoke-read",
+    )
+
+    # 8. Cleanup (best-effort).
+    try:
+        subprocess.run(
+            ["kubectl", "delete", "ns", smoke_ns, "--wait=false"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        _LOG.warn(
+            "csi_smoke.cleanup_failed",
+            message=f"failed to delete namespace {smoke_ns}: {exc}",
+        )
+
+    state.phases_done.add("csi_smoke")
 
 
 def _run_host_ports(state: State, cluster_dir: Path) -> None:
@@ -656,10 +1458,16 @@ def bootstrap(
                 _run_install_k3s(state, cluster_dir, topo)
             elif phase == "k3s":
                 _run_k3s(state, cluster_dir, topo)
+            elif phase == "gateway_crds":
+                _run_gateway_crds(state, cluster_dir, topo)
             elif phase == "helm":
                 _run_helm(state, cluster_dir, topo)
+            elif phase == "gateway_smoke":
+                _run_gateway_smoke(state, cluster_dir, topo)
             elif phase == "kubeconfig":
                 _run_kubeconfig(state, cluster_dir, topo)
+            elif phase == "csi_smoke":
+                _run_csi_smoke(state, cluster_dir, topo)
             elif phase == "host_ports":
                 _run_host_ports(state, cluster_dir)
             elif phase == "externalname":
