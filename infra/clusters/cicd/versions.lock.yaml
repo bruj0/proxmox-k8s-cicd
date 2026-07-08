@@ -41,3 +41,50 @@ cross_check:
     The agent will register once the helm phase brings up
     kube-vip on the cicd cluster.
 
+  cicd_helm_recovery_2026_07_08: >
+    The original `python -m tools.bootstrap_cluster --cluster cicd
+    --phases helm,k3s,kubeconfig,host_ports` invocation failed at the
+    very first sub-step (`_run_helm` scp's `/etc/rancher/k3s/k3s.yaml`
+    as `root@<cp_ip>` with no ProxyCommand -- the cloud image refuses
+    root login, and the SDN IP isn't routable from the operator host).
+    The `helm` sub-phase was therefore never executed, leaving the
+    cluster in: cicd-cp-1 NotReady (NetworkPluginNotReady -- no CNI
+    because we run with --flannel-backend=none), cicd-w-1 absent from
+    `kubectl get nodes` (agent's K3S_URL=https://10.0.0.30:6443 hits a
+    VIP that nothing owns, so the supervisor apiserver proxy returns
+    "connection reset by peer" forever).
+
+    Recovery (manual, using the operator tooling that DOES use the
+    right ProxyCommand + ubuntu user):
+
+      kubeconfig-puller --cluster cicd --local-port 6443
+      # tunnel up on 127.0.0.1:6443, kubeconfig written to
+      # infra/clusters/cicd/kubeconfig.pveproxy (gitignored)
+      export KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy
+      helm repo add cilium https://helm.cilium.io/
+      helm repo add kube-vip https://kube-vip.github.io/helm-charts
+      helm install cilium cilium/cilium --version 1.16.1 \
+        --namespace kube-system --set kubeProxyReplacement=true \
+        --set gatewayAPI.enabled=true --set ipv4NativeRoutingCIDR=10.0.0.0/8 \
+        --set ipam.mode=cluster-pool \
+        --set ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16 \
+        --set hubble.enabled=false
+      helm install kube-vip kube-vip/kube-vip --version 0.9.9 \
+        --namespace kube-system --set config.address=10.0.0.30 \
+        --set env.cp_enable=true --set env.vip_interface=eth0 \
+        --set env.vip_arp=true --set env.vip_leaderelection=true \
+        --set env.lb_enable=true --set env.lb_port=6443 \
+        --set env.svc_enable=true --set env.svc_election=false
+
+    After ~75s both nodes are Ready. NOTE: the chart values
+    in tools/lib/helm_client.py are STALE -- they pin kube-vip
+    1.2.1 (does not exist; latest is 0.9.9) and the wrong values
+    shape (`controlPlane.enabled` vs the chart's `env.cp_enable`).
+    The bootstrap script's helm sub-phase would fail at install
+    time even if it could reach the SDN.
+
+    Open work: (a) fix _run_helm + kubeconfig_merger to use
+    PveSshProxy (so the script can be re-run, not just
+    manually recovered); (b) refresh the chart versions and values
+    shape in tools/lib/helm_client.py to match the upstream repos.
+
