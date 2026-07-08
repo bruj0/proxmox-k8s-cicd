@@ -417,3 +417,52 @@ def test_bootstrap_logs_redact_secret_tokens(
     assert "ssh_key_path" not in scrubbed["nested"]
     assert scrubbed["safe_field"] == "visible"
     assert scrubbed["nested"]["ok"] == "stay"
+
+def test_post_install_patches_proxmox_lvm_thin_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WP07: after helm, the proxmox-lvm-thin SC must be the cluster default.
+
+    The proxmox-csi-plugin chart 0.5.9 has no values schema for
+    the `is-default-class` annotation, so the bootstrap
+    `_run_helm` post-step adds it via `kubectl annotate`. The
+    csi_smoke phase asserts `is-default-class=true`; this test
+    pins the contract that the helm phase performs the patch.
+    """
+    from bootstrap_cluster import _ensure_csi_default_sc
+
+    # First call: SC is already default. No annotate call.
+    calls: list[list[str]] = []
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args[0]))
+        cmd = list(args[0])
+        # kubectl get sc ...
+        if cmd[0] == "kubectl" and "get" in cmd and "jsonpath" in " ".join(cmd):
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="true", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _ensure_csi_default_sc(Path("/tmp/kc"), "proxmox-lvm-thin", "proxmox-csi-plugin")
+    # Only the get call (the annotate was skipped because
+    # `is-default-class=true` already).
+    annotate_calls = [c for c in calls if "annotate" in c]
+    assert annotate_calls == [], (
+        f"expected no annotate call when SC is already default, got: {annotate_calls}"
+    )
+
+    # Second call: SC is not default. Should annotate.
+    calls.clear()
+    def fake_run2(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args[0]))
+        cmd = list(args[0])
+        if cmd[0] == "kubectl" and "get" in cmd and "jsonpath" in " ".join(cmd):
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="false", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run2)
+    _ensure_csi_default_sc(Path("/tmp/kc"), "proxmox-lvm-thin", "proxmox-csi-plugin")
+    annotate_calls = [c for c in calls if "annotate" in c]
+    assert len(annotate_calls) == 1
+    cmd = annotate_calls[0]
+    assert "storageclass.kubernetes.io/is-default-class=true" in cmd
+    assert "--overwrite=true" in cmd

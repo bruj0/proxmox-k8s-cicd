@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -46,6 +46,19 @@ class HelmRelease:
     namespace: str
     version: str
     values: Mapping[str, object]
+    # Optional values file path. Used for keys that don't survive
+    # the helm --set path grammar (e.g. map keys with dots like
+    # `storageclass.kubernetes.io/is-default-class`). The file is
+    # applied via `-f` AFTER any `--set` flags (helm precedence:
+    # -f beats --set).
+    values_file: Path | None = None
+    # Per-key `--set-string` overrides. helm's --set path
+    # grammar auto-converts values like `true`/`false`/`42` to
+    # their YAML types; for keys whose target schema is always a
+    # string (e.g. annotation values), the auto-conversion
+    # breaks. --set-string preserves the value's string type.
+    # Applied AFTER `values` so callers can layer both.
+    set_strings: Mapping[str, str] = field(default_factory=dict)
 
     def install_cmd(self, kubeconfig: Path) -> list[str]:
         cmd = [
@@ -65,6 +78,10 @@ class HelmRelease:
         ]
         for k, v in self.values.items():
             cmd += ["--set", f"{k}={v}"]
+        for k, v in self.set_strings.items():
+            cmd += ["--set-string", f"{k}={v}"]
+        if self.values_file is not None:
+            cmd += ["-f", str(self.values_file)]
         return cmd
 
 
@@ -174,6 +191,23 @@ def remaining_releases(
     cluster_name = str(cluster["name"])
     cluster_dir = Path("clusters") / cluster_name
     manifests_dir = cluster_dir / "manifests"
+    # WP07 (2026-07-08): proxmox-ccm + proxmox-csi chart values fix.
+    # The chart's `config.clusters[0]` is the canonical key shape
+    # (see ghcr.io/sergelogvinov/charts values.yaml). The previous
+    # `credentials.*` keys were silently ignored, so the chart's
+    # secrets.yaml conditional `if ne (len .Values.config.clusters) 0`
+    # never fired, the `proxmox-cloud-controller-manager` /
+    # `proxmox-csi-plugin` Secrets were never created, and the
+    # Deployment Pods were stuck in ContainerCreating on a missing
+    # `cloud-config` volume mount for 4+ hours. The fix matches the
+    # chart's documented schema (and a `helm template` round-trip
+    # now produces the expected Secrets).
+    #
+    # The PVE URL is hard-coded to kvm.example.net:8006 because the
+    # live cluster is not on the SDN (it's a 10.0.10/24 host with
+    # a public-ish IP via PowerDNS). The 10.0.0.1 host-internal
+    # URL is NOT routable from inside the k3s pods (see
+    # docs/cluster-state.md §14.1 + the live-host gotcha log).
     rels: list[HelmRelease] = [
         HelmRelease(
             name="proxmox-cloud-controller-manager",
@@ -181,11 +215,22 @@ def remaining_releases(
             namespace="kube-system",
             version="0.2.29",
             values={
-                "region": region,
-                "zone": zone,
-                "credentials.url": "https://10.0.0.1:8006",
-                "credentials.tokenId": secrets["proxmox_token_id"],
-                "credentials.tokenSecret": secrets["proxmox_token_secret"],
+                # config schema is the chart's documented key shape.
+                # The chart's secrets.yaml gates the Secret
+                # creation on `len .Values.config.clusters) 0`
+                # so an empty list would skip the Secret entirely
+                # (and the Deployment pod would be stuck waiting
+                # for a volume mount on a Secret that never
+                # existed).
+                "config.clusters[0].url": "https://kvm.example.net:8006/api2/json",
+                "config.clusters[0].token_id": secrets["proxmox_token_id"],
+                "config.clusters[0].token_secret": secrets["proxmox_token_secret"],
+                "config.clusters[0].region": region,
+                # Region/zone labels on the cloud Nodes are
+                # derived from the cluster registry, not from
+                # this value, but the chart documents them here
+                # for the topology controller.
+                "config.features.provider": "default",
             },
         ),
         HelmRelease(
@@ -194,11 +239,40 @@ def remaining_releases(
             namespace="proxmox-csi-plugin",
             version="0.5.9",
             values={
-                "storageclass.name": "proxmox-lvm-thin",
-                "storageclass.default": "true",
-                "region": region,
-                "zone": zone,
-                "csi.lvm.thinPool": "data1/data1",
+                # config schema is the chart's documented key shape
+                # (see comment on the proxmox-cloud-controller-manager
+                # release above).
+                "config.clusters[0].url": "https://kvm.example.net:8006/api2/json",
+                "config.clusters[0].token_id": secrets["proxmox_token_id"],
+                "config.clusters[0].token_secret": secrets["proxmox_token_secret"],
+                "config.clusters[0].region": region,
+                "config.features.provider": "default",
+                # The legacy flat keys (storageclass.name,
+                # region, zone, csi.lvm.thinPool) were the
+                # chart's OLDER schema (chart <0.4.x). Chart
+                # 0.5.x uses the structured `storageClass: []`
+                # list. The values below match the 0.5.x
+                # schema; the old keys are ignored.
+                #
+                # The chart's StorageClass template has no
+                # built-in `default` -> is-default-class
+                # translation (the `default: true` key on
+                # the storageClass list is dead code in
+                # 0.5.9). To make the SC the cluster default
+                # we have to set the annotation explicitly.
+                "storageClass[0].name": "proxmox-lvm-thin",
+                "storageClass[0].region": region,
+                "storageClass[0].zone": zone,
+                "storageClass[0].storage": "data1",
+            },
+            # --set-string for the annotation key. helm --set
+            # auto-coerces `true` -> bool, which fails to render
+            # the annotation (`json: cannot unmarshal bool into
+            # Go struct field ObjectMeta.metadata.annotations of
+            # type string`). --set-string preserves the string
+            # type so the annotation renders as `"true"`.
+            set_strings={
+                "storageClass[0].annotations.storageclass\\.kubernetes\\.io/is-default-class": "true",
             },
         ),
         HelmRelease(

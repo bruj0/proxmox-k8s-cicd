@@ -138,30 +138,91 @@ def test_cert_manager_release_has_no_acme_solvers() -> None:
 
 
 def test_proxmox_ccm_values_include_proxmox_credentials() -> None:
-    """WP05 T002: sergelogvinov/proxmox-ccm carries credentials + region/zone."""
+    """WP05 T002: sergelogvinov/proxmox-ccm carries credentials + region/zone.
+
+    WP07 (2026-07-08) update: the chart's documented schema is
+    `config.clusters[0].{url,token_id,token_secret,region}`, not
+    `credentials.*`. The old schema was silently ignored, so the
+    chart's secrets.yaml conditional `if ne (len
+    .Values.config.clusters) 0` never fired and the
+    `proxmox-cloud-controller-manager` Secret was never created.
+    The Deployment pod was stuck in ContainerCreating on a missing
+    `cloud-config` volume mount for 4+ hours before the live-host
+    apply surfaced it.
+    """
     rels, _ = remaining_releases(
         {"name": "cicd", "vip": "10.0.0.10", "helm_releases": ["proxmox-cloud-controller-manager"], "control_plane": [{"name": "cp1", "ip": "10.0.0.11"}], "worker": []},
         {"proxmox_token_id": "pve_user@realm!tid", "proxmox_token_secret": "pve-secret", "cf_api_token": "", "cf_account_id": "", "cf_tunnel_name": ""},
     )
     ccm = next(r for r in rels if r.name == "proxmox-cloud-controller-manager")
-    assert "region" in ccm.values
-    assert "zone" in ccm.values
-    # Credentials must be in the values so a misconfigured proxmox creds
-    # would surface as a Helm template error rather than a silent boot.
-    assert "credentials.tokenId" in ccm.values
-    assert "credentials.tokenSecret" in ccm.values
+    # The chart's `secrets.yaml` template is gated on
+    # `if ne (len .Values.config.clusters) 0`. We must populate
+    # that path so the chart actually creates the Secret.
+    assert "config.clusters[0].url" in ccm.values
+    assert "config.clusters[0].token_id" in ccm.values
+    assert "config.clusters[0].token_secret" in ccm.values
+    assert "config.clusters[0].region" in ccm.values
+    # Region/zone labels for cloud-node topology.
+    assert "config.features.provider" in ccm.values
+    # Make sure the OLD broken shape is gone.
+    assert "credentials.tokenId" not in ccm.values
+    assert "credentials.tokenSecret" not in ccm.values
+    assert "credentials.url" not in ccm.values
 
 
 def test_proxmox_csi_release_creates_proxmox_lvm_thin_storageclass() -> None:
-    """WP05 T003: csi chart declares storageclass `proxmox-lvm-thin` default."""
+    """WP05 T003: csi chart declares storageclass `proxmox-lvm-thin` default.
+
+    WP07 (2026-07-08) update: the chart 0.5.x schema is
+    `storageClass: []` (list of dicts), NOT the legacy
+    `storageclass.{name,default,region,zone}` flat keys.
+    The chart's `storageclass` top-level key is the 0.5.x
+    `storageClass` list. The legacy `csi.lvm.thinPool` key is
+    no longer accepted; the chart's storageClass item takes
+    a `storage: <pve-storage-name>` key (NOT lvm.thinPool).
+    The `is-default-class` annotation is set as a post-install
+    step in `_run_helm` because the chart has no values
+    schema for it.
+    """
     rels, _ = remaining_releases(
         {"name": "cicd", "vip": "10.0.0.10", "helm_releases": ["proxmox-csi-plugin"], "control_plane": [{"name": "cp1", "ip": "10.0.0.11"}], "worker": []},
         {"proxmox_token_id": "pve-id", "proxmox_token_secret": "pve-secret", "cf_api_token": "", "cf_account_id": "", "cf_tunnel_name": ""},
     )
     csi = next(r for r in rels if r.name == "proxmox-csi-plugin")
-    assert csi.values.get("storageclass.name") == "proxmox-lvm-thin"
-    # default=true so all PVCs that don't ask for a specific class land here.
-    assert str(csi.values.get("storageclass.default")).lower() == "true"
+    # The new shape.
+    assert csi.values.get("storageClass[0].name") == "proxmox-lvm-thin"
+    assert csi.values.get("storageClass[0].storage") == "data1"
+    assert "storageClass[0].region" in csi.values
+    assert "storageClass[0].zone" in csi.values
+    # The `is-default-class` annotation must be set via
+    # `--set-string` because helm's default `--set` path
+    # parser auto-coerces `true` to a bool, which then fails
+    # to render the annotation (`json: cannot unmarshal bool
+    # into Go struct field ObjectMeta.metadata.annotations of
+    # type string`). This contract pins the use of set_strings
+    # (not values) for annotation-style keys.
+    assert (
+        csi.set_strings.get(
+            "storageClass[0].annotations.storageclass\\.kubernetes\\.io/is-default-class"
+        )
+        == "true"
+    )
+    # The annotation key MUST NOT be in `values` (where
+    # it would be passed via --set and re-trigger the same
+    # bool-coercion bug).
+    assert (
+        "storageClass[0].annotations.storageclass\\.kubernetes\\.io/is-default-class"
+        not in csi.values
+    )
+    # Make sure the OLD broken shape is gone.
+    assert "storageclass.name" not in csi.values
+    assert "csi.lvm.thinPool" not in csi.values
+    # Make sure the Secret will be created (the
+    # secrets.yaml template is gated on
+    # `if ne (len .Values.config.clusters) 0`).
+    assert "config.clusters[0].url" in csi.values
+    assert "config.clusters[0].token_id" in csi.values
+    assert "config.clusters[0].token_secret" in csi.values
 
 
 # ---------- host-ports verification ----------

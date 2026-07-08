@@ -520,7 +520,84 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
             )
     except subprocess.CalledProcessError as exc:
         raise BootstrapError("helm", {"reason": str(exc)}) from exc
+    # WP07 (2026-07-08): the proxmox-csi-plugin chart 0.5.9 has
+    # NO way to set the `is-default-class` annotation via values
+    # (the `default: true` key on the storageClass list is dead
+    # code in 0.5.9; the chart's StorageClass template renders
+    # the annotation block conditionally on `with
+    # $storage.annotations`, which has no value-mapping). The
+    # bootstrap pins the `proxmox-lvm-thin` SC as default by
+    # patching the annotation post-install. This is the only
+    # value-level workaround that doesn't require a values
+    # file in the cluster's manifests/ tree.
+    #
+    # Pinned by tests/test_bootstrap_cluster.py:
+    #   test_post_install_patches_proxmox_lvm_thin_default
+    _ensure_csi_default_sc(kubeconfig, "proxmox-lvm-thin", "proxmox-csi-plugin")
     state.phases_done.add("helm")
+
+
+def _ensure_csi_default_sc(
+    kubeconfig: Path, storage_class_name: str, namespace: str
+) -> None:
+    """Post-install: set is-default-class=true on the named StorageClass.
+
+    The proxmox-csi-plugin chart 0.5.9 has no values schema for
+    this (see the `_run_helm` block above). We patch the
+    annotation here so the rest of the bootstrap can rely on
+    `proxmox-lvm-thin` being the cluster default.
+
+    Idempotent: `kubectl annotate` with `--overwrite` is a
+    no-op when the value is already correct. The phase is
+    skipped entirely on a re-run if the annotation is already
+    `true` (no Helm interaction).
+    """
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "get",
+                "sc",
+                storage_class_name,
+                "-o",
+                "jsonpath={.metadata.annotations.storageclass\\.kubernetes\\.io/is-default-class}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        if result.stdout.strip().lower() == "true":
+            return
+        subprocess.run(
+            [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "annotate",
+                "sc",
+                storage_class_name,
+                "storageclass.kubernetes.io/is-default-class=true",
+                "--overwrite=true",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        # Don't fail the helm phase on a non-critical annotation
+        # patch. The csi_smoke phase will assert
+        # `is-default-class=true` and surface this as a hard
+        # failure if the SC never becomes default. The annotation
+        # is best-effort here.
+        _LOG.warn(
+            "helm.csi_sc_default_annotate_failed",
+            storage_class=storage_class_name,
+            message=str(exc),
+        )
 
 
 def _run_gateway_crds(
