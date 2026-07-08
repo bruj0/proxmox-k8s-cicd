@@ -62,9 +62,18 @@ run "root_module_resolves" {
     condition     = module.cicd.cluster_name == "cicd"
     error_message = "module.cicd.cluster_name must be 'cicd'."
   }
+}
+
+run "root_does_not_expose_vip" {
+  command = plan
+  # vip was removed from the module in the 2026-07-08 refactor
+  # (Proxmox SDN owns IPs; the cluster VIP is a kube-vip Service
+  # concept owned by the bootstrap, not tofu). This test pins
+  # the absence so a future accidental re-introduction fails
+  # the suite rather than silently regressing the design intent.
   assert {
-    condition     = module.cicd.vip == "10.0.0.30"
-    error_message = "module.cicd.vip must be '10.0.0.30'."
+    condition     = !can(module.cicd.vip)
+    error_message = "module.cicd.vip must NOT be exposed; vip was removed in the 2026-07-08 refactor."
   }
 }
 

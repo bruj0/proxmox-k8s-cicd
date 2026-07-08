@@ -40,7 +40,6 @@ resource "helm_release" "cf_tunnel_controller" {
     }),
   ]
 
-  depends_on = [
-    local_sensitive_file.talos_machineconfig,
-  ]
+  # 2026-07-08: local_sensitive_file.talos_machineconfig dependency
+  # removed alongside the Talos machineconfig renderer.
 }

@@ -60,7 +60,7 @@ from typing import Sequence
 from tools.lib.log import StructuredLogger
 from tools.lib.pve_ssh import PveSshProxy
 from tools.lib.repo_locator import RepoNotFoundError, locate_repo_root
-from tools.lib.talos_client import ClusterTopology
+from tools.lib.cluster_topology import ClusterTopology
 
 
 @dataclass(frozen=True)

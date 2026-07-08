@@ -2,11 +2,14 @@
 # OpenTofu native tests for clusters/apps.
 #
 # M3 (proven across instances): a second instantiation of the cluster module
-# uses non-overlapping VIP, VMIDs, IPs, and pod/svc CIDRs. This suite asserts:
+# uses non-overlapping VMIDs and pod/svc CIDRs. This suite asserts:
 #   - apps uses VMIDs 210..211 (not 200..201 from cicd).
-#   - apps uses VIP 10.0.0.40 (not 10.0.0.30 from cicd).
-#   - apps uses pod_cidr 10.44.0.0/16 and svc_cidr 10.45.0.0/16 (not cicd's
-#     10.42/10.43).
+#   - apps uses pod_cidr 172.20.0.0/16 and svc_cidr 172.21.0.0/16 (not cicd's
+#     172.16/172.17).
+#
+# 2026-07-08: VIP assertion removed (vip dropped from the module in
+# the refactor -- Proxmox SDN owns IPs and the kube-vip Service VIP
+# is derived by the bootstrap, not tofu).
 #
 # Note: the negative case (apps.vmid_start=200 collides with cicd) is covered
 # at the module level by modules/proxmox-k3s-cluster/tests/main.tftest.hcl via
@@ -63,15 +66,14 @@ mock_provider "powerdns" {
 # M3 baseline identity check: apps uses distinct VIP / VMID / CIDR from cicd.
 # ---------------------------------------------------------------------------
 
-run "apps_uses_distinct_vip" {
+run "apps_does_not_expose_vip" {
   command = plan
+  # vip was removed from the module in 2026-07-08 -- both roots of
+  # the cluster module MUST agree that vip is gone. This pins the
+  # absence on the apps side.
   assert {
-    condition     = module.apps.vip == "10.0.0.40"
-    error_message = "apps.vip must be 10.0.0.40 (cicd is 10.0.0.30; M3 collision if they match)."
-  }
-  assert {
-    condition     = module.apps.vip != "10.0.0.30"
-    error_message = "M3 violated: apps VIP collides with cicd's VIP 10.0.0.30."
+    condition     = !can(module.apps.vip)
+    error_message = "module.apps.vip must NOT be exposed; vip was removed in the 2026-07-08 refactor."
   }
 }
 
@@ -94,19 +96,19 @@ run "apps_uses_distinct_vmids" {
 run "apps_uses_distinct_pod_and_svc_cidrs" {
   command = plan
   assert {
-    condition     = module.apps.pod_cidr == "10.44.0.0/16"
-    error_message = "apps.pod_cidr must be 10.44.0.0/16 (cicd uses 10.42.0.0/16)."
+    condition     = module.apps.pod_cidr == "172.20.0.0/16"
+    error_message = "apps.pod_cidr must be 172.20.0.0/16 (cicd uses 172.16.0.0/16)."
   }
   assert {
-    condition     = module.apps.svc_cidr == "10.45.0.0/16"
-    error_message = "apps.svc_cidr must be 10.45.0.0/16 (cicd uses 10.43.0.0/16)."
+    condition     = module.apps.svc_cidr == "172.21.0.0/16"
+    error_message = "apps.svc_cidr must be 172.21.0.0/16 (cicd uses 172.17.0.0/16)."
   }
   assert {
-    condition     = module.apps.pod_cidr != "10.42.0.0/16"
+    condition     = module.apps.pod_cidr != "172.16.0.0/16"
     error_message = "M3 violated: apps.pod_cidr collides with cicd."
   }
   assert {
-    condition     = module.apps.svc_cidr != "10.43.0.0/16"
+    condition     = module.apps.svc_cidr != "172.17.0.0/16"
     error_message = "M3 violated: apps.svc_cidr collides with cicd."
   }
 }

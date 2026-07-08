@@ -41,7 +41,8 @@ class VersionsLockReader:
     """Tiny reader for tools/versions.lock.yaml.
 
     Only the keys we need are exposed (k3s_stable_version, k3s_install_url).
-    Other keys (helm, kube-vip, cilium, etc.) are read by the helm_client
+    Other keys (helm, cilium, pccm, csi, cert-manager, cloudflare-tunnel, etc.)
+    are read by the helm_client
     through its own constants — we deliberately don't build a god-reader.
     """
 

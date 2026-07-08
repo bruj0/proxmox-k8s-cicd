@@ -23,22 +23,27 @@
 resource "proxmox_virtual_environment_role" "k3s_cluster" {
   role_id = var.proxmox_role_id
 
-  # Privilege set extends the 12 from spec T005 with the 8 privs Packer
-  # (hashicorp/proxmox proxmox-clone v1.2.3) and the cluster tofu modules
-  # actually need end-to-end:
-  #   VM.Audit                 — read VM 999 cfg / status (Packer, tofu)
-  #   VM.Clone                 — clone base VMID 999 to template 900 (Packer)
-  #   VM.Migrate               — failed-template cleanup (Packer)
-  #   VM.Config.CDROM          — attach/detach Talos ISO (tofu, Packer)
-  #   VM.Config.HWType         — set machine=q35 (Packer UEFI boot)
-  #   VM.Snapshot.Rollback     — restore from snapshot if template bake fails
-  #   Sys.Audit                — required for /access namespace reads (PVE)
+  # Privilege set: 12 from spec T005 plus the 7 additional privs the
+  # bpg/proxmox cluster tofu module needs end-to-end:
+  #   VM.Audit                 — read VM cfg / qemu list
+  #   VM.Clone                 — clone VMID 900 to per-cluster VMs
+  #   VM.Migrate               — cleanup moved/half-baked templates
+  #   VM.Config.HWType         — set machine=q35 (UEFI boot)
+  #   VM.Snapshot.Rollback     — restore after template-bake failure
+  #   Sys.Audit                — required for /access namespace reads
   #   Sys.Modify               — required for /cluster/sdn/vnets writes
   #                              (proxmox_virtual_environment_hosts writes
   #                               the vnet0 hosts file; PVE 9.2.x rejects
   #                               without Sys.Modify, even with SDN.Use).
-  # Total: 20 privs. Records NFR-007's intent: least-privilege for the
-  # *cluster lifecycle*, not just the bpg/proxmox provider primitives.
+  #
+  # Note: VM.Config.CDROM was removed 2026-07-08 along with the Talos
+  # ISO attach path. The Ubuntu+k3s pipeline uses Proxmox's NATIVE
+  # cloud-init drive (`qm set --ide2 data1:cloudinit`), not a custom
+  # seed ISO.
+  #
+  # Total: 19 privs (was 20 with CDROM; -1 = 19). Records NFR-007's
+  # intent: least-privilege for the *cluster lifecycle*, not just
+  # the bpg/proxmox provider primitives.
   privileges = sort([
     "Datastore.AllocateSpace",
     "Datastore.Audit",
@@ -49,7 +54,6 @@ resource "proxmox_virtual_environment_role" "k3s_cluster" {
     "VM.Audit",
     "VM.Clone",
     "VM.Config.CPU",
-    "VM.Config.CDROM",
     "VM.Config.Disk",
     "VM.Config.HWType",
     "VM.Config.Memory",

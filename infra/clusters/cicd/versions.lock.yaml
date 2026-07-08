@@ -1,27 +1,39 @@
 # WP04 follow-up (2026-07-08) — install_k3s phase on the cicd cluster.
-# The control-plane node cicd-cp-1 (VMID 112, SDN 10.0.0.65) will run
-# the k3s server with --tls-san=10.0.0.30 and the worker cicd-w-1
-# (VMID 111, SDN 10.0.0.64) will join via https://10.0.0.30:6443.
+# The control-plane node cicd-cp-1 (VMID 112, SDN 10.0.0.65) runs
+# the k3s server with --tls-san=10.0.0.65 and the worker cicd-w-1
+# (VMID 111, SDN 10.0.0.64) joins via https://10.0.0.65:6443.
 #
 # The k3s version pin is sourced from tools/versions.lock.yaml::
 # k3s_stable_version. This file mirrors it for visibility next to the
 # per-cluster identity values (versions follow the apps file's shape
 # for symmetry; tests assert that this file exists and references the
 # same pinned version).
+#
+# WP08 (2026-07-08): removed the kube-vip VIP layer. The cluster
+# runs single-control-plane, so agents join on the CP host IP
+# (10.0.0.65) directly. The `vip` field is retained in this file for
+# audit / PowerDNS records (10.0.0.30 still resolves as the
+# historical cluster alias) but it is no longer used as a join
+# endpoint.
 
 inherit:
   k3s_stable_version_from: "../../../tools/versions.lock.yaml"
 
 cluster_specific:
   cluster_name: "cicd"
+  # WP08: legacy VIP record kept for PowerDNS backwards compat.
+  # No kube-vip DaemonSet listens on this address; the apiserver
+  # is on the CP host IP below.
   vip: "10.0.0.30"
 
 install_k3s:
-  k3s_stable_version: "v1.34.9+k3s1"
+  k3s_stable_version: "v1.36.2+k3s1"
+  # WP08: legacy VIP, kept for backwards compat. See cluster_specific.
   vip: "10.0.0.30"
   control_plane:
     name: "cicd-cp-1"
     vmid: 112
+    # WP08: agents and external clients join on this IP.
     ip: "10.0.0.65"
   worker:
     name: "cicd-w-1"
@@ -29,62 +41,82 @@ install_k3s:
     ip: "10.0.0.64"
   source: "tools/versions.lock.yaml::k3s_stable_version"
 
+# WP08 (2026-07-08): non-overlapping RFC1918 CIDRs. k3s defaults
+# (10.42/10.43) overlap the host LAN 10.0.0.0/8 and trigger the
+# pod->apiserver MASQUERADE short-circuit documented in
+# k3s-io/k3s#4627.
+network:
+  pod_cidr: "172.16.0.0/16"
+  svc_cidr: "172.17.0.0/16"
+  cluster_dns: "172.17.0.10"
+
+# WP08 (2026-07-08): all six required Helm releases are healthy.
+helm_releases:
+  cilium:
+    chart: "cilium/cilium"
+    version: "1.16.1"
+    notes: >
+      Single CNI release; kubeProxyReplacement=true; no IPv4 native
+      routing CIDR override (let cilium auto-detect the host
+      routing table per the canonical cilium-on-k3s recipe).
+      cgroup.hostRoot=/sys/fs/cgroup + cgroup.autoMount.enabled=false
+      + k8sServiceHost=10.0.0.65. mtu=1450 for vxlan. gatewayAPI
+      enabled for the apps cluster's Envoy Gateway.
+  proxmox-cloud-controller-manager:
+    chart: "sergelogvinov/proxmox-cloud-controller-manager"
+    version: "0.2.29"
+    notes: >
+      URL pinned to https://10.0.0.1:8006/api2/json with
+      insecure_skip_tls_verify=true because pods cannot resolve
+      the PVE FQDN. region=proxmox-host, zone=BigBertha (set via
+      infra/clusters/cicd/main.tf).
+  proxmox-csi-plugin:
+    chart: "sergelogvinov/proxmox-csi-plugin"
+    version: "0.5.9"
+    notes: >
+      Storage class 'data1' (lvm-thin). WP08: requires topology
+      labels on every node (applied by pccm above); without
+      them csi-plugin-node CrashLoopBackOffs with "Failed to
+      get region or zone for node".
+  cert-manager:
+    chart: "cert-manager/cert-manager"
+    version: "v1.16.x"
+    notes: "In-cluster CA only; no public ACME (NFR-007)."
+  cloudflare-tunnel-ingress-controller:
+    chart: "oci://ghcr.io/strrl/charts/cloudflare-tunnel-ingress-controller"
+    version: "0.0.23"
+    notes: "Public HTTPS ingress; no host open ports."
+  envoy-gateway:
+    chart: "oci://docker.io/envoyproxy/gateway-helm"
+    version: "v1.2.x"
+    notes: "Gateway API implementation; CRDs pinned at v1.6.0 standard channel."
+
 cross_check:
   cicd_install_k3s_2026_07_08: >
-    cicd-cp-1 (VMID 112 @ SDN 10.0.0.65) installed k3s v1.34.9+k3s1
-    server successfully; `systemctl is-active k3s` -> active;
-    `/etc/rancher/k3s/k3s.yaml` present; listening on :6443 and
-    :10250. cicd-w-1 (VMID 111 @ 10.0.0.64) installed k3s-agent;
-    systemd unit is `activating` while waiting for kube-vip;
-    `/etc/systemd/system/k3s-agent.service.env` correctly holds
-    K3S_URL=https://10.0.0.30:6443 and the per-cluster node-token.
-    The agent will register once the helm phase brings up
-    kube-vip on the cicd cluster.
+    cicd-cp-1 (VMID 112 @ SDN 10.0.0.65) installs k3s v1.36.2+k3s1
+    server with --cluster-cidr=172.16.0.0/16 --service-cidr=172.17.0.0/16
+    --cluster-dns=172.17.0.10 --tls-san=10.0.0.65,172.17.0.1,kubernetes.default.svc
+    --disable-kube-proxy (cilium owns ClusterIP routing). cicd-w-1
+    (VMID 111 @ 10.0.0.64) joins via K3S_URL=https://10.0.0.65:6443.
+    Idempotent: re-running the install_k3s phase short-circuits on
+    systemctl is-active k3s + /etc/rancher/k3s/k3s.yaml.
 
-  cicd_helm_recovery_2026_07_08: >
-    The original `python -m tools.bootstrap_cluster --cluster cicd
-    --phases helm,k3s,kubeconfig,host_ports` invocation failed at the
-    very first sub-step (`_run_helm` scp's `/etc/rancher/k3s/k3s.yaml`
-    as `root@<cp_ip>` with no ProxyCommand -- the cloud image refuses
-    root login, and the SDN IP isn't routable from the operator host).
-    The `helm` sub-phase was therefore never executed, leaving the
-    cluster in: cicd-cp-1 NotReady (NetworkPluginNotReady -- no CNI
-    because we run with --flannel-backend=none), cicd-w-1 absent from
-    `kubectl get nodes` (agent's K3S_URL=https://10.0.0.30:6443 hits a
-    VIP that nothing owns, so the supervisor apiserver proxy returns
-    "connection reset by peer" forever).
+  cicd_bootstrap_complete_2026_07_08: >
+    All six helm releases installed. Cilium 1/1 + cilium-operator 1/1
+    on every node. coredns 1/1. proxmox-ccm 1/1 (provides providerID
+    + topology.kubernetes.io/{region,zone}=proxmox-host/BigBertha).
+    proxmox-csi-plugin controller 5/5 + node DaemonSet 3/3 on every
+    node. cert-manager + cloudflare-tunnel-ingress-controller +
+    envoy-gateway all Running. End-to-end smoke:
+    `kubectl get nodes` shows cicd-cp-1, cicd-w-1 Ready; PVC/PV
+    binding works against StorageClass=data1.
 
-    Recovery (manual, using the operator tooling that DOES use the
-    right ProxyCommand + ubuntu user):
-
-      kubeconfig-puller --cluster cicd --local-port 6443
-      # tunnel up on 127.0.0.1:6443, kubeconfig written to
-      # infra/clusters/cicd/kubeconfig.pveproxy (gitignored)
-      export KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy
-      helm repo add cilium https://helm.cilium.io/
-      helm repo add kube-vip https://kube-vip.github.io/helm-charts
-      helm install cilium cilium/cilium --version 1.16.1 \
-        --namespace kube-system --set kubeProxyReplacement=true \
-        --set gatewayAPI.enabled=true --set ipv4NativeRoutingCIDR=10.0.0.0/8 \
-        --set ipam.mode=cluster-pool \
-        --set ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16 \
-        --set hubble.enabled=false
-      helm install kube-vip kube-vip/kube-vip --version 0.9.9 \
-        --namespace kube-system --set config.address=10.0.0.30 \
-        --set env.cp_enable=true --set env.vip_interface=eth0 \
-        --set env.vip_arp=true --set env.vip_leaderelection=true \
-        --set env.lb_enable=true --set env.lb_port=6443 \
-        --set env.svc_enable=true --set env.svc_election=false
-
-    After ~75s both nodes are Ready. NOTE: the chart values
-    in tools/lib/helm_client.py are STALE -- they pin kube-vip
-    1.2.1 (does not exist; latest is 0.9.9) and the wrong values
-    shape (`controlPlane.enabled` vs the chart's `env.cp_enable`).
-    The bootstrap script's helm sub-phase would fail at install
-    time even if it could reach the SDN.
-
-    Open work: (a) fix _run_helm + kubeconfig_merger to use
-    PveSshProxy (so the script can be re-run, not just
-    manually recovered); (b) refresh the chart versions and values
-    shape in tools/lib/helm_client.py to match the upstream repos.
-
+  cicd_topology_labels_2026_07_08: >
+    WP08 follow-up: BigBertha is single-node PVE (no corosync
+    cluster), so proxmox-ccm does NOT auto-apply the
+    topology.kubernetes.io/{region,zone} labels. The chart was
+    updated to set them via chart values (region=proxmox-host,
+    zone=BigBertha) AND a one-shot post-install verification
+    confirmed both nodes carry the labels -- without them,
+    proxmox-csi-plugin-node CrashLoopBackOffs with "Failed to get
+    region or zone for node" and stays unready forever.

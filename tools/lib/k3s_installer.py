@@ -12,15 +12,14 @@ Key contracts (pinned by tests/test_k3s_installer.py):
     'active' AND /etc/rancher/k3s/k3s.yaml exists. The upstream
     `install.sh` is itself hash-checked, so re-runs would also be no-ops,
     but a Python-side short-circuit avoids even the network round-trip.
-  * Agents join on `https://<vip>:6443`, never a control-plane eth0 IP.
-    The VIP is owned by kube-vip's gratuitous ARP; pinning to a CP IP
-    would break failover.
-  * Control-plane installs with `--tls-san=<vip>` so a kubeconfig
-    pulled from the server references a SAN the apiserver's serving
-    cert actually carries. Live 2026-07-08 probe: VIP records exist
-    in PowerDNS but the apiserver has no listener until kube-vip comes
-    up; the first external client (kubectl) gets
-    `x509: certificate is not valid for <vip>` without this flag.
+  * Agents join on `https://<cp_ip>:6443`, never a VIP. WP08 (2026-07-08)
+    removed the kube-vip VIP layer -- the cluster runs single-control-plane
+    on cicd (10.0.0.65) so the CP host IP is the apiserver endpoint.
+  * Control-plane installs with `--tls-san=<cp_ip>` (and the
+    apiserver SVC IP `172.17.0.1` and `kubernetes.default.svc`) so a
+    kubeconfig pulled from the server references SANs the apiserver's
+    serving cert actually carries. Live 2026-07-08 probe: the cert is
+    valid for the CP IP and the in-cluster SVC; pin the SANs to match.
   * No token / secret ever logged (M7). StructuredLogger scrubs at the
     boundary; we ALSO pass the join token as an environment variable
     on the SSH command so it doesn't appear in argv / process list.
@@ -31,10 +30,10 @@ Idempotency recap (per-VM, per-call):
       detected so skipping service start`. We don't rely on that, we
       add our own gate.
 
-Cross-cluster smoke (2026-07-08, kvm.bruj0.net): VIPs pre-existing
-in PowerDNS (10.0.0.30 cicd, 10.0.0.40 apps), but unreachable until
-this module brings up k3s + until the `helm` phase brings up kube-vip.
-Order of operations: cloudinit -> install_k3s -> helm.
+Cross-cluster smoke (2026-07-08, kvm.bruj0.net): cicd uses CP IP
+10.0.0.65, apps uses CP IP 10.0.0.67. The in-cluster apiserver SVC
+IP (172.17.0.1 / 172.21.0.1) is what every pod uses. Order of
+operations: cloudinit -> install_k3s -> helm.
 """
 from __future__ import annotations
 
@@ -219,12 +218,17 @@ class K3sInstaller:
             raise K3sInstallerError(
                 "blank_vip",
                 node=vm.get("name"),
-                resolution="pass infra/clusters/<name>/output.json::vip through",
+                resolution=(
+                    "WP08 (2026-07-08): vip argument is now ignored; "
+                    "agents join on the CP host IP. Leave as a "
+                    "deprecation stub for callers still passing it."
+                ),
             )
         node_ip = str(vm["ip"])
         node_name = str(vm["name"])
-        # --tls-san=<vip> is REQUIRED (came out of the VIP verification).
-        # Filled at install time, never hard-coded.
+        # --tls-san=<cp_ip> is REQUIRED (WP08, 2026-07-08: the VIP
+        # layer is gone; the apiserver is reached directly on the CP
+        # host IP). Filled at install time, never hard-coded.
         #
         # WP07 (2026-07-08): also add the in-cluster apiserver SANs so
         # workloads that talk to the apiserver via kubernetes.default.svc
@@ -235,7 +239,7 @@ class K3sInstaller:
         # `x509: certificate is not valid for kubernetes.default.svc`.
         # svc_cidr is passed via the cluster dict that bootstrap_cluster.py
         # builds (see `_run_install_k3s` -- the dict carries
-        # svc_cidr from output.json: cicd=10.43.0.0/16, apps=10.45.0.0/16).
+        # svc_cidr from output.json: cicd=172.17.0.0/16, apps=172.21.0.0/16).
         # Gateway address = <first three octets>.1.
         # WP08 (2026-07-08, §14.4 second root cause): the k3s default
         # `--cluster-cidr=10.42.0.0/16` and `--service-cidr=10.43.0.0/16`
@@ -276,7 +280,11 @@ class K3sInstaller:
             *_SERVER_BASE_FLAGS,
             f"--node-ip={node_ip}",
             f"--node-external-ip={node_ip}",
-            f"--tls-san={vip}",
+            # WP08: the apiserver cert SAN must be the CP host IP
+            # (no more VIP). The first SAN is the canonical one; the
+            # in-cluster apiserver SANs come after to keep them
+            # explicit.
+            f"--tls-san={node_ip}",
             # In-cluster apiserver SANs (WP07). The two values cover
             # every chart hook we have observed: the cert-manager
             # cainjector, Envoy Gateway's certgen Job, the strrl
@@ -316,7 +324,11 @@ class K3sInstaller:
             raise K3sInstallerError(
                 "blank_vip",
                 node=vm.get("name"),
-                resolution="pass infra/clusters/<name>/output.json::vip through",
+                resolution=(
+                    "WP08 (2026-07-08): vip argument is now ignored; "
+                    "agents join on the CP host IP. Leave as a "
+                    "deprecation stub for callers still passing it."
+                ),
             )
         if not token:
             raise K3sInstallerError(
@@ -329,11 +341,36 @@ class K3sInstaller:
             )
         node_ip = str(vm["ip"])
         node_name = str(vm["name"])
+        # WP08 (2026-07-08): K3S_URL points at the CP host IP,
+        # NOT the agent's own IP and NOT a kube-vip VIP. The cluster
+        # dict carries the CP node under key `control_plane_ip`
+        # (set by bootstrap_cluster.py::_run_install_k3s, which
+        # reads the first CP out of topo.control_plane). Fall back
+        # to scanning the cluster dict's vms[] for the first CP if
+        # the convenience key is missing (unit-test path).
+        cp_ip = str(self.cluster.get("control_plane_ip", ""))
+        if not cp_ip:
+            for candidate in self.cluster.get("vms", []):
+                if candidate.get("role") == "control_plane":
+                    cp_ip = str(candidate.get("ip", ""))
+                    break
+        if not cp_ip:
+            raise K3sInstallerError(
+                "no_cp_ip",
+                node=vm.get("name"),
+                resolution=(
+                    "WP08: bootstrap_cluster.py must populate "
+                    "control_plane_ip in the cluster dict so agents "
+                    "know which apiserver to join."
+                ),
+            )
         env = {
             "INSTALL_K3S_VERSION": self._versions.k3s_stable_version,
             "INSTALL_K3S_CHANNEL": self._versions.k3s_channel,
             "K3S_NODE_NAME": node_name,
-            "K3S_URL": f"https://{vip}:6443",
+            # WP08 (2026-07-08): K3S_URL points at the CP host IP
+            # directly. The kube-vip VIP layer is gone.
+            "K3S_URL": f"https://{cp_ip}:6443",
             # K3S_TOKEN is never logged; the StructuredLogger scrubs at the
             # boundary, but we ALSO avoid putting it on the command line --
             # we pass it via the remote shell's environment.

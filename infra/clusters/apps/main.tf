@@ -5,14 +5,8 @@
 # alongside clusters/cicd with non-overlapping identity (VIP, VMIDs, IPs, CIDRs).
 #
 # Identity invariants (M3):
-#   - VIP 10.0.0.40 (cicd: 10.0.0.30)
 #   - VMID range 210..211 (cicd: 200..201)
-#   - per-node IP range 10.0.1.0..10.0.1.1 within 10.0.1.0/24
-#     (cicd: 10.0.0.0/24 -> 10.0.0.0, 10.0.0.1)
-#     NOTE: cidrhost treats the IP portion as the network address, so two
-#     clusters MUST use distinct /24 networks to keep per-node IPs disjoint.
-#     The WP03 prompt's ip_start="10.0.0.211" notation is the operator's intent
-#     for "starting near .211"; we translate that intent into a distinct /24.
+#   - per-node IPs are Proxmox-SDN-allocated, NOT configured here.
 #   - pod_cidr 172.20.0.0/16, svc_cidr 172.21.0.0/16 (cicd: 172.16/172.17)
 #   - cf_tunnel_name "apps" (cicd: "cicd")
 #
@@ -126,7 +120,7 @@ resource "terraform_data" "image_id_present" {
   lifecycle {
     precondition {
       condition     = length(trimspace(data.local_file.image_id.content)) > 0
-      error_message = "build/image-id.txt is empty or missing; run tools/build_image.py first to bake the Talos template."
+      error_message = "build/image-id.txt is empty or missing; run tools/build_image.py first to bake the Ubuntu+k3s template."
     }
   }
 }
@@ -141,23 +135,13 @@ module "apps" {
   pve_node = "BigBertha"
 
   cluster_name                = "apps"
-  vip                         = "10.0.0.40"
   vmid_start                  = 210
-  ip_start                    = "10.0.2.0/24"   # apps nodes in 10.0.2.0/24 (cicd is in 10.0.1.0/24). Both host vnet0 = 10.0.0.1/8 routes these. (cidrhost on 10.0.2.0/24 yields 10.0.2.0, 10.0.2.1.)
   image_id                    = length(data.local_file.image_id.content) > 0 ? chomp(data.local_file.image_id.content) : ""
   vnet_bridge                 = "vnet0"
-  # WP08 (2026-07-08): pod_cidr + svc_cidr shifted from 10.44/10.45 to
-  # 172.20/172.21. The old 10.44/10.45 ranges overlapped the host LAN
-  # 10.0.0.0/8, which broke pod->apiserver routing per k3s-io/k3s#4627.
-  # Convention (per docs/cluster-instances.md):
-  #   cicd: pod=172.16.0.0/16, svc=172.17.0.0/16
-  #   apps: pod=172.20.0.0/16, svc=172.21.0.0/16
-  # A 3-step gap between cicd (172.16/172.17) and apps (172.20/172.21)
-  # so tcpdumps and PCAPs can be eyeballed for the right cluster
-  # without pulling up output.json (cf. user request 2026-07-08:
-  # "use different cidr for the clusters so its easy to distinguish
-  # between them"). The Nth new cluster increments by 4:
-  # (172.24, 172.25), (172.28, 172.29), ...
+  # See cicd/main.tf for the design rationale. pod_cidr/svc_cidr/
+  # cluster_dns are cluster scopes, not Proxmox-managed IPs; vip +
+  # ip_start inputs were removed from the module because SDN owns
+  # the IPs.
   pod_cidr                    = "172.20.0.0/16"
   svc_cidr                    = "172.21.0.0/16"
   cluster_dns                 = "172.21.0.10"

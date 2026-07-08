@@ -199,7 +199,7 @@ class PveClient:
             ["qm", "list"], timeout=30.0, allow_failure=False
         )
         for line in result.stdout.splitlines():
-            # Match e.g.: "       900  talos-v1.10.0    stopped"
+            # Match e.g.: "       900  ubuntu-noble-template    stopped"
             # The first whitespace-padded column is the VMID, the second
             # is the name; subsequent columns (status, etc.) are ignored.
             m = re.match(r"^\s*(\d+)\s+(\S+)", line)
@@ -208,36 +208,40 @@ class PveClient:
         return None
 
     # ------------------------------------------------------------------
-    # SS1 Phase 1 helpers — build Talos template without Packer.
+    # SS1 Phase 1 helpers — build Ubuntu Noble template (no Packer).
     # ------------------------------------------------------------------
 
     def create_template_shell(
         self, vmid: int, name: str, *, memory_mb: int,
         iso_path: str | None = None,
     ) -> None:
-        """Create an empty VM shell at VMID with EFI + 32 GB scsi0 + Talos-friendly defaults.
+        """Create an empty VM shell at VMID with EFI + 32 GB scsi0 + Ubuntu Noble defaults.
 
-        Mirrors the canonical Proxmox + Talos layout (see Sidero docs,
-        https://docs.siderolabs.com/talos/v1.13/platform-specific-installations/virtualized-platforms/proxmox):
-        - bios=ovmf (UEFI required by Talos)
+        Phase 1 (tools/build_image/__init__.py) calls this from the
+        PVE jump host to scaffold the golden VM, then imports the
+        Ubuntu Noble cloud image into scsi0 and uses virt-customize
+        to bake qemu-guest-agent + cloud-init + the per-cluster seed
+        ISO. Cluster roots then `qm clone` this template for each
+        cluster node.
+
+        Layout (mirrors the canonical Proxmox + Ubuntu-Noble recipe):
+        - bios=ovmf (UEFI boot)
         - machine=q35
         - efidisk0 on the operator-configured storage pool
-        - scsi0 virtio-scsi-pci (NOT virtio-scsi-single; Talos installer
-          rejects the latter per Sidero troubleshooting notes)
-        - agent enabled (qemu-guest-agent; only meaningful if the imported
-          Talos image carries the siderolabs/qemu-guest-agent extension)
-        - serial0 socket + vga serial0 (required to see Talos early boot
-          logs from the Proxmox web UI)
+        - scsi0 virtio-scsi-pci
+        - agent enabled (qemu-guest-agent)
+        - serial0 socket + vga serial0 (required to see Ubuntu early
+          boot logs from the Proxmox web UI)
 
         Args:
             vmid: Proxmox VMID to create (typically 900).
-            name: VM name (typically "talos-template").
+            name: VM name (typically "ubuntu-noble-template").
             memory_mb: RAM in MiB for the template. The bpg/proxmox
               proxmox_cloned_vm in Phase 2 overrides this per-node.
             iso_path: optional `local:iso/<basename>` to attach at
               VM creation. When set, boot order is `ide2` first so the
-              VM boots the ISO; the install flow will reboot from disk
-              after `talosctl apply-config`.
+              VM boots the ISO; the install flow will reboot from
+              disk after cloud-init finishes.
         """
         args = [
             "qm", "create", str(vmid),
@@ -298,8 +302,8 @@ class PveClient:
               (typically via scp or ssh curl).
             storage: PVE storage pool name (e.g. "data1").
             slot: disk slot; defaults to "scsi0".
-            format: target disk format (raw for Talos, qcow2 for the
-              Ubuntu cloud image).
+            format: target disk format. qcow2 for the Ubuntu cloud
+              image is the canonical setting.
         """
         result = self._run(
             [
@@ -356,8 +360,8 @@ class PveClient:
 
         Returns True if the VM reached 'stopped' within the timeout,
         False otherwise. Used by Phase 1 to wait for the disk-imported
-        Talos VM to come up, then for the graceful-shutdown to complete
-        before converting to template.
+        Ubuntu VM to come up, then for the graceful-shutdown to
+        complete before converting to template.
         """
         import time
 
@@ -388,7 +392,8 @@ class PveClient:
         """Run a shell command on the PVE host via SSH.
 
         Used for one-off ops that don't have a `qm`/`pvesh` equivalent
-        (e.g. `curl -fLO <url>` to download the Talos image, or `xz -d`).
+        (e.g. `curl -fLO <url>` to download the Ubuntu cloud image, or
+        `xz -d`).
         Routes through `ssh_target` so the operator host can reach the
         PVE host without needing qm/pvesh locally.
 

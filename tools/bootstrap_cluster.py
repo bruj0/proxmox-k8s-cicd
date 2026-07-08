@@ -111,11 +111,11 @@ from kubeconfig_puller import (  # type: ignore[import-not-found]  # noqa: E402
 from lib.log import StructuredLogger  # type: ignore[import-not-found]  # noqa: E402
 from lib.secret_loader import SecretLoader  # type: ignore[import-not-found]  # noqa: E402
 # ClusterTopology is the data class for parsing infra/clusters/<name>/output.json.
-# It lives in lib.talos_client.py for historical reasons (it was first
-# extracted during the Talos phase); the class itself has no Talos
-# dependency -- it just reads JSON. We keep the file for audit but only
-# import this one symbol.
-from lib.talos_client import ClusterTopology  # type: ignore[import-not-found]  # noqa: E402
+# WP08 (2026-07-08): moved out of tools/lib/talos_client.py when
+# the pipeline pivoted off Talos. The class is purely a JSON shape
+# adapter; nothing in it knows about Talos or any specific cluster
+# runtime.
+from lib.cluster_topology import ClusterTopology  # type: ignore[import-not-found]  # noqa: E402
 
 _LOG = StructuredLogger("bootstrap_cluster")  # noqa: E402
 
@@ -269,7 +269,19 @@ def _run_install_k3s(
         )
     cluster_dict = {
         "name": topo.name,
+        # WP08 (2026-07-08): `vip` is retained for backwards
+        # compatibility (older output.json files have a VIP field)
+        # but is no longer used as the join endpoint. Agents join on
+        # the CP host IP (see tools/lib/k3s_installer.py::plan_agent).
         "vip": topo.vip,
+        # WP08: pass the CP host IP as a convenience key so the
+        # installer's plan_agent() doesn't have to scan the vms[]
+        # list to find the first CP. Single-CP clusters have it
+        # equal to topo.control_plane[0]["ip"]; multi-CP would
+        # extend this to a list.
+        "control_plane_ip": (
+            topo.control_plane[0]["ip"] if topo.control_plane else ""
+        ),
         # WP07 (2026-07-08): pass the per-cluster svc_cidr so the
         # installer can add `--tls-san=<svc_gateway>` (see the
         # gotcha in docs/cluster-state.md §14.4). Without this,
@@ -365,36 +377,21 @@ def _run_k3s(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
     apiserver is reachable and at least one node is Ready before
     declaring the cluster bootable. Otherwise the helm phase will
     surface a confusing "connection refused" failure.
+
+    Use the same PVE apiserver tunnel as the helm phase: it sets up a
+    live port-forward, fetches the kubeconfig from the CP, and rewrites
+    the server URL to point at the tunnel's local port. Doing this here
+    makes `k3s` idempotent: it works whether the on-disk kubeconfig is
+    fresh, stale (from a previous bootstrap that tore the tunnel down),
+    or missing entirely.
     """
-    kubeconfig = cluster_dir / "kubeconfig"
-    if not kubeconfig.exists():
-        # If kubeconfig hasn't been pulled yet (canonical phase order puts
-        # helm after kubeconfig), pull it now so we can talk to the cluster.
-        if not topo.control_plane:
-            raise BootstrapError("k3s", {"reason": "no control plane"})
-        cp_ip = topo.control_plane[0]["ip"]
-        kubeconfig.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            # Ubuntu+k3s: kubeconfig lives at /etc/rancher/k3s/k3s.yaml on
-            # the control-plane node. scp over SSH using the Bitwarden SSH
-            # agent so the key is forwarded without prompting. The server
-            # URL in the kubeconfig points at the VIP (10.0.0.30 for cicd,
-            # 10.0.0.40 for apps); kubectl resolves it through the SDN.
-            subprocess.run(
-                [
-                    "scp",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    f"root@{cp_ip}:/etc/rancher/k3s/k3s.yaml",
-                    str(kubeconfig),
-                ],
-                check=True,
-                env={**__import__("os").environ, "SSH_AUTH_SOCK": "/home/bruj0/.bitwarden-ssh-agent.sock"},
-            )
-        except (subprocess.CalledProcessError, OSError) as exc:
-            raise BootstrapError("k3s", {"reason": str(exc)}) from exc
+    if not topo.control_plane:
+        raise BootstrapError("k3s", {"reason": "no control plane"})
+    cp_ip = topo.control_plane[0]["ip"]
+    try:
+        kubeconfig, _local_port = _open_apiserver_tunnel(state, cp_ip, cluster_dir)
+    except Exception as exc:
+        raise BootstrapError("k3s", {"reason": str(exc)}) from exc
     try:
         result = subprocess.run(
             [
@@ -495,10 +492,12 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
         "vip": topo.vip,
         "pod_cidr": topo.pod_cidr,
         "svc_cidr": topo.svc_cidr,
+        "control_plane_ip": topo.control_plane[0]["ip"] if topo.control_plane else "",
     }
     secrets = _load_cluster_secrets()
     try:
-        # First two: cilium + kube-vip (WP04).
+        # WP08: only cilium remains in the first pair (kube-vip removed
+        # 2026-07-08; single-CP cicd doesn't need a VIP layer).
         client.install_or_upgrade(first_two_releases(cluster_dict))
         # Remaining four (WP05): proxmox-ccm, proxmox-csi, cloudflare-tunnel,
         # cert-manager.

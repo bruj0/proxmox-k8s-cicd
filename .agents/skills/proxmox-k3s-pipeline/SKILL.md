@@ -25,21 +25,22 @@ k3s v1.36.2+k3s1).** All four cluster VMs (cicd-cp-1 @ SDN
 10.0.0.65, cicd-w-1 @ 10.0.0.64, apps-cp-1 @ 10.0.0.67, apps-w-1 @
 10.0.0.66) are cloned, running, and have a working
 qemu-guest-agent. cicd-cp-1 runs the k3s server, cicd-w-1 is
-joined as a worker, Cilium + kube-vip + proxmox-cloud-controller-
-manager (proxmox-ccm 0.2.29 pulled, deployment readiness pending
-on a credentials URL fix) + proxmox-csi-plugin 0.5.9 are installed
-via Helm, and the operator kubeconfig is merged into
-`~/.kube/config`. apps-cp-1 runs the k3s server; apps-w-1 has its
-agent installed and `activating`. The Phase-4 sub-phases were
-renamed from `talos` to `cloudinit` when the OS pivot landed
-(2026-07-07), and `install_k3s` was added between `cloudinit` and
-`k3s` when the canonical install plan landed on 2026-07-08 (see
-`tools/lib/k3s_installer.py` + the Step 4a block below).
-**WP07 (2026-07-08) adds three sub-phases for GitLab-readiness**:
-`gateway_crds` (apply pinned standard Gateway API CRDs),
-`gateway_smoke` (real L7 round-trip via Envoy Gateway v1.8.2),
-and `csi_smoke` (real PVC round-trip via proxmox-csi-plugin).
-See Step 4b/4c below and
+joined as a worker, Cilium + proxmox-cloud-controller-manager
+0.2.29 + proxmox-csi-plugin 0.5.9 are installed via Helm, and
+the operator kubeconfig is merged into `~/.kube/config`. apps-cp-1
+runs the k3s server; apps-w-1 is joined. The kube-vip VIP layer
+was removed (WP08, 2026-07-08) -- agents join on the CP host IP
+directly.
+
+The Phase-4 sub-phases were renamed from `talos` to `cloudinit`
+when the OS pivot landed (2026-07-07), and `install_k3s` was added
+between `cloudinit` and `k3s` when the canonical install plan
+landed on 2026-07-08 (see `tools/lib/k3s_installer.py` + the
+Step 4a block below). **WP07 (2026-07-08) adds three sub-phases
+for GitLab-readiness**: `gateway_crds` (apply pinned standard
+Gateway API CRDs), `gateway_smoke` (real L7 round-trip via Envoy
+Gateway), and `csi_smoke` (real PVC round-trip via
+proxmox-csi-plugin). See Step 4b/4c below and
 [`docs/plan-envoy-gateway-and-smoke-tests.md`](../../../docs/plan-envoy-gateway-and-smoke-tests.md)
 for the full design.
 
@@ -280,13 +281,12 @@ in the operator's reply before invoking the library:
 | `bpg/proxmox` (OpenTofu provider) | `0.111.1` | rationale: latest stable that exposes `proxmox_cloned_vm`; v0.111.1 introduces the `host` attribute that the WP02 module uses |
 | `pan-net/powerdns` (OpenTofu provider) | `1.5.0` | rationale: pan-net 1.5.x is the first version that supports the `rrsets` PATCH endpoint with `changetype: REPLACE`, which we use for idempotent record updates |
 | `STRRL/cloudflare-tunnel-ingress-controller` (Helm chart) | `0.0.23` | rationale: only stable version on the strrl chart repo as of 2026-07; pinned because the upstream CRDs are still alpha |
-| `cilium` (Helm chart) | `1.16.x` | rationale: matches the Ubuntu 24.04 HWE kernel (6.8) shipped with the cloud image; supports `gatewayAPI.enabled` plus eBPF host routing |
-| `kube-vip` (Helm chart) | `0.9.9` | rationale: latest stable as of 2026-07; values shape is `config.address` + `env.cp_enable` (NOT `controlPlane.enabled`, which was a 1.x-only preview that never shipped) |
-| `proxmox-cloud-controller-manager` (OCI Helm chart) | `0.2.29` | rationale: latest stable; OCI ref `oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager` (HTTP path 404s). Required for `topology.kubernetes.io/region` + `zone` labels on the apps cluster nodes |
-| `proxmox-csi-plugin` (OCI Helm chart) | `0.5.9` | rationale: latest stable; OCI ref `oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin`. Supports PVE 9.x and lvm-thin on `data1/data1` |
+| `cilium` (Helm chart) | `1.16.1` | rationale: matches the Ubuntu 24.04 HWE kernel (6.8) shipped with the cloud image; supports `gatewayAPI.enabled` plus eBPF host routing. WP08 (2026-07-08): pin `kubeProxyReplacement=true`, `cgroup.hostRoot=/sys/fs/cgroup`, `k8sServiceHost=<cp_ip>`. |
+| `proxmox-cloud-controller-manager` (OCI Helm chart) | `0.2.29` | rationale: latest stable; OCI ref `oci://ghcr.io/sergelogvinov/charts/proxmox-cloud-controller-manager` (HTTP path 404s). WP08 (2026-07-08): required for `topology.kubernetes.io/region` + `zone` labels on every node -- single-node PVE (BigBertha) has no corosync, so pccm does NOT auto-derive the labels and the operator must set them via chart values (region=proxmox-host, zone=BigBertha). Without this, proxmox-csi-plugin-node CrashLoopBackOffs. |
+| `proxmox-csi-plugin` (OCI Helm chart) | `0.5.9` | rationale: latest stable; OCI ref `oci://ghcr.io/sergelogvinov/charts/proxmox-csi-plugin`. Supports PVE 9.x and lvm-thin on `data1/data1`. URL pinned to `https://10.0.0.1:8006/api2/json` with `insecure_skip_tls_verify=true` because pods cannot resolve the PVE FQDN. |
 | `cert-manager` (Helm chart) | `1.20.x` | rationale: latest stable; in-cluster CA only, no ACME solvers |
-| `k3s` | `1.34.x` | rationale: matches the Cilium + kube-vip versions; no known CVEs |
-| `helm` | `3.x` | rationale: required for `helm upgrade --install`; matches what k3s 1.34 ships |
+| `k3s` | `1.36.x` | rationale: latest stable; reconciles-and-pins. No known CVEs in 1.36.x. WP08 (2026-07-08): pin `--disable-kube-proxy` + non-overlapping CIDRs (172.16/172.17) to avoid k3s-io/k3s#4627. |
+| `helm` | `3.x` | rationale: required for `helm upgrade --install`; matches what k3s 1.36 ships |
 | Ubuntu cloud image (noble) | `noble-24.04.x` | rationale: LTS through 2029; cloud image ships with `qemu-guest-agent` package (no sideloading required); cloud-init NoCloud datasource auto-discovers seeded ISOs |
 
 Document each library's rationale in the operator's reply **before**
@@ -408,7 +408,7 @@ versions cause silent API differences.
 | Tool | Required | Notes |
 |---|---|---|
 | `tofu` (OpenTofu) | `>= 1.6.0` | `-chdir=` syntax requires 1.6+ |
-| `helm` | `3.x` | Matches what k3s 1.34 ships |
+| `helm` | `3.x` | Matches what k3s 1.36 ships |
 | `kubectl` | `>= 1.30` | For bootstrap phase verification |
 | `qm` (PVE CLI) | shipped | VM lifecycle (`qm clone`, `qm set`, `qm start`) |
 | `socat` | shipped on PVE | Used by `scripts/capture_serial.py` to read `/var/run/qemu-server/<vmid>.serial0` |
@@ -1126,11 +1126,11 @@ This single invocation runs every sub-phase end-to-end:
    the Envoy Gateway chart's `--skip-crds` install finds the CRDs
    already present. See Step 4b.
 5. **`helm`** -- open an apiserver port-forward through PVE and
-   install the two critical-path releases first (Cilium 1.16.1 +
-   kube-vip 0.9.9), then the remaining four (proxmox-cloud-
+   install the first critical-path release (Cilium 1.16.1; WP08
+   removed kube-vip), then the remaining four (proxmox-cloud-
    controller-manager 0.2.29, proxmox-csi-plugin 0.5.9, strrl/
    cloudflare-tunnel-ingress-controller 0.0.23, cert-manager
-   1.20.x), then **Envoy Gateway v1.8.2** (WP07, GatewayClass=
+   1.20.x), then **Envoy Gateway** (WP07, GatewayClass=
    envoy implementation), then `kubectl apply` the pre-rendered
    Traefik `HelmChartConfig` from
    `infra/clusters/<name>/manifests/`. **All apiserver calls in this
@@ -1226,9 +1226,8 @@ Assert ALL before proceeding:
    worker nodes in `Ready` state.
 2. `kubectl --context cicd -n kube-system get pods -A` shows Cilium
    + proxmox-ccm + proxmox-csi + cloudflare-tunnel + cert-manager
-   pods `Running` (no `kube-vip` static pod -- on Ubuntu+k3s the
-   API VIP is owned by `kube-vip`'s userspace daemonset, not a Talos
-   static pod manifest).
+   pods `Running`. WP08 (2026-07-08): no kube-vip daemonset; the
+   cluster apiserver is on the CP host IP directly.
 3. `kubectl --context cicd get gatewayclass envoy` shows
    `controllerName=gateway.envoyproxy.io/gatewayclass-controller`
    with `Accepted=True` (WP07).
@@ -1237,10 +1236,14 @@ Assert ALL before proceeding:
 5. `kubectl --context cicd get sc proxmox-lvm-thin -o
    jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}'`
    returns `true` (WP07).
-6. `python -m tools.bootstrap_cluster --cluster cicd --phases all`
+6. `kubectl --context cicd get nodes --show-labels` shows
+   `topology.kubernetes.io/region=proxmox-host,
+   topology.kubernetes.io/zone=BigBertha` on every node (WP08
+   gate: without these, proxmox-csi-plugin-node never starts).
+7. `python -m tools.bootstrap_cluster --cluster cicd --phases all`
    exits 0 in <60 seconds (idempotent rerun -- every phase skips
    because state is already done).
-7. `kubectl --context cicd get pods -n proxmox-k8s-cicd-smoke`
+8. `kubectl --context cicd get pods -n proxmox-k8s-cicd-smoke`
    returns `No resources found` (smoke namespaces are cleaned up
    by the smoke phases).
 
@@ -1253,16 +1256,35 @@ and wired into the dispatcher by `_run_install_k3s` in
 from `tools/versions.lock.yaml::k3s_stable_version` (currently
 `v1.36.2+k3s1`).
 
+**WP08 (2026-07-08) update.** The kube-vip VIP layer is gone.
+The cluster runs single-control-plane (cicd-cp-1 = 10.0.0.65;
+apps-cp-1 = 10.0.0.67), so agents join on the CP host IP directly.
+The `vip` field is still read from `output.json` (kept for
+backwards compat with the historical 10.0.0.30 / 10.0.0.40
+PowerDNS records) but it is no longer used as the join endpoint.
+The pin location is now:
+
+- `--tls-san=<cp_ip>` (server cert SAN must include the CP IP)
+- `--tls-san=<svc_gateway>` (in-cluster apiserver, e.g. 172.17.0.1)
+- `--tls-san=kubernetes.default.svc` (workloads that resolve the
+  Service name)
+- `--cluster-cidr=<pod_cidr>` (172.16.0.0/16 cicd, 172.20.0.0/16 apps)
+- `--service-cidr=<svc_cidr>` (172.17.0.0/16 cicd, 172.21.0.0/16 apps)
+- `--cluster-dns=<cluster_dns>` (172.17.0.10 cicd, 172.21.0.10 apps)
+
+The CIDR pins avoid the host LAN overlap documented in
+k3s-io/k3s#4627. See Step 4a.3.10 below for the full story.
+
 **Inputs**: `infra/clusters/<name>/output.json` (control-plane +
-worker IPs, VIP). Run **after** `cloudinit` succeeds and **before**
-the `k3s` healthz phase.
+worker IPs, pod_cidr, svc_cidr, cluster_dns). Run **after**
+`cloudinit` succeeds and **before** the `k3s` healthz phase.
 
 ### 4a.1 -- Recipe per node
 
 | Role | Env vars exported on the remote shell | Installer tail-flags |
 |---|---|---|
-| control_plane | `INSTALL_K3S_VERSION=v1.36.2+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>` | `server --flannel-backend=none --disable=traefik --disable=servicelb --disable=local-storage --disable=metrics-server --kubelet-arg=cloud-provider=external --node-ip=<ip> --node-external-ip=<ip> --tls-san=<vip>` |
-| agent | `INSTALL_K3S_VERSION=v1.36.2+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>`, `K3S_URL=https://<vip>:6443`, `K3S_TOKEN=<node-token>` | `agent --flannel-backend=none --node-ip=<ip> --node-external-ip=<ip>` |
+| control_plane | `INSTALL_K3S_VERSION=v1.36.2+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>` | `server --flannel-backend=none --disable-kube-proxy --disable=traefik --disable=servicelb --disable=local-storage --disable=metrics-server --kubelet-arg=cloud-provider=external --node-ip=<ip> --node-external-ip=<ip> --tls-san=<cp_ip> --tls-san=<svc_gateway> --tls-san=kubernetes.default.svc --cluster-cidr=<pod_cidr> --service-cidr=<svc_cidr> --cluster-dns=<cluster_dns>` |
+| agent | `INSTALL_K3S_VERSION=v1.36.2+k3s1`, `INSTALL_K3S_CHANNEL=stable`, `K3S_NODE_NAME=<name>`, `K3S_URL=https://<cp_ip>:6443`, `K3S_TOKEN=<node-token>` | `agent --kubelet-arg=cloud-provider=external --node-ip=<ip> --node-external-ip=<ip>` |
 
 Both roles invoke the upstream installer at <https://get.k3s.io>
 over SSH; the env is rendered inline into the remote shell so the
@@ -1293,17 +1315,17 @@ SSH_AUTH_SOCK=/home/bruj0/.bitwarden-ssh-agent.sock \
 # Expect: log line "k3s.skip_install reason=already healthy ..."
 ```
 
-### 4a.3 -- Live-host gotchas (2026-07-08)
+### 4a.3 -- Live-host gotchas
 
-**4a.3.1 -- `--tls-san=<vip>` is mandatory.**
+**4a.3.1 -- `--tls-san=<cp_ip>` is mandatory (WP08).**
 K3s generates a serving cert whose SANs include `--node-ip` /
-`--node-external-ip` by default. Without `--tls-san=<vip>` the
-kubeconfig pulled from the server has `server: https://<vip>:6443`
-but the serving cert does NOT carry the VIP SAN, so external
-clients fail with `x509: certificate is not valid for <vip>`. Live
-probe on 2026-07-08 surfaced this; fixed by appending
-`--tls-san=<vip>` to the server-side `INSTALL_K3S_EXEC`
-(see Step 4a.3.1 below).
+`--node-external-ip` by default. Without `--tls-san=<cp_ip>` the
+kubeconfig pulled from the server references the CP IP but the
+serving cert does NOT carry that SAN, so external clients fail
+with `x509: certificate is not valid for <cp_ip>`. WP08 fixed
+this by replacing `--tls-san=<vip>` with `--tls-san=<cp_ip>`.
+The two `--tls-san=<svc_gateway>` and `--tls-san=kubernetes.default.svc`
+flags stay for in-cluster apiserver callers.
 
 **4a.3.2 -- The VM IP comes from the SDN DHCP lease, not from
 `output.json::nodes[i].ip`.** Phase 2 still emits the intended
@@ -1347,9 +1369,11 @@ required".
 That flag is server-only; the agent binary rejects it with "flag
 provided but not defined: -flannel-backend" in journalctl. Server
 passes `--flannel-backend=none`; agent inherits the CNI choice
-via the kubelet join handshake and MUST NOT pass the flag. (Bit
-the first cicd-w-1 attempt too.) See test `test_plan_for_agent_joins_vip_not_eth0`
-in `tools/tests/test_k3s_installer.py` for the regression guard.
+via the kubelet join handshake and MUST NOT pass the flag. WP08
+removed `--flannel-backend=none` from the agent tail-flags
+entirely. See test
+`test_plan_for_agent_joins_cp_ip_not_eth0` in
+`tools/tests/test_k3s_installer.py` for the regression guard.
 
 **4a.3.8 -- Use ProxyCommand, not `-W`, for the SSH tunnel.**
 OpenSSH's `-W <host>:22` cmdline flag forces stdio-forwarding
@@ -1359,15 +1383,37 @@ both tunneling AND a remote exec, so `-o ProxyCommand="ssh -W
 `tools/lib/k3s_installer.py::_ssh_argv` for the canonical
 shape.
 
-**4a.3.9 -- Agent reaches `127.0.0.1:6444` over a local
-load-balancer, which then tunnels to the VIP (`10.0.0.30` /
-`10.0.0.40`).** Until the `helm` phase lands `kube-vip` on the
-server, that load-balancer connection resets with
-`127.0.0.1:NNNNN -> 127.0.0.1:6444: read: connection reset by peer`.
-This is the agent retrying every 10 s waiting for the apiserver.
-It's expected post-install_k3s; the unit stays `activating` until
-the `helm` phase completes. Don't mistake this for an
-install_k3s failure.
+**4a.3.9 -- WP08: agent reaches the apiserver directly on the CP
+host IP.** The kube-vip load-balancer is gone; the agent's
+`K3S_URL=https://<cp_ip>:6443` connects straight to the k3s
+server's loopback tunnel via PVE. After the `install_k3s` phase
+completes, the agent retries every 10 s; the systemd unit
+transitions to `active` as soon as the server's API returns
+200. No `helm` phase is needed to bootstrap the apiserver.
+
+**4a.3.10 -- WP08: pin pod/svc/dns CIDRs to non-overlapping
+RFC1918 ranges.** k3s's default `--cluster-cidr=10.42.0.0/16`
+and `--service-cidr=10.43.0.0/16` overlap the host LAN
+`10.0.0.0/8`, which triggers the legacy kube-proxy MASQUERADE
+short-circuit documented in k3s-io/k3s#4627. The fix is to pin
+non-overlapping CIDRs at install time:
+
+- cicd: pod=172.16.0.0/16, svc=172.17.0.0/16, dns=172.17.0.10
+- apps: pod=172.20.0.0/16, svc=172.21.0.0/16, dns=172.21.0.10
+
+The installer reads these from the cluster dict populated by
+`tools/bootstrap_cluster.py::_run_install_k3s`, which reads
+them from `output.json::pod_cidr/svc_cidr/cluster_dns` and
+falls back to the per-cluster defaults above. cluster_dns must
+be in the service CIDR (k3s contract).
+
+**4a.3.11 -- WP08: `--disable-kube-proxy` is required for
+cilium kubeProxyReplacement=true.** Without it, k3s's embedded
+kube-proxy and cilium's eBPF kube-proxy-replacement both write
+iptables, and kube-proxy's `KUBE-MARK-MASQ` rule for the
+`kubernetes` ClusterIP is omitted, breaking pod->apiserver
+routing. Cilium must be told to take over (it is, via
+`kubeProxyReplacement=true` in the helm values).
 
 ### 4a.4 -- Success criteria
 
@@ -1377,11 +1423,10 @@ install_k3s failure.
    worker VM.
 3. `/var/lib/rancher/k3s/server/node-token` is non-empty on the
    first control-plane node.
-4. `curl -sk https://10.0.0.30:6443/healthz` returns `ok` from
-   the operator host within 90 s of the install completing (after
-   the helm phase lands kube-vip; before that the VIP is
-   upstream-claimed by the kubelet loopback and is only reachable
-   from inside the cluster).
+4. `curl -sk https://10.0.0.65:6443/healthz` returns `ok` from
+   the operator host within 30 s of the install completing (no
+   helm phase required -- the apiserver is on the CP host IP
+   directly).
 5. Rerunning
    `python -m tools.bootstrap_cluster --cluster cicd --phases install_k3s`
    exits 0 in <10 s with `k3s.skip_install` log entries -- the
@@ -1564,21 +1609,28 @@ startup. See `docs/cluster-instances.md` for the
    eBPF is the sole ClusterIP translator. Cilium's auto-detect
    then enables full kube-proxy replacement (BPF maps +
    socket-level acceleration).
-2. Keep `cilium.kubeProxyReplacement: "true"` (revert any
-   `false` workaround) and set
-   `k8sServiceHost: <svc_cidr>.0.1` + `k8sServicePort: "6443"`
-   so cilium-agent can reach the apiserver via the `kubernetes`
-   Service ClusterIP during its own startup -- without
-   this, cilium-agent's first apiserver call hits
-   `<svc_cidr>.0.1:443` and crashes. (Earlier draft used the
-   VIP, but the ClusterIP is more reliable because it doesn't
-   require the kube-vip daemonset to be up at cilium-agent
-   boot time.)
+2. Keep `cilium.kubeProxyReplacement: "true"` and set
+   `k8sServiceHost: <cp_ip>` + `k8sServicePort: "6443"` so
+   cilium-agent can reach the apiserver via the CP host IP
+   during its own startup -- without this, cilium-agent's
+   first apiserver call hits `<svc_cidr>.0.1:443` (which is
+   not yet routable until cilium is up) and crashes. WP08
+   (2026-07-08) switched this from the ClusterIP to the CP
+   host IP because the latter is always reachable from the
+   kernel routing table on eth0, regardless of CNI state.
 3. Set `cilium.mtu: "1450"` so the vxlan-encapsulated
    packets don't exceed the underlying eth0 MTU; without
    this, large TLS ServerHello responses get fragmented at
    the vxlan encap and the conntrack return-path drops the
    fragments.
+4. Set `cilium.cgroup.hostRoot: /sys/fs/cgroup` and
+   `cilium.cgroup.autoMount.enabled: false`. Without these,
+   cilium-agent attaches its BPF cgroup hooks at the default
+   `/run/cilium/cgroupv2` mountpoint, but k3s pods live under
+   `/sys/fs/cgroup/kubepods.slice/...` -- so the socket-LB
+   intercept never fires on a pod's `connect(2)`, and every
+   pod->ClusterIP connection times out with "no route to
+   host" even though the BPF map has the right entry.
 
 *WP08 (network design, k3s-io/k3s#4627):*
 
@@ -1705,22 +1757,29 @@ second pivot removed the entire class of "no qemu-guest-agent on
 first boot" + "serial console capture" + "initramfs EXT4 journal"
 issues that plagued the first Ubuntu build.
 
-| Layer | Before (Talos) | First Ubuntu pivot (2026-07-07) | Canonical Ubuntu+k3s v2 (2026-07-07) |
-|---|---|---|---|
-| Golden image | Sidero Image Factory schematic | Noble cloud image + custom NoCloud seed ISO | Noble cloud image + `virt-customize` (qemu-guest-agent baked in) + Proxmox's native cloud-init drive |
-| VMID | 900 | 952 (950/951 stuck) | 900 |
-| Template conversion | `qm template 900` | `qm template 952` + NoCloud seed detach | `qm template 900` (native drive stays, regenerated from `--ciuser/--sshkeys/--ipconfig0` on every `qm start`) |
-| First-boot customize | n/a (Talos installer) | `apt install qemu-guest-agent` (silently failed) | n/a (qemu-guest-agent is in the image from the start) |
-| Cluster bootstrap | `talosctl apply-config` | cloud-init NoCloud seed ISO per VM; k3s installer runs as `runcmd` | Same: cloud-init runcmd installs k3s, but driven by Proxmox's native drive |
-| API VIP | kube-vip in Talos machineconfig | kube-vip userspace (`kube-vip-cloud-provider` static pod) installed by the `cloudinit` phase | Same |
-| Capture recipe | `ssh ... timeout N cat /var/run/qemu-server/<vmid>.serial0` | `scripts/capture_serial.py` (build-time, mandatory) | `scripts/capture_serial.py` (debug-only, see Step 1.5.1) |
-| `--flannel-backend` | n/a | `none` (Cilium takes over) | `none` (Cilium takes over) |
+| Layer | Before (Talos) | First Ubuntu pivot (2026-07-07) | Canonical Ubuntu+k3s v2 (2026-07-07) | WP08 (2026-07-08) |
+|---|---|---|---|---|
+| Golden image | Sidero Image Factory schematic | Noble cloud image + custom NoCloud seed ISO | Noble cloud image + `virt-customize` (qemu-guest-agent baked in) + Proxmox's native cloud-init drive | Same as v2 |
+| VMID | 900 | 952 (950/951 stuck) | 900 | 900 |
+| Template conversion | `qm template 900` | `qm template 952` + NoCloud seed detach | `qm template 900` (native drive stays, regenerated from `--ciuser/--sshkeys/--ipconfig0` on every `qm start`) | Same as v2 |
+| First-boot customize | n/a (Talos installer) | `apt install qemu-guest-agent` (silently failed) | n/a (qemu-guest-agent is in the image from the start) | Same as v2 |
+| Cluster bootstrap | `talosctl apply-config` | cloud-init NoCloud seed ISO per VM; k3s installer runs as `runcmd` | Same: cloud-init runcmd installs k3s, but driven by Proxmox's native drive | Same: but `install_k3s` phase now sets the canonical CIDR pins and `--tls-san=<cp_ip>` |
+| API VIP / apiserver endpoint | kube-vip in Talos machineconfig | kube-vip userspace (`kube-vip-cloud-provider` static pod) installed by the `cloudinit` phase | Same | **REMOVED**. Agents join on the CP host IP directly (cicd=10.0.0.65, apps=10.0.0.67). The kube-vip userspace static pod is gone. |
+| Capture recipe | `ssh ... timeout N cat /var/run/qemu-server/<vmid>.serial0` | `scripts/capture_serial.py` (build-time, mandatory) | `scripts/capture_serial.py` (debug-only, see Step 1.5.1) | Same as v2 |
+| `--flannel-backend` | n/a | `none` (Cilium takes over) | `none` (Cilium takes over) | `none` server; agents inherit |
+| `--disable-kube-proxy` | n/a | not set (legacy kube-proxy + cilium eBPF race) | not set | `true` (cilium kubeProxyReplacement=true owns ClusterIP routing) |
+| Pod / svc / dns CIDRs | k3s defaults (10.42 / 10.43) | k3s defaults | k3s defaults | **Pinned** (cicd=172.16/172.17/172.17.0.10; apps=172.20/172.21/172.21.0.10) to avoid host LAN overlap (k3s-io/k3s#4627) |
+| Cilium cgroup root | default `/run/cilium/cgroupv2` | default | default | `/sys/fs/cgroup` + `cgroup.autoMount.enabled=false` (k3s pods live there) |
+| Topology labels | none (cluster has corosync) | none | none | **Required**: `region=proxmox-host`, `zone=BigBertha` applied to every node (single-node PVE; pccm can't auto-derive from corosync) |
 
 The Phase 0/2/3/5 plumbing (tokens, tofu cluster module, host-ports
 baseline, final verification) is unchanged because it was already
 OS-agnostic. The Phase 4 sub-phases are
-`cloudinit, install_k3s, k3s, helm, kubeconfig, host_ports, externalname` --
-renamed from `talos` to `cloudinit` when the OS pivot landed.
+`cloudinit, install_k3s, k3s, gateway_crds, helm, gateway_smoke,
+kubeconfig, csi_smoke, host_ports, externalname` --
+renamed from `talos` to `cloudinit` when the OS pivot landed
+(2026-07-07), then extended with `gateway_crds`, `gateway_smoke`,
+and `csi_smoke` when WP07 landed (2026-07-08).
 
 ## How to invoke
 

@@ -115,7 +115,7 @@ resource "terraform_data" "image_id_present" {
   lifecycle {
     precondition {
       condition     = length(trimspace(data.local_file.image_id.content)) > 0
-      error_message = "build/image-id.txt is empty or missing; run tools/build_image.py first to bake the Talos template."
+      error_message = "build/image-id.txt is empty or missing; run tools/build_image.py first to bake the Ubuntu+k3s template."
     }
   }
 }
@@ -129,23 +129,20 @@ module "cicd" {
 
   pve_node                    = "BigBertha"
   cluster_name                = "cicd"
-  vip                         = "10.0.0.30"
   vmid_start                  = 200
-  ip_start                    = "10.0.1.0/24"
   image_id                    = length(data.local_file.image_id.content) > 0 ? chomp(data.local_file.image_id.content) : ""
   vnet_bridge                 = "vnet0"
-  # WP08 (2026-07-08): pod_cidr + svc_cidr shifted from 10.42/10.43 to
-  # 172.16/172.17. The old 10.42/10.43 ranges overlapped the host LAN
-  # 10.0.0.0/8, which broke pod->apiserver routing per k3s-io/k3s#4627.
-  # Convention (per docs/cluster-instances.md):
-  #   cicd: pod=172.16.0.0/16, svc=172.17.0.0/16
-  #   apps: pod=172.20.0.0/16, svc=172.21.0.0/16
-  # A 3-step gap between cicd (172.16/172.17) and apps (172.20/172.21)
-  # so tcpdumps and PCAPs can be eyeballed for the right cluster
-  # without pulling up output.json (cf. user request 2026-07-08:
-  # "use different cidr for the clusters so its easy to distinguish
-  # between them"). The Nth new cluster increments by 4:
-  # (172.24, 172.25), (172.28, 172.29), ...
+  # 2026-07-08: vip + ip_start inputs removed from the module. The
+  # bootstrap discovers per-node IPs from Proxmox SDN via
+  # qemu-guest-agent at runtime (see scripts/sync_dns_to_sdn.py),
+  # and the cluster VIP is a kube-vip Service concept not owned by
+  # tofu.
+  #
+  # pod_cidr / svc_cidr / cluster_dns are kept here so each cluster
+  # root can pin distinct, non-host-LAN-overlapping RFC1918 ranges.
+  # cicd uses 172.16/172.17, apps uses 172.20/172.21 -- the 3-step
+  # gap makes tcpdumps visually distinguishable per cluster. These
+  # are cluster scopes, NOT Proxmox-managed IPs.
   pod_cidr                    = "172.16.0.0/16"
   svc_cidr                    = "172.17.0.0/16"
   cluster_dns                 = "172.17.0.10"

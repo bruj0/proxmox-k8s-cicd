@@ -39,18 +39,18 @@ dependencies:
   - name: cilium
     version: "1.16.x"
     rationale: >
-      Matches versions.yaml['talos']['v1.10.0']['cilium_max']. WP04 will install
-      Cilium at this version; the Talos machineconfig that this module renders
-      must be compatible with Cilium 1.16.x (e.g. correct kubeProxyReplacement
-      knob, BPF host routing).
-    source: "context7-auto-research on 2026-07-05"
+      Matches versions.yaml::ubuntu::noble-24.04::cilium_max. WP04
+      installs Cilium at this version; the Helm values SS3 renders
+      must be compatible with Cilium 1.16.x (kubeProxyReplacement
+      knob, BPF host routing, cgroup.hostRoot, gatewayAPI.enabled).
+      WP08 (2026-07-08) added the cgroup.hostRoot pin and the
+      k8sServiceHost=<cp_ip> override.
+    source: "context7-auto-research on 2026-07-08"
 
-  - name: kube-vip
-    version: "1.2.1"
-    rationale: >
-      Pin to the spec T003-mandated kube-vip version. The Talos machineconfig
-      references kube-vip's static pod manifest shape that 1.2.1 emits.
-    source: "context7-auto-research on 2026-07-05"
+  # WP08 (2026-07-08): kube-vip removed. Single-CP clusters don't
+  # need a VIP layer; agents join on the CP host IP directly.
+  # See infra/clusters/<name>/versions.lock.yaml for the new
+  # apiserver endpoint contract.
 
   - name: traefik
     version: "v3.x (bundled with k3s)"

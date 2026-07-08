@@ -1,43 +1,52 @@
 ###############################################################################
 # Module core: locals, validation preconditions, and VM cloning.
 #
+# Identity invariant (M3): every cluster module invocation produces a
+# deterministic set of (name, role, vmid) tuples from cluster_name +
+# vmid_start. Per-node IPs are NOT computed here -- Proxmox SDN
+# auto-allocates them from the DHCP pool (10.0.0.50-200 on this host)
+# and the bootstrap reads them via qemu-guest-agent at runtime. See
+# scripts/sync_dns_to_sdn.py for the DNS-side mirror.
+#
 # Misfits verified by tests/main.tftest.hcl:
 #   M2 (no host ports)   default Traefik HelmChartConfig uses ClusterIP;
 #                        cf_publish_traefik_publicly=true opt-in is gated.
 #   M3 (cluster identity) cluster_name is exposed as an output so the consuming
 #                        root can enforce uniqueness across all Clusters.
-#   M5 (DHCP safety)      VIP must not overlap the per-node IP range. Verified
-#                        by the terraform_data.vip_in_dhcp_range precondition.
 #
 # Spec acceptance:
 #   FR-030  control_plane.count must be 1 or 3.
 #   vmid    vmid_start..vmid_start+total-1 must not overlap any populated VM.
 #   image   image_id must be non-empty.
+#
+# 2026-07-08: the VIP (kube-vip Service IP) and per-node IP CIDR
+# (var.ip_start, used by cidrhost() to fabricate IPs) are removed.
+# IPs are owned by Proxmox SDN, not tofu; the bootstrap (SS3) discovers
+# them post-apply via qemu-guest-agent. See CONTEXT.md for the
+# bounded-context glossary.
 ###############################################################################
 
 locals {
-  total_nodes       = var.control_plane.count + var.workers.count
-  vmid_end          = var.vmid_start + local.total_nodes - 1
+  total_nodes = var.control_plane.count + var.workers.count
+  vmid_end    = var.vmid_start + local.total_nodes - 1
 
-  control_plane_ips = [for i in range(var.control_plane.count) : cidrhost(var.ip_start, i)]
-  worker_ips        = [for i in range(var.workers.count) : cidrhost(var.ip_start, var.control_plane.count + i)]
-
+  # The `ip` field on each node is left blank here; it is populated
+  # post-apply by scripts/sync_dns_to_sdn.py (which already mirrors the
+  # SDN DHCP-allocated addresses to PowerDNS). Until that helper is
+  # extended to also patch this file, downstream consumers should treat
+  # `nodes[].ip` as "to be discovered at bootstrap time".
   nodes = concat(
-    [for i, ip in local.control_plane_ips : {
-      role           = "control_plane"
-      name           = "${var.cluster_name}-cp-${i + 1}"
-      vmid           = var.vmid_start + i
-      ip             = ip
-      mac            = ""
-      talos_hostname = "${var.cluster_name}-cp-${i + 1}"
+    [for i in range(var.control_plane.count) : {
+      role = "control_plane"
+      name = "${var.cluster_name}-cp-${i + 1}"
+      vmid = var.vmid_start + i
+      ip   = ""
     }],
-    [for i, ip in local.worker_ips : {
-      role           = "worker"
-      name           = "${var.cluster_name}-w-${i + 1}"
-      vmid           = var.vmid_start + var.control_plane.count + i
-      ip             = ip
-      mac            = ""
-      talos_hostname = "${var.cluster_name}-w-${i + 1}"
+    [for i in range(var.workers.count) : {
+      role = "worker"
+      name = "${var.cluster_name}-w-${i + 1}"
+      vmid = var.vmid_start + var.control_plane.count + i
+      ip   = ""
     }],
   )
 }
@@ -71,26 +80,7 @@ resource "terraform_data" "validate_image_id" {
   lifecycle {
     precondition {
       condition     = length(trimspace(var.image_id)) > 0
-      error_message = "image_id is empty; run tools/build_image.py first to bake the Talos template."
-    }
-  }
-}
-
-# ---------------------------------------------------------------------------
-# Validation: VIP must NOT overlap the per-node IP range (M5 DHCP safety).
-# ---------------------------------------------------------------------------
-
-resource "terraform_data" "vip_in_dhcp_range" {
-  input = {
-    vip              = var.vip
-    control_plane_ip = local.control_plane_ips
-    worker_ip        = local.worker_ips
-  }
-
-  lifecycle {
-    precondition {
-      condition     = !contains(local.control_plane_ips, var.vip) && !contains(local.worker_ips, var.vip)
-      error_message = "vip overlaps with the per-node IP range; M5 violated. Choose a vip outside the per-node CIDR or use a different ip_start."
+      error_message = "image_id is empty; run tools/build_image.py first to bake the Ubuntu+k3s template."
     }
   }
 }
@@ -128,7 +118,7 @@ resource "terraform_data" "vmid_overlap" {
 }
 
 # ---------------------------------------------------------------------------
-# Clone the VMs from the Talos image template.
+# Clone the VMs from the Ubuntu+k3s image template.
 # ---------------------------------------------------------------------------
 
 resource "proxmox_cloned_vm" "node" {
@@ -136,7 +126,7 @@ resource "proxmox_cloned_vm" "node" {
 
   name        = each.value.name
   node_name   = var.pve_node
-  description = "${var.cluster_name} ${each.value.role} (Talos ${var.talos_version})"
+  description = "${var.cluster_name} ${each.value.role} (Ubuntu+k3s)"
   started     = true
 
   clone = {
@@ -159,13 +149,9 @@ resource "proxmox_cloned_vm" "node" {
 
   memory = {
     # Live-host fix 2026-07-06: bpg/proxmox 0.111.x `proxmox_cloned_vm.memory`
-    # exposes `size` (total RAM) and `balloon` (min guaranteed). The previous
-    # `dedicated` key is the OLD `proxmox_virtual_environment_vm` schema -- it
-    # is silently ignored here, leaving clones at the template's inherited
-    # memory (2048 MiB on the current talos-template) instead of the
-    # control_plane.ram_mb / workers.ram_mb the cluster root asks for.
-    # `balloon = 0` disables the balloon driver so size is a hard RAM cap,
-    # matching the WP02 `--memory 8192` semantics.
+    # exposes `size` (total RAM) and `balloon` (min guaranteed). `balloon = 0`
+    # disables the balloon driver so size is a hard RAM cap, matching the
+    # cluster-root ram_mb semantics.
     size    = each.value.role == "control_plane" ? var.control_plane.ram_mb : var.workers.ram_mb
     balloon = 0
   }
@@ -187,12 +173,11 @@ resource "proxmox_cloned_vm" "node" {
   tags = [
     var.cluster_name,
     each.value.role,
-    "talos-${var.talos_version}",
+    "ubuntu-k3s",
   ]
 
   depends_on = [
     terraform_data.validate_image_id,
-    terraform_data.vip_in_dhcp_range,
     terraform_data.vmid_overlap,
   ]
 }

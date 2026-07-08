@@ -1,8 +1,9 @@
 # versions.yaml — master compatibility matrix for the cluster pipeline.
 #
 # Owned by WP01 (Image Build Pipeline / SS1). All other WPs that pull a
-# versioned component (k3s, Cilium, Talos, etc.) validate against this file
-# before any PVE / API call.
+# versioned component (k3s, Cilium, proxmox-cloud-controller-manager,
+# proxmox-csi-plugin, etc.) validate against this file before any
+# PVE / API call.
 #
 # Format:
 #   <component>:
@@ -10,31 +11,36 @@
 #       <constraint_field>: <value>
 #       notes: <human-readable>
 #
-# Source: context7-auto-research 2026-07-05. Operator must extend this map
+# Source: context7-auto-research 2026-07-08. Operator must extend this map
 # after running a known-good combo on bigbertha and confirming the cluster
 # is healthy for >= 7 days.
 
+# Talos block retained ONLY as a provenance audit trail of the OS pivot
+# (2026-07-07, Talos -> Ubuntu Noble). The active pipeline never reads
+# these keys. To re-enable Talos, restore infra/modules/proxmox-k3s-cluster/talos.tf
+# and the templates/talos-machineconfig.yaml.tftpl that lived alongside it.
 talos:
   "v1.10.0":
     pve_kernel_min: "6.8"
     k3s_max: "v1.34.x"
     cilium_max: "1.16.x"
     notes: >
-      Known-good combo on bigbertha: PVE 9.2.3, kernel 7.0.6-2-pve,
-      Talos v1.10.0, k3s v1.34.x, Cilium 1.16.x. Validated 2026-07-05.
-      NO LONGER USED -- pipeline pivoted to Ubuntu+k3s on 2026-07-07.
+      Historical -- known-good combo on bigbertha: PVE 9.2.3, kernel
+      7.0.6-2-pve, Talos v1.10.0, k3s v1.34.x, Cilium 1.16.x. Validated
+      2026-07-05. NO LONGER USED -- pipeline pivoted to Ubuntu+k3s on
+      2026-07-07.
   "v1.13.5":
     pve_kernel_min: "6.8"
     k3s_max: "v1.34.x"
     cilium_max: "1.16.x"
     notes: >
-      Operator-curated schematic ab5430f4... baked via canonical Sidero
-      flow (ISO + talosctl apply-config --install-image). Carries
-      siderolabs/qemu-guest-agent. Validated 2026-07-06.
+      Historical -- operator-curated schematic ab5430f4... baked via
+      canonical Sidero flow (ISO + talosctl apply-config --install-image).
+      Carries siderolabs/qemu-guest-agent. Validated 2026-07-06.
       NO LONGER USED -- pipeline pivoted to Ubuntu+k3s on 2026-07-07.
 
-# Ubuntu + k3s compatibility matrix. Replaces the Talos block as the
-# primary image-build compatibility surface on 2026-07-07.
+# Ubuntu + k3s compatibility matrix. Primary image-build compatibility
+# surface since 2026-07-07.
 ubuntu:
   "noble-24.04":
     pve_kernel_min: "6.8"
@@ -44,32 +50,54 @@ ubuntu:
     lts_through: "2029-04"
     notes: >
       Current golden-image combo on bigbertha: PVE 9.2.3, kernel 7.0.6-2-pve,
-      Ubuntu 24.04 LTS Noble cloud image, k3s v1.34.x (stable channel),
-      Cilium 1.16.x. VMID 952 is the current template (bumped from 950 to
-      dodge a stuck LVM handle on vm-950-disk-1). Cloud image ships with
-      qemu-guest-agent and cloud-init pre-installed. Validated 2026-07-07.
+      Ubuntu 24.04 LTS Noble cloud image, k3s v1.36.x (stable channel),
+      Cilium 1.16.x. VMID 900 is the current template. Cloud image ships
+      with qemu-guest-agent and cloud-init pre-installed; the canonical
+      build (Phase 1, tools/build_image/__init__.py) adds qemu-guest-agent
+      via virt-customize and applies the NoCloud seed ISO before the VM is
+      cloned for each cluster. Validated 2026-07-08.
     sources:
       - "context7-auto-research on 2026-07-07"
       - "https://cloud-images.ubuntu.com/noble/"
 
 k3s:
-  "v1.34.x":
+  "v1.36.x":
     install_url: "https://get.k3s.io"
     channel: "stable"
     install_args_default:
       control_plane:
         - "--flannel-backend=none"
+        - "--disable-kube-proxy"
         - "--disable=traefik"
         - "--disable=servicelb"
         - "--disable=local-storage"
         - "--disable=metrics-server"
+        - "--kubelet-arg=cloud-provider=external"
+        # WP08 (2026-07-08, k3s-io/k3s#4627): the k3s default CIDRs
+        # (10.42/10.43) overlap the host LAN 10.0.0.0/8 which breaks
+        # pod->apiserver routing. Pin to non-overlapping RFC1918
+        # ranges. infra/clusters/<name>/variables.tf overrides these
+        # per-cluster so cicd=172.16/172.17, apps=172.20/172.21.
+        - "--cluster-cidr=172.16.0.0/16"
+        - "--service-cidr=172.17.0.0/16"
+        - "--cluster-dns=172.17.0.10"
       agent:
-        - "--flannel-backend=none"
+        # Agents inherit the server's flannel-backend / kube-proxy
+        # decisions; the explicit server-only flags above do not
+        # propagate to agents. We pass --kubelet-arg=cloud-provider=external
+        # here too so worker kubelets do not try to talk to a cloud
+        # provider that does not exist on the wire.
+        - "--kubelet-arg=cloud-provider=external"
     notes: >
-      Standard k3s install with CNI disabled (Cilium takes over). Traefik
+      WP08 (2026-07-08): added --disable-kube-proxy so cilium owns
+      ClusterIP routing via eBPF (kubeProxyReplacement=true). Traefik
       and servicelb disabled because we deploy the cloudflare-tunnel
       ingress path on the apps cluster. metrics-server disabled because
-      proxmox-ccm + kube-state-metrics ship their own scraper.
+      proxmox-cloud-controller-manager + kube-state-metrics ship their
+      own scraper. Pinning pod_cidr/svc_cidr/cluster_dns to RFC1918
+      ranges that do NOT overlap the host LAN 10.0.0.0/8 avoids the
+      MASQUERADE short-circuit documented in k3s-io/k3s#4627.
+      cluster_dns must be in the service CIDR per the k3s docs.
 
 # Sidero Image Factory schematic history (kept for provenance; no longer
 # used by the active pipeline). Recorded so the audit trail survives the
@@ -120,14 +148,31 @@ strrl_cloudflare_tunnel_ingress_controller_chart:
 cilium_chart:
   version: "1.16.x"
   rationale: >
-    Matches versions.yaml['talos']['v1.10.0']['cilium_max']. WP04 will
-    install Cilium; the Talos machineconfig rendered here must be
-    compatible.
-  source: "context7-auto-research on 2026-07-05"
+    Matches versions.yaml::ubuntu::noble-24.04::cilium_max. WP04
+    installs Cilium with kubeProxyReplacement=true + cgroup.hostRoot=
+    /sys/fs/cgroup (k3s pods live there) + k8sServiceHost=<cp_ip>
+    (avoids the ClusterIP-not-routable-on-startup race). source:
+    context7-auto-research on 2026-07-08.
 
-kube_vip_chart:
-  version: "1.2.1"
+proxmox_cloud_controller_manager_chart:
+  version: "0.2.29"
   rationale: >
-    Spec T003-mandated kube-vip version. Talos machineconfig references
-    kube-vip's static pod manifest shape that 1.2.1 emits.
-  source: "context7-auto-research on 2026-07-05"
+    The sergelogvinov/proxmox-cloud-controller-manager chart is what
+    gives nodes providerID and topology.kubernetes.io/{region,zone}
+    labels on a single-node Proxmox (no corosync cluster). Without it,
+    proxmox-csi-plugin's nodes fail with "Failed to get region or zone
+    for node" and CrashLoopBackOff (see docs/architecture.md §14.5).
+    The PVE URL is pinned to https://10.0.0.1:8006/api2/json with
+    insecure_skip_tls_verify=true because pods cannot resolve the
+    PVE FQDN.
+  source: "context7-auto-research on 2026-07-08"
+
+proxmox_csi_plugin_chart:
+  version: "0.5.9"
+  rationale: >
+    The sergelogvinov/proxmox-csi-plugin chart, pinning storage=data1
+    (the lvm-thin pool on BigBertha). WP08 (2026-07-08) discovered that
+    the csi-plugin-node DaemonSet needs topology labels on every node
+    before it can start; the labels are applied by the pccm chart
+    above and verified in tools/tests/test_bootstrap_cluster.py.
+  source: "context7-auto-research on 2026-07-08"

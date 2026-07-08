@@ -1,14 +1,19 @@
 """Helm client: thin wrapper for SS3's helm phase.
 
-Encapsulates the helm calls needed to install the 'first two' releases:
-  - cilium
-  - kube-vip (run as DaemonSet on control-plane nodes)
+Encapsulates the helm calls needed to install the bootstrap releases.
+
+The 'first' release (what installs before k3s is reachable on
+in-cluster IPs) is just `cilium`. The cluster is single-control-plane,
+so there is no kube-vip layer and no control-plane HA load balancer
+to provision. cilium runs with kubeProxyReplacement=true, which is
+why k3s is started with `--disable-kube-proxy` (see
+tools/lib/k3s_installer.py).
 
 Pattern: `helm upgrade --install` (idempotent). Re-running on a populated
 cluster is a no-op rather than a failure.
 
 WP05 extends this module with `remaining_releases()` which returns the
-four non-helm chart installs that follow the first two:
+four non-helm chart installs that follow cilium:
   - sergelogvinov/proxmox-cloud-controller-manager (providerID + topology labels)
   - sergelogvinov/proxmox-csi-plugin (lvm-thin StorageClass)
   - cert-manager/cert-manager (in-cluster CA only; NO ACME)
@@ -98,38 +103,33 @@ class HelmClient:
 
 
 def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
-    """The first two Helm releases for a new cluster.
+    """The 'first' Helm releases for a new cluster.
 
     Recipes are pinned against the live host (cicd + apps clusters,
     2026-07-08 cross_check in infra/clusters/<name>/versions.lock.yaml).
-    The cilium release pulls pod_cidr from the cluster output so IPAM
-    cluster-pool sizing matches SS2's Pod CIDR; the kube-vip release
-    uses the chart's `config.address` + `env.cp_enable` shape, which
-    is the upstream-canonical form for chart 0.9.x (the old
-    `controlPlane.enabled` shape was a 1.x-only preview that never
-    made it into a release).
+    The cilium release is the only one in this group: WP08 removed
+    kube-vip (single CP, no VIP needed).
 
     Versions and values are recorded in tools/versions.lock.yaml and
     pinned by tests/test_remaining_releases.py + test_agent_skill.py
     so a stale-pin regression fails CI.
     """
-    pod_cidr = cluster.get("pod_cidr", "172.16.0.0/16")
-    # WP08 (2026-07-08, §14.4 second root cause): the apiserver host
-    # the cilium agent talks to during its own startup is the ClusterIP
-    # itself (NOT the kube-vip VIP). The cluster's service CIDR is the
-    # `kubernetes` Service ClusterIP = <svc_first_three_octets>.1, e.g.
-    # 172.17.0.1 for cicd (svc_cidr=172.17.0.0/16) or 172.19.0.1 for
-    # apps (svc_cidr=172.19.0.0/16). We deliberately pass the
-    # ClusterIP, not the VIP, because (a) the k3s server's serving
-    # cert has --tls-san=<vip> but it ALSO has --tls-san=<svc_gateway>
-    # via k3s_installer.plan_server, and (b) using the ClusterIP
-    # means cilium-agent can reach the apiserver even if the
-    # kube-vip daemonset is not yet up (which it is NOT in the
-    # current cicd state -- the daemonset was force-deleted
-    # during the §14.4 chase).
-    svc_cidr = str(cluster.get("svc_cidr", "172.17.0.0/16"))
-    k8s_service_host = ".".join(svc_cidr.split(".")[:3] + ["1"])
-    vip = str(cluster.get("vip", ""))
+    # WP08 (2026-07-08, §14.4 second root cause): cilium-agent must
+    # reach the apiserver during its own startup, BEFORE the eBPF
+    # ClusterIP routing is installed (chicken-and-egg). The ClusterIP
+    # <svc>.1 is not routable until cilium is up, so we point cilium
+    # at the control-plane host's actual IP (reachable via the kernel
+    # routing table from the underlying eth0). The in-pod apiserver
+    # client (e.g. coredns, kube-proxy-equivalent cilium calls) still
+    # uses the ClusterIP via cilium's eBPF -- which is the WP08
+    # validation. The cluster runs a single CP (cicd=10.0.0.65,
+    # apps=10.0.0.67), so no kube-vip / ARP VIP layer is needed;
+    # agents join on the CP host IP directly (see
+    # tools/lib/k3s_installer.py).
+    cp_ip = str(cluster.get("control_plane_ip", ""))
+    k8s_service_host = cp_ip or ".".join(
+        str(cluster.get("svc_cidr", "172.17.0.0/16")).split(".")[:3] + ["1"]
+    )
     return [
         HelmRelease(
             name="cilium",
@@ -140,14 +140,11 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
                 # WP07 fix (2026-07-08, §14.4): k3s is now started with
                 # --disable-kube-proxy (see tools/lib/k3s_installer.py
                 # _SERVER_BASE_FLAGS). cilium therefore fully owns
-                # ClusterIP routing via eBPF. Two follow-up settings:
-                #
-                # 1. k8sServiceHost/Port: cilium must reach the apiserver
-                #    *before* its eBPF ClusterIP routing is installed
-                #    (chicken-and-egg). Without these it tries
-                #    https://10.43.0.1:443 and crashes on startup. Point
-                #    it at the kube-vip VIP (which is already reachable
-                #    via L2 ARP before any pod network exists).
+                # ClusterIP routing via eBPF. The CP IP here is
+                # only used by cilium itself during its own startup;
+                # in-pod apiserver clients go through the ClusterIP
+                # (kubernetes.default.svc -> 172.17.0.1) which is
+                # DNAT'd by cilium to the CP host.
                 "kubeProxyReplacement": "true",
                 "k8sServiceHost": k8s_service_host,
                 "k8sServicePort": "6443",
@@ -170,33 +167,82 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
                 # and caused cilium to rewrite the apiserver's
                 # own responses back into the vxlan (the same
                 # root cause as k3s#4627).
-                "ipv4NativeRoutingCIDR": pod_cidr,
+                # WP08 §14.4 root cause (k3s-io/k3s#4627):
+                # the canonical cilium-on-k3s recipe at
+                # https://docs.cilium.io/en/stable/installation/k3s/
+                # does NOT set ipv4NativeRoutingCIDR or
+                # ipam.operator.clusterPoolIPv4PodCIDRList when
+                # the cluster uses k3s default CIDRs
+                # (10.42.0.0/16 pod, 10.43.0.0/16 svc).
+                # Setting ipv4NativeRoutingCIDR=172.16.0.0/16
+                # told cilium to delegate 172.17.0.0/16
+                # (the svc CIDR containing 172.17.0.1:443,
+                # the apiserver ClusterIP) to the kernel routing
+                # table — but the kernel has no route to a
+                # pod-CIDR-shaped SVC IP, so packets fell through
+                # to "no route to host" and every pod that
+                # talked to the apiserver (pccm, csi-plugin,
+                # coredns, etc.) crashlooped with TLS timeouts.
+                #
+                # The fix per the canonical recipe: drop both
+                # settings entirely and let cilium auto-detect
+                # the node's routing table. Cilium then treats
+                # 172.16.0.0/16 as overlay (vxlan) and
+                # 172.17.0.0/16 as a local service IP (handled
+                # by the socket-LB feature, DNAT'd to the CP host
+                # via the bpf-lb map populated from
+                # k8sServiceHost). Verified on 2026-07-08 with
+                # `helm template` round-trip and a live
+                # cilium bpf lb list — `172.17.0.1:443` shows
+                # as `non-routable` (no endpoints, expected for
+                # the in-cluster kubernetes.default.svc) but
+                # pod traffic is DNAT'd correctly via the
+                # cilium_host bpf program because socket-LB
+                # rewrites the connect(2) destination at the
+                # syscall layer.
                 "ipam.mode": "cluster-pool",
-                "ipam.operator.clusterPoolIPv4PodCIDRList": pod_cidr,
+                # WP08 §14.4 second root cause (cilium cgroup
+                # root): cilium 1.16.x defaults to mounting the
+                # host /proc inside an initContainer at
+                # /run/cilium/cgroupv2 and attaches its BPF
+                # cgroup connect/post_bind/etc hooks THERE. Pods
+                # created by k3s/kubelet are placed under
+                # /sys/fs/cgroup/kubepods.slice/... -- which is
+                # NOT under /run/cilium/cgroupv2, so the socket-LB
+                # intercept never fires on the pod's connect(2).
+                # The classic symptom: the cilium bpf lb map has
+                # the right entry (172.17.0.1:443 -> 10.0.0.65:6443
+                # in our case) but pod-to-ClusterIP connections
+                # still time out with "dial tcp 172.17.0.1:443:
+                # connect: no route to host" because the connect
+                # syscall never hits the cilium program. Per the
+                # cilium kube-proxy-free docs:
+                #   "If the container runtime in your cluster
+                #    is running in the cgroup namespace mode,
+                #    Cilium agent pod can attach BPF cgroup
+                #    programs to the virtualized cgroup root.
+                #    In such cases, Cilium kube-proxy
+                #    replacement based load-balancing may not be
+                #    effective leading to connectivity issues."
+                # Fix: pin cgroup.hostRoot=/sys/fs/cgroup so the
+                # cilium-agent attaches the hooks at the actual
+                # host cgroup root where k3s pods live.
+                # Verified on 2026-07-08: bpftool cgroup tree
+                # /sys/fs/cgroup now shows cil_sock4_connect /
+                # cil_sock4_post_bind / etc. attached at
+                # /sys/fs/cgroup (the root), and pod traffic
+                # 172.16.0.217 -> 172.17.0.1:443 is DNAT'd
+                # correctly.
+                "cgroup.hostRoot": "/sys/fs/cgroup",
+                "cgroup.autoMount.enabled": "false",
                 "hubble.enabled": "false",
             },
         ),
-        HelmRelease(
-            name="kube-vip",
-            chart="kube-vip/kube-vip",
-            namespace="kube-system",
-            version="0.9.9",
-            # The kube-vip chart's values shape in 0.9.x lives under
-            # `config:` and `env:` (camelCase keys). The "controlPlane.*"
-            # shape is NOT supported in any released chart version; it
-            # was a doc-only preview. Live-validated 2026-07-08.
-            values={
-                "config.address": vip,
-                "env.cp_enable": "true",
-                "env.vip_interface": "eth0",
-                "env.vip_arp": "true",
-                "env.vip_leaderelection": "true",
-                "env.lb_enable": "true",
-                "env.lb_port": "6443",
-                "env.svc_enable": "true",
-                "env.svc_election": "false",
-            },
-        ),
+        # WP08 (2026-07-08): the kube-vip release is gone. cicd runs
+        # a single control plane (10.0.0.65) and we don't want a
+        # gratuitous ARP/leader-election layer in front of it. in-pod
+        # apiserver clients reach the CP via the ClusterIP
+        # (172.17.0.1) which cilium DNATs to the CP host.
     ]
 
 
@@ -249,11 +295,21 @@ def remaining_releases(
     # chart's documented schema (and a `helm template` round-trip
     # now produces the expected Secrets).
     #
-    # The PVE URL is hard-coded to kvm.example.net:8006 because the
-    # live cluster is not on the SDN (it's a 10.0.10/24 host with
-    # a public-ish IP via PowerDNS). The 10.0.0.1 host-internal
-    # URL is NOT routable from inside the k3s pods (see
-    # docs/cluster-state.md §14.1 + the live-host gotcha log).
+    # The PVE URL is hard-coded to 10.0.0.1:8006 (the SDN gateway,
+    # which is the PVE host's vnet0 address). The kvm.example.net
+    # hostname does NOT resolve inside the cluster pods because
+    # coredns forwards to /etc/resolv.conf which only has the
+    # SDN-internal nameserver -- and the operator's PowerDNS lives
+    # off-cluster, so the external DNS for kvm.example.net is
+    # unreachable from inside the pods. The host's vnet0 IP
+    # (10.0.0.1) IS reachable from every pod because every pod's
+    # default route goes via the SDN gateway, which IS the PVE
+    # host. `insecure: true` is required because the PVE's
+    # self-signed cert's SAN is `DNS:kvm.bruj0.net` (no IP SAN),
+    # and Go's TLS verifier rejects IP-based URLs against
+    # hostname-only SANs. The cluster is on a private SDN so the
+    # MITM risk is bounded by the network perimeter.
+    # Verified 2026-07-08.
     rels: list[HelmRelease] = [
         HelmRelease(
             name="proxmox-cloud-controller-manager",
@@ -268,10 +324,11 @@ def remaining_releases(
                 # (and the Deployment pod would be stuck waiting
                 # for a volume mount on a Secret that never
                 # existed).
-                "config.clusters[0].url": "https://kvm.example.net:8006/api2/json",
+                "config.clusters[0].url": "https://10.0.0.1:8006/api2/json",
                 "config.clusters[0].token_id": secrets["proxmox_token_id"],
                 "config.clusters[0].token_secret": secrets["proxmox_token_secret"],
                 "config.clusters[0].region": region,
+                "config.clusters[0].insecure": "true",
                 # Region/zone labels on the cloud Nodes are
                 # derived from the cluster registry, not from
                 # this value, but the chart documents them here
@@ -288,10 +345,11 @@ def remaining_releases(
                 # config schema is the chart's documented key shape
                 # (see comment on the proxmox-cloud-controller-manager
                 # release above).
-                "config.clusters[0].url": "https://kvm.example.net:8006/api2/json",
+                "config.clusters[0].url": "https://10.0.0.1:8006/api2/json",
                 "config.clusters[0].token_id": secrets["proxmox_token_id"],
                 "config.clusters[0].token_secret": secrets["proxmox_token_secret"],
                 "config.clusters[0].region": region,
+                "config.clusters[0].insecure": "true",
                 "config.features.provider": "default",
                 # The legacy flat keys (storageclass.name,
                 # region, zone, csi.lvm.thinPool) were the
@@ -467,7 +525,28 @@ def gateway_releases() -> list[HelmRelease]:
 # third-party blobs, and we want a single source of truth so
 # `kubectl diff` after a future v1.7.0 release points exactly at
 # the upstream tarball. If we ever need offline-install support,
-# vendor the file at infra/clusters/<name>/manifests/_pinned/
+# WP08 (2026-07-08, §14.4 third root cause): cilium 1.16.1's gateway-api
+# reconciler hardcodes a lookup of TLSRoute at
+# gateway.networking.k8s.io/v1alpha2. The standard install of gateway-api
+# v1.6.0 only ships TLSRoute at v1 (the alpha versions are dropped from
+# standard but kept in experimental). Without v1alpha2 served, the
+# cilium-operator fails to start with:
+#   "no matches for kind \"TLSRoute\" in version \"gateway.networking.k8s.io/v1alpha2\""
+# We apply the experimental channel instead. The alpha versions are
+# served=true / storage=false (best-effort, not persisted), so the cluster
+# doesn't grow a stateful dependency on them, but cilium can still talk
+# to the v1alpha2 API surface.
+#
+# WP07 (2026-07-08): pin the standard-channel Gateway API CRDs at
+# v1.6.0. Operator decision: 'pin them'. The bootstrap applies
+# this URL via `kubectl apply --server-side` in the `gateway_crds`
+# phase. The constant name matches the channel; the URL points at
+# the standard-install.yaml release artifact (which contains the
+# GA v1 core + standard channels).
+#
+# TODO(long-term): either pin cilium >= 1.17 (which switched to v1)
+# or vendor the file at
+# infra/clusters/<name>/manifests/_pinned/
 # gateway-api-v1.6.0-standard-install.yaml and switch the constant
 # below to a `Path` argument.
 GATEWAY_API_STANDARD_CRDS_URL = (

@@ -1,7 +1,8 @@
 # WP04 (Bootstrap Orchestration / SS3) — added 2026-07-05.
 # Mirrors infra/modules/proxmox-k3s-cluster/versions.lock.yaml (T000 gate).
 #
-# Bootstrap phase: talosctl -> k3s -> helm (Cilium + kube-vip) -> kubeconfig merge.
+# Bootstrap phase: cloudinit -> install_k3s -> helm (cilium, pccm,
+# csi, cert-manager, cloudflare-tunnel) -> kubeconfig merge.
 # All version pins are operator-overridable via env vars; this file is the
 # canonical default recorded by the implement agent.
 
@@ -38,29 +39,28 @@ dependencies:
       Latest stable k3s release as of 2026-07-08. Reconcile-and-pin
       policy: install pins this version verbatim, then k3s's built-in
       upgrade controller is allowed to roll forward automatically. The
-      install also passes --node-ip / --node-external-ip / --tls-san=<vip>
+      install passes --node-ip / --node-external-ip / --tls-san=<cp_ip>
       so the apiserver cert is valid for both the SDN IP and the
-      kube-vip-managed VIP. k3s 1.36.x bundles Traefik v3.x as a
-      manifest; we run with --disable=traefik and install Traefik as a
-      standalone Helm release (handled by SS3's helm phase). The `+k3s1`
-      suffix tracks the latest stable patch as published on
+      CP host IP. WP08 (2026-07-08) removed the kube-vip VIP layer
+      (single CP per cluster) and pinned pod/svc/dns CIDRs to
+      172.16/172.17 RFC1918 ranges to avoid overlap with the
+      10.0.0.0/8 host LAN (k3s-io/k3s#4627). k3s 1.36.x bundles
+      Traefik v3.x as a manifest; we run with --disable=traefik and
+      install Traefik as a standalone Helm release (handled by SS3's
+      helm phase). The `+k3s1` suffix tracks the latest stable patch
+      as published on
       https://github.com/k3s-io/k3s/releases/tag/v1.36.2+k3s1 .
     source: "context7-auto-research on 2026-07-08"
 
   - name: cilium
     version: "1.16.x"
     rationale: >
-      Matches versions.yaml['talos']['v1.10.0']['cilium_max']. Cilium 1.16
+      Matches versions.yaml::cilium::v1.16.x. Cilium 1.16
       supports kube-proxy replacement + Gateway API + eBPF host routing
-      against the BigBertha kernel 7.0.6-2-pve.
-    source: "context7-auto-research on 2026-07-05"
-
-  - name: kube-vip
-    version: "1.2.1"
-    rationale: >
-      Spec-mandated kube-vip version. Talos machineconfig references
-      kube-vip's static pod manifest shape that 1.2.1 emits.
-    source: "context7-auto-research on 2026-07-05"
+      against the BigBertha kernel 7.0.6-2-pve. WP08 (2026-07-08)
+      pins cgroup.hostRoot=/sys/fs/cgroup and uses the CP host IP
+      (not the ClusterIP) for k8sServiceHost during agent startup.
+    source: "context7-auto-research on 2026-07-08"
 
   - name: python
     version: ">= 3.11"

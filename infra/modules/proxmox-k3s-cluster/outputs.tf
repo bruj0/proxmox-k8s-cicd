@@ -6,28 +6,35 @@
 #
 #   {
 #     "cluster_name":         "cicd",
-#     "vip":                  "10.0.0.30",
 #     "vnet_bridge":          "vnet0",
 #     "control_plane_count":  1,
 #     "worker_count":         1,
-#     "talos_dir":            "<module>/clusters/<cluster_name>/talos",
-#     "nodes":                [{"role": "control_plane", "name": ..., "vmid": ..., ...}],
+#     "pod_cidr":             "172.16.0.0/16",
+#     "svc_cidr":             "172.17.0.0/16",
+#     "cluster_dns":          "172.17.0.10",
+#     "nodes":                [{"role": "control_plane", "name": ..., "vmid": ..., "ip": ""}],
 #     "helm_releases":        ["cilium", "kube-vip", ...]
 #   }
 #
-# file_permission = "0600" — the output contains node IPs and the cluster
-# identity, which are not world-readable secrets but should not be readable
-# to other operator accounts on the same workstation.
+# 2026-07-08 schema changes:
+#   - vip + talos_dir removed: VIP is a kube-vip service concept the
+#     bootstrap can derive (or hasn't been needed since the
+#     Ubuntu+k3s pivot), and Talos has been replaced with Ubuntu+k3s.
+#   - nodes[].ip removed from this file: Proxmox SDN auto-allocates
+#     IPs from the DHCP pool (10.0.0.50-200 on this host) and the
+#     bootstrap discovers them via qemu-guest-agent at runtime.
+#     scripts/sync_dns_to_sdn.py is the canonical source of truth
+#     for post-apply IP wiring.
+#   - nodes[].mac and nodes[].talos_hostname removed (Talos-specific).
+#
+# file_permission = "0600" — the output contains the cluster identity +
+# topology invariants, which are not world-readable secrets but should
+# not be readable to other operator accounts on the same workstation.
 ###############################################################################
 
 output "cluster_name" {
-  description = "Globally-unique Cluster name; consumed by SS3 for Talos cert prefix."
+  description = "Globally-unique Cluster name; consumed by SS3 for naming context."
   value       = var.cluster_name
-}
-
-output "vip" {
-  description = "Cluster VIP; consumed by SS3 for kubeconfig and talosctl endpoint."
-  value       = var.vip
 }
 
 output "vnet_bridge" {
@@ -45,13 +52,8 @@ output "worker_count" {
   value       = var.workers.count
 }
 
-output "talos_dir" {
-  description = "Directory containing per-VM Talos machineconfig YAML files."
-  value       = "${path.module}/../../clusters/${var.cluster_name}/talos"
-}
-
 output "nodes" {
-  description = "Resolved node map (role, name, vmid, ip, mac, talos_hostname)."
+  description = "Resolved node map (role, name, vmid, ip). The ip field is empty here -- discovered post-apply from Proxmox SDN via qemu-guest-agent."
   value       = local.nodes
 }
 
@@ -65,16 +67,28 @@ output "svc_cidr" {
   value       = var.svc_cidr
 }
 
+output "cluster_dns" {
+  description = "In-cluster coredns service IP (input)."
+  value       = var.cluster_dns
+}
+
 output "helm_releases" {
   description = "Helm releases SS3 will install in order. Listed here so SS3 does not need to know which chart versions the module pinned."
   value = [
+    # WP08 (2026-07-08): kube-vip removed. The cluster runs
+    # single-control-plane, so the apiserver endpoint is the CP
+    # host IP directly.
     "cilium",
-    "kube-vip",
     "proxmox-cloud-controller-manager",
     "proxmox-csi-plugin",
-    "traefik",
-    "cloudflare-tunnel-ingress-controller",
     "cert-manager",
+    "cloudflare-tunnel-ingress-controller",
+    # WP07: Envoy Gateway (the GatewayClass=envoy implementation).
+    "envoy-gateway",
+    # Traefik itself is NOT installed by SS3; it ships with k3s
+    # and is configured via the HelmChartConfig that this module
+    # renders into infra/clusters/<name>/manifests/.
+    "traefik-helmchartconfig",
   ]
 }
 
@@ -82,40 +96,32 @@ resource "local_sensitive_file" "cluster_output" {
   # Module lives at infra/modules/proxmox-k3s-cluster/; cluster root
   # at infra/clusters/<name>/. So `../../clusters/<name>/output.json`
   # is two levels up (== `infra/`), then into clusters/<name>/.
-  # Pre-refactor this was `../clusters/<name>/...` because the
-  # module lived next to the cluster root under
-  # clusters/<name>/modules/proxmox-k3s-cluster/. Updated 2026-07-06.
   filename        = "${path.module}/../../clusters/${var.cluster_name}/output.json"
   file_permission = "0600"
 
   content = jsonencode({
     cluster_name        = var.cluster_name
-    vip                 = var.vip
     vnet_bridge         = var.vnet_bridge
     control_plane_count = var.control_plane.count
     worker_count        = var.workers.count
-    # Skill Step 2 success-criterion contract: cicd|apps output.json
-    # MUST expose pod_cidr + svc_cidr + cluster_dns (tools/lib/talos_client.py
-    # reads these). Added 2026-07-06; cluster_dns added 2026-07-08
-    # (WP08) so the bootstrap script can pass --cluster-dns to k3s
-    # and put the in-cluster coredns service IP in the new non-overlapping
-    # svc CIDR (172.17.0.10 for cicd, 172.19.0.10 for apps). Without
-    # this, k3s keeps its hard-coded default (10.43.0.10) which sits
-    # inside the 10.0.0.0/8 host LAN and breaks pod->coredns routing
-    # for the same reason the ClusterIP was broken.
     pod_cidr            = var.pod_cidr
     svc_cidr            = var.svc_cidr
     cluster_dns         = var.cluster_dns
-    talos_dir           = "${path.module}/../../clusters/${var.cluster_name}/talos"
     nodes               = local.nodes
     helm_releases       = [
+      # WP08: kube-vip removed. The cluster runs single-CP;
+      # the apiserver endpoint is the CP host IP directly.
       "cilium",
-      "kube-vip",
       "proxmox-cloud-controller-manager",
       "proxmox-csi-plugin",
-      "traefik",
-      "cloudflare-tunnel-ingress-controller",
       "cert-manager",
+      "cloudflare-tunnel-ingress-controller",
+      # WP07: Envoy Gateway (GatewayClass=envoy).
+      "envoy-gateway",
+      # Traefik is configured via the HelmChartConfig that this
+      # module renders into infra/clusters/<name>/manifests/.
+      # It is NOT a separate helm release SS3 installs.
+      "traefik-helmchartconfig",
     ]
   })
 }

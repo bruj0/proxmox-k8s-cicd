@@ -28,14 +28,18 @@ Two modes:
 
 Why this exists:
   - k3s binds the apiserver to the CP node's loopback (127.0.0.1) on
-    first install. The cluster VIP (10.0.0.30/40) is owned by
-    kube-vip, which only comes up in the `helm` phase. So in the
-    window between `install_k3s` and `helm` the apiserver is reachable
-    only via the CP node's loopback, not via the VIP.
-  - Even once the VIP is up, the operator's host is NOT on the SDN.
-    The CP VM is reachable only by tunneling through PVE. So we
-    have to forward 127.0.0.1:6443 on the CP node to a local port
-    and point kubectl at `https://127.0.0.1:<local_port>`.
+    first install. The CP host IP (e.g. 10.0.0.65 for cicd) only
+    serves the apiserver after the systemd unit is started by the
+    `install_k3s` phase. Before that, the apiserver is reachable only
+    via the CP node's loopback.
+  - The operator's host is NOT on the SDN. The CP VM is reachable
+    only by tunneling through PVE. So we have to forward
+    127.0.0.1:6443 on the CP node to a local port and point kubectl
+    at `https://127.0.0.1:<local_port>`.
+
+  - WP08 (2026-07-08): the cluster VIP layer is gone (single CP,
+    no kube-vip). The CP host IP itself is the apiserver endpoint
+    that any external client uses once `install_k3s` is done.
 
 This tool:
   1. Reads `infra/clusters/<name>/output.json` and picks the first
@@ -80,7 +84,7 @@ from typing import Sequence
 from tools.lib.log import StructuredLogger
 from tools.lib.pve_ssh import PveSshProxy
 from tools.lib.repo_locator import RepoNotFoundError, locate_repo_root
-from tools.lib.talos_client import ClusterTopology
+from tools.lib.cluster_topology import ClusterTopology
 
 
 _K3S_KUBECONFIG_PATH = "/etc/rancher/k3s/k3s.yaml"

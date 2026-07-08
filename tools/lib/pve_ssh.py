@@ -30,14 +30,17 @@ Three helpers:
       The PVE-side `ProxyCommand` ensures the forward goes
       through to the target VM, not just to the PVE host.
 
-The kube-apiserver is reachable via the cluster VIP after the
-`helm` phase brings up `kube-vip`. Before that, the apiserver is
-only on the cluster control-plane's loopback (k3s binds 127.0.0.1
+The kube-apiserver is reachable via the CP host IP after the
+`install_k3s` phase installs the server. Before that, the apiserver
+is only on the cluster control-plane's loopback (k3s binds 127.0.0.1
 on first install). To talk to that loopback from the operator
 host through this proxy we forward `127.0.0.1:6443` on the CP node
 to a local port. The `ForwardedPort` shape makes it easy for
 kubectl-context writers to point a kubeconfig at
 `https://127.0.0.1:<local_port>`.
+
+WP08 (2026-07-08): the cluster VIP layer (kube-vip) is gone. We
+talk directly to the CP host IP for control-plane operations.
 """
 from __future__ import annotations
 

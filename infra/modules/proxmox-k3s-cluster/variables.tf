@@ -15,33 +15,27 @@ variable "pve_node" {
 
 variable "cluster_name" {
   type        = string
-  description = "Globally-unique name for this Cluster. Used in Talos cert prefix, dnsmasq hostnames, and output.json."
+  description = "Globally-unique name for this Cluster. Used in PowerDNS hostnames, Cloudflare Tunnel name, and output.json."
 }
 
-variable "vip" {
-  type        = string
-  description = "Single virtual IP within vnet0 that kube-vip binds to the active control-plane node."
-}
+# vip (kube-vip Service VIP) and ip_start (per-node CIDR) were removed
+# 2026-07-08: IPs are owned by Proxmox SDN (DHCP, 10.0.0.50-200 range)
+# and discovered post-apply via qemu-guest-agent network-get-interfaces
+# (see scripts/sync_dns_to_sdn.py). The bootstrap uses these discovered
+# IPs as the only source of truth -- not anything tofu can fabricate.
+#
+# vmid_start is still required because PVE VMIDs are operator-managed,
+# not auto-allocated; the cluster module still needs an explicit start
+# to compute vmid_end and detect collisions with existing VMs.
 
 variable "vmid_start" {
   type        = number
   description = "First VMID to allocate. Range [vmid_start .. vmid_start + total - 1] must not overlap any existing VM in the target Proxmox host."
 }
 
-variable "ip_start" {
-  type        = string
-  description = <<-EOT
-    CIDR network in which per-node IPs are placed (e.g. 10.0.0.0/24).
-    cidrhost(var.ip_start, i) returns the i-th host in that network (index 0 is the
-    network address). The IP portion of the CIDR is treated as the NETWORK, not as
-    a starting host -- so 10.0.0.201/24 yields hosts 10.0.0.0, 10.0.0.1, ... (NOT
-    10.0.0.201). The /24 mask is REQUIRED.
-  EOT
-}
-
 variable "image_id" {
   type        = string
-  description = "Proxmox VMID of the Talos image template baked by SS1 (build/image-id.txt). Empty or whitespace fails plan."
+  description = "Proxmox VMID of the Ubuntu+k3s image template baked by SS1 (build/image-id.txt). Empty or whitespace fails plan."
 }
 
 variable "control_plane" {
@@ -64,22 +58,29 @@ variable "workers" {
   description = "Worker node sizing. count may be 0, 1, or more."
 }
 
+# pod_cidr / svc_cidr / cluster_dns are k3s-internal cluster scopes, not
+# Proxmox-managed IPs. They MUST be non-overlapping RFC1918 ranges (the
+# legacy defaults 10.42/10.43/10.43.0.10 sat inside the host LAN
+# 10.0.0.0/8 and broke pod->apiserver routing, k3s-io/k3s#4627).
+# Defaults are 172.x so a fresh cluster works out of the box; per-cluster
+# roots override them (cicd uses 172.16/17, apps uses 172.20/21) so
+# tcpdumps are visually distinguishable.
 variable "pod_cidr" {
   type        = string
   default     = "172.16.0.0/16"
-  description = "Pod CIDR for the k3s cluster. Used in Talos machineconfig. MUST NOT overlap the host LAN (10.0.0.0/8 on this host); see k3s-io/k3s#4627."
+  description = "Pod CIDR for the k3s cluster. MUST NOT overlap the host LAN."
 }
 
 variable "svc_cidr" {
   type        = string
   default     = "172.17.0.0/16"
-  description = "Service CIDR for the k3s cluster. Used in Talos machineconfig. MUST NOT overlap the host LAN; gateway IP is `<first-three-octets>.1` (e.g. 172.17.0.1)."
+  description = "Service CIDR for the k3s cluster. MUST NOT overlap the host LAN."
 }
 
 variable "cluster_dns" {
   type        = string
   default     = "172.17.0.10"
-  description = "In-cluster coredns service IP. Must be inside svc_cidr. Default 172.17.0.10 matches the k3s default (10.43.0.10) but shifted into the new svc_cidr."
+  description = "In-cluster coredns service IP. Must be inside svc_cidr."
 }
 
 variable "vnet_bridge" {
@@ -118,11 +119,10 @@ variable "cf_publish_traefik_publicly" {
   description = "Operator opt-in to publish Traefik on hostPorts AND install the cloudflare-tunnel-ingress-controller Helm release. Default off (NFR-007). Setting this true is mutually exclusive with the default Traefik ClusterIP path."
 }
 
-variable "talos_version" {
-  type        = string
-  default     = "v1.10.0"
-  description = "Talos version baked into the image template. Used for the per-VM Talos machineconfig."
-}
+# talos_version removed 2026-07-08 (Talos-to-Ubuntu pivot already
+# landed in WP01/02; this var was a leftover artifact used only by the
+# per-VM machineconfig renderer, which is also being removed in this
+# refactor).
 
 variable "disk_storage_pool" {
   type        = string
@@ -140,12 +140,11 @@ variable "disk_storage_pool" {
 # ---------------------------------------------------------------------------
 # PowerDNS authoritative-DNS variables.
 #
-# The cluster's authoritative DNS is PowerDNS (pdns @ 10.0.0.3:8081, zone
-# intranet.local. forward + 10.in-addr.arpa. reverse) -- not PVE's local
-# hosts file. The pan-net/powerdns provider writes A + PTR records for
-# every node + the cluster VIP here. Records use the same SDN subnet IPs
-# that the Talos machineconfig binds, so a name lookup matches the
-# routable address.
+# The cluster's authoritative DNS is PowerDNS (pdns @ 10.0.0.3:8081 on
+# the SDN, zone intranet.local. forward + 10.in-addr.arpa. reverse).
+# The pan-net/powerdns provider writes A + PTR records for every node
+# here, pointing at the SDN DHCP-allocated addresses. PowerDNS is the
+# single source of truth for cluster DNS; PVE's hosts file is not used.
 #
 # powerdns_api_key defaults to "" which skips record creation entirely --
 # `tofu test` and CI runs that don't have the secret can still plan.

@@ -134,25 +134,33 @@ def test_plan_for_control_plane_includes_tls_san_and_flannel_off(
     assert "--disable=servicelb" in exec_str
     assert "--disable=local-storage" in exec_str
     assert "--disable=metrics-server" in exec_str
-    # The new --tls-san=<vip> requirement (came out of the VIP verification).
-    assert f"--tls-san={installer.cluster['vip']}" in exec_str
+    # WP08 (2026-07-08): the apiserver cert SAN is now the CP host
+    # IP, NOT a kube-vip VIP. The cluster runs single-control-plane
+    # (cicd=10.0.0.65, apps=10.0.0.67) and the apiserver is reached
+    # directly on the CP host IP. The vip= kwarg is preserved on
+    # plan_server/install_server as a deprecation stub for callers
+    # that still pass it, but the actual SAN is the CP eth0 IP.
+    assert f"--tls-san={cp['ip']}" in exec_str
     # --node-ip / --node-external-ip get populated from the lease.
     assert f"--node-ip={cp['ip']}" in exec_str
     assert f"--node-external-ip={cp['ip']}" in exec_str
 
 
-def test_plan_for_agent_joins_vip_not_eth0(installer: K3sInstaller) -> None:
-    """Agents must join K3S_URL=https://<vip>:6443, never a CP eth0 IP.
+def test_plan_for_agent_joins_cp_ip_not_eth0(installer: K3sInstaller) -> None:
+    """Agents must join K3S_URL=https://<cp_ip>:6443, never a VIP.
 
-    The VIP is what kube-vip will elect; pinning to a single CP eth0 IP
-    breaks failover. This test pins the contract from
+    WP08 (2026-07-08): the kube-vip VIP layer is gone. Agents join
+    directly on the CP host IP (single CP per cluster; no HA load
+    balancer is needed). This test pins the contract from
     tools/lib/k3s_installer.py.plan_agent.
     """
     worker = next(v for v in installer.cluster["vms"] if v["role"] == "worker")
+    cp = next(v for v in installer.cluster["vms"] if v["role"] == "control_plane")
     plan = installer.plan_agent(worker, vip=installer.cluster["vip"], token="NODE::TOKEN")
     assert isinstance(plan, AgentInstallPlan)
     env = plan.environment
-    assert env["K3S_URL"] == f"https://{installer.cluster['vip']}:6443"
+    # WP08: K3S_URL points at the CP host IP, not the legacy VIP.
+    assert env["K3S_URL"] == f"https://{cp['ip']}:6443"
     assert env["K3S_TOKEN"] == "NODE::TOKEN"
     assert env["INSTALL_K3S_VERSION"] == "v1.36.2+k3s1"
     exec_str = " ".join(plan.exec_flags)

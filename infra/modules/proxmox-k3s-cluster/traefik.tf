@@ -37,7 +37,7 @@ resource "local_file" "traefik_chartconfig" {
     traefik_exposed_port  = local.traefik_exposed_port
   })
 
-  depends_on = [
-    local_sensitive_file.talos_machineconfig,
-  ]
+  # 2026-07-08: the local_sensitive_file.talos_machineconfig dependency
+  # was removed alongside the Talos machineconfig renderer. The Traefik
+  # HelmChartConfig is independent of any per-VM first-boot setup.
 }

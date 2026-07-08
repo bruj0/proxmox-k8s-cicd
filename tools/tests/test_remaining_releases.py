@@ -177,22 +177,25 @@ def test_cilium_mtu_is_1450_for_vxlan() -> None:
     assert cilium.values["mtu"] == "1450"
 
 
-def test_cilium_native_routing_cidr_follows_pod_cidr() -> None:
-    """WP08 (2026-07-08): ipv4NativeRoutingCIDR must equal the cluster's
-    pod_cidr (172.16.0.0/16 for cicd). The old hard-coded `10.0.0.0/8`
-    was wrong: it overlapped the host LAN and caused cilium to rewrite
-    the apiserver's own responses back into the vxlan tunnel,
-    contributing to the same `FromTunnel` bpf ct entries that
-    masked the underlying kube-proxy MASQUERADE root cause.
+def test_cilium_native_routing_cidr_is_not_set() -> None:
+    """WP08 (2026-07-08): cilium 1.16 with the k3s default CIDRs
+    does NOT need ipv4NativeRoutingCIDR. Per the canonical
+    cilium-on-k3s recipe, we let cilium auto-detect the node's
+    routing table; setting ipv4NativeRoutingCIDR=pod_cidr told
+    cilium to delegate the svc CIDR (172.17.0.0/16) to the
+    kernel routing table, which has no route to a pod-CIDR-shaped
+    SVC IP -- causing "no route to host" for every pod that
+    talked to the apiserver. Removing the key entirely is what
+    the canonical recipe recommends.
     """
     rels = first_two_releases(
         {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "172.16.0.0/16",
          "svc_cidr": "172.17.0.0/16"}
     )
     cilium = next(r for r in rels if r.name == "cilium")
-    assert cilium.values["ipv4NativeRoutingCIDR"] == "172.16.0.0/16", (
-        f"ipv4NativeRoutingCIDR must match the cluster's pod_cidr. "
-        f"Got: {cilium.values['ipv4NativeRoutingCIDR']!r}"
+    assert "ipv4NativeRoutingCIDR" not in cilium.values, (
+        "ipv4NativeRoutingCIDR must be omitted (canonical "
+        "cilium-on-k3s recipe leaves it auto-detected)."
     )
 
 

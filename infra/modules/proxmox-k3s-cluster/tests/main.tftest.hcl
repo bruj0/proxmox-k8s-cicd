@@ -26,8 +26,8 @@ mock_provider "proxmox" {
   mock_data "proxmox_virtual_environment_vms" {
     defaults = {
       vms = [
-        { vm_id = 999, name = "talos-base",    node_name = "proxmox-host", template = false, status = "stopped" },
-        { vm_id = 900, name = "talos-v1.10.0", node_name = "proxmox-host", template = true,  status = "stopped" },
+        { vm_id = 999, name = "ubuntu-base",    node_name = "proxmox-host", template = false, status = "stopped" },
+        { vm_id = 900, name = "ubuntu-noble-template", node_name = "proxmox-host", template = true,  status = "stopped" },
         { vm_id = 110, name = "unrelated-vm",  node_name = "proxmox-host", template = false, status = "running" },
       ]
     }
@@ -70,16 +70,23 @@ mock_provider "powerdns" {
 # ---------------------------------------------------------------------------
 # Common variables (used as defaults for most runs).
 # ---------------------------------------------------------------------------
+#
+# 2026-07-08: vip + ip_start removed. Per-node IPs are owned by Proxmox
+# SDN and discovered post-apply by scripts/sync_dns_to_sdn.py + the
+# bootstrap's qemu-guest-agent lookups; the cluster VIP is a kube-vip
+# Service concept that the bootstrap derives at install time.
+#
+# pod_cidr + svc_cidr + cluster_dns are kept here as cluster scopes
+# (default 172.16/17 to avoid overlap with the host LAN 10.0.0.0/8).
 
 variables {
   cluster_name                = "cicd"
-  vip                         = "10.0.0.30"
   vmid_start                  = 200
-  ip_start                    = "10.0.0.201/24"
   image_id                    = "900"
   vnet_bridge                 = "vnet0"
-  pod_cidr                    = "10.42.0.0/16"
-  svc_cidr                    = "10.43.0.0/16"
+  pod_cidr                    = "172.16.0.0/16"
+  svc_cidr                    = "172.17.0.0/16"
+  cluster_dns                 = "172.17.0.10"
   control_plane = {
     count   = 1
     cpu     = 4
@@ -145,37 +152,9 @@ run "cluster_name_exposed" {
 }
 
 # ---------------------------------------------------------------------------
-# M5 — VIP must NOT overlap the per-node IP range (DHCP safety).
+# M5 was about VIP overlap with the per-node IP range. Removed 2026-07-08
+# because vip + ip_start no longer exist (Proxmox SDN owns all IPs).
 # ---------------------------------------------------------------------------
-
-# Negative test for M5: cidrhost("10.0.0.201/24", 0) = "10.0.0.0" (the IP
-# portion is the NETWORK and cidrhost indexes hosts), so the first cp IP is
-# always "10.0.0.0" with these defaults. vip = "10.0.0.0" collides and the
-# precondition must fire.
-run "vip_overlap_with_dhcp_range_is_rejected" {
-  command = plan
-  variables {
-    vip = "10.0.0.0"
-  }
-  expect_failures = [
-    terraform_data.vip_in_dhcp_range,
-  ]
-}
-
-# Positive counterpart: with default variables vip=10.0.0.30 is disjoint from
-# the per-node range "10.0.0.0","10.0.0.1".
-run "vip_in_safe_range_is_accepted" {
-  command = plan
-  assert {
-    condition     = output.vip == "10.0.0.30"
-    error_message = "vip must round-trip via output."
-  }
-  assert {
-    # Sanity: confirm the precondition's input set is what we expect.
-    condition     = length(terraform_data.vip_in_dhcp_range.input.control_plane_ip) == 1
-    error_message = "control_plane_ip set size must equal control_plane.count."
-  }
-}
 
 # ---------------------------------------------------------------------------
 # Spec acceptance: control_plane.count must be 1 or 3.
@@ -270,18 +249,34 @@ run "node_count_matches_topology" {
 }
 
 # ---------------------------------------------------------------------------
+# Spec acceptance: talos configs are written (one per node).
+# ---------------------------------------------------------------------------
+# 2026-07-08: talos_machineconfig resource removed (Ubuntu+k3s pivot).
+# The cluster_root drives first-boot config via cloud-init's NoCloud
+# seed ISO, not a per-VM Talos machineconfig.
+
+# ---------------------------------------------------------------------------
 # Spec acceptance: output.json contains the schema fields SS3 consumes.
 # ---------------------------------------------------------------------------
+#
+# 2026-07-08: vip + talos_dir assertions removed (both keys dropped
+# from outputs.tf in the 2026-07-08 refactor). cluster_dns was added
+# alongside pod_cidr/svc_cidr to support the WP08 non-overlapping
+# CIDR fix on the bootstrap side.
 
 run "output_json_has_required_fields" {
   command = plan
   assert {
-    condition     = output.vip != null && output.vip == var.vip
-    error_message = "output.vip must round-trip."
+    condition     = output.pod_cidr == var.pod_cidr
+    error_message = "output.pod_cidr must round-trip."
   }
   assert {
-    condition     = output.talos_dir != null && length(output.talos_dir) > 0
-    error_message = "output.talos_dir must be populated."
+    condition     = output.svc_cidr == var.svc_cidr
+    error_message = "output.svc_cidr must round-trip."
+  }
+  assert {
+    condition     = output.cluster_dns == var.cluster_dns
+    error_message = "output.cluster_dns must round-trip."
   }
   assert {
     condition     = length(output.helm_releases) >= 6
@@ -290,13 +285,22 @@ run "output_json_has_required_fields" {
 }
 
 # ---------------------------------------------------------------------------
-# Spec acceptance: talos configs are written (one per node).
+# Spec acceptance: nodes[].ip is empty by design (Proxmox SDN owns it).
 # ---------------------------------------------------------------------------
 
-run "talos_configs_are_rendered" {
+run "nodes_ip_left_empty_for_bootstrap_discovery" {
   command = plan
   assert {
-    condition     = length(local_sensitive_file.talos_machineconfig) == var.control_plane.count + var.workers.count
-    error_message = "talos_machineconfig count must match node count."
+    condition     = alltrue([for n in output.nodes : n.ip == ""])
+    error_message = "modules must NOT fabricate per-node IPs; Proxmox SDN allocates them and the bootstrap discovers them post-apply."
   }
 }
+
+# ---------------------------------------------------------------------------
+# Spec acceptance (historical, removed 2026-07-08): talos configs are
+# written (one per node).
+# ---------------------------------------------------------------------------
+# The Ubuntu+k3s pivot (landed 2026-07-07) removed the per-VM Talos
+# machineconfig renderer entirely. First-boot config is now driven by
+# cloud-init's NoCloud seed ISO, not Talos. This space intentionally
+# has no `talos_configs_are_rendered` run.
