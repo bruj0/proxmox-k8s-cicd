@@ -66,14 +66,20 @@ variable "workers" {
 
 variable "pod_cidr" {
   type        = string
-  default     = "10.42.0.0/16"
-  description = "Pod CIDR for the k3s cluster. Used in Talos machineconfig."
+  default     = "172.16.0.0/16"
+  description = "Pod CIDR for the k3s cluster. Used in Talos machineconfig. MUST NOT overlap the host LAN (10.0.0.0/8 on this host); see k3s-io/k3s#4627."
 }
 
 variable "svc_cidr" {
   type        = string
-  default     = "10.43.0.0/16"
-  description = "Service CIDR for the k3s cluster. Used in Talos machineconfig."
+  default     = "172.17.0.0/16"
+  description = "Service CIDR for the k3s cluster. Used in Talos machineconfig. MUST NOT overlap the host LAN; gateway IP is `<first-three-octets>.1` (e.g. 172.17.0.1)."
+}
+
+variable "cluster_dns" {
+  type        = string
+  default     = "172.17.0.10"
+  description = "In-cluster coredns service IP. Must be inside svc_cidr. Default 172.17.0.10 matches the k3s default (10.43.0.10) but shifted into the new svc_cidr."
 }
 
 variable "vnet_bridge" {

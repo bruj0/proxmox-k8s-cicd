@@ -276,6 +276,13 @@ def _run_install_k3s(
         # any chart with a pre-install hook that calls the apiserver
         # via kubernetes.default.svc fails TLS validation.
         "svc_cidr": topo.svc_cidr,
+        # WP08 (2026-07-08, §14.4 second root cause): also pass
+        # pod_cidr and cluster_dns. k3s needs explicit
+        # --cluster-cidr / --service-cidr / --cluster-dns because
+        # the defaults (10.42/10.43) overlap the host LAN 10.0.0.0/8,
+        # which breaks pod->apiserver routing per k3s-io/k3s#4627.
+        "pod_cidr": topo.pod_cidr,
+        "cluster_dns": topo.cluster_dns,
         "vms": [
             # Use the SDN IP we got at output.json time. The installer
             # reads --node-ip from this; if the live IP differs (it can
@@ -319,6 +326,9 @@ def _run_install_k3s(
                 # it's installed on; we pass it on every call so
                 # multi-CP clusters stay consistent.
                 "svc_cidr": topo.svc_cidr,
+                # WP08: same for pod_cidr + cluster_dns.
+                "pod_cidr": topo.pod_cidr,
+                "cluster_dns": topo.cluster_dns,
             }
             installer.install_server(node, vip=topo.vip)
         # 2) Read the join token off the first CP. If the server is

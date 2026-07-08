@@ -90,6 +90,46 @@ host_ports, externalname` sub-phases.
   (default), the `cf_tunnel_name` is reserved. Picking a fresh name now makes
   the cloudflare fallback trivially switchable later.
 
+### Pod / Svc CIDR overlap with the host LAN (WP08, 2026-07-08)
+
+The **k3s default `--cluster-cidr=10.42.0.0/16` and `--service-cidr=10.43.0.0/16`
+MUST NOT overlap the host LAN** on which the cluster VMs run. On this host
+the LAN is `10.0.0.0/8` (with the SDN subnet being `10.0.10.0/24` and
+per-cluster subnets at `10.0.1.0/24` and `10.0.2.0/24`); the k3s defaults
+sit inside that range, so the legacy kube-proxy MASQUERADE chain
+short-circuits (the source pod CIDR contains the apiserver's host IP) and
+the cilium eBPF conntrack can't reverse the SNAT on the return path. Symptom:
+pod -> `https://kubernetes.default.svc` TLS handshakes hang on ServerHello,
+pods that need the apiserver (Cloudflare Tunnel certgen, cert-manager
+cainjector, proxmox-ccm, proxmox-csi-plugin) all CrashLoopBackOff. The
+cluster looks healthy at `kubectl get nodes` but every chart with a
+pre-install hook fails.
+
+Upstream bug: k3s-io/k3s#4627. Same failure mode for any Kubernetes distro
+where the pod or service CIDR is inside the host's L3 range. Cilium's own
+docs warn about this in the `ipv4NativeRoutingCIDR` / `ipam` discussion.
+
+**Rule**: every new cluster instance must pick `pod_cidr` and `svc_cidr`
+**outside** the host LAN and **outside** any other cluster's pod/svc range.
+Recommended convention (chosen so the second octet is the cluster ordinal
+* 4 -- makes tcpdump/pcap output easy to eyeball for "which cluster is
+this?" without pulling up output.json):
+
+- **cicd**: `pod_cidr=172.16.0.0/16`, `svc_cidr=172.17.0.0/16`, `cluster_dns=172.17.0.10`
+- **apps**:  `pod_cidr=172.20.0.0/16`, `svc_cidr=172.21.0.0/16`, `cluster_dns=172.21.0.10`
+- **Nth cluster**: `pod_cidr=172.{16+4*N}.0.0/16`, `svc_cidr=172.{17+4*N}.0.0/16`,
+  `cluster_dns=172.{17+4*N}.0.10` (e.g. third cluster: 172.24/172.25).
+
+The cluster module's `cluster_dns` variable defaults to `<svc_cidr_first_three_octets>.10`
+(e.g. `172.17.0.10`); set it explicitly per cluster to match.
+
+The k3s installer (`tools/lib/k3s_installer.py::plan_server`) automatically
+passes `--cluster-cidr`, `--service-cidr`, and `--cluster-dns` from the
+topology dict, and the cilium chart values (`tools/lib/helm_client.py::first_two_releases`)
+derive `k8sServiceHost` from `<svc_cidr_first_three_octets>.1` (the
+`kubernetes` Service ClusterIP) and `ipv4NativeRoutingCIDR` from
+`pod_cidr`.
+
 ## Validation at Plan Time
 
 The cluster root and the module cooperate to enforce uniqueness:

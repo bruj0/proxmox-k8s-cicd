@@ -48,6 +48,7 @@ class ClusterTopology:
     vip: str
     pod_cidr: str
     svc_cidr: str
+    cluster_dns: str
     control_plane: Sequence[Mapping[str, str]]
     worker: Sequence[Mapping[str, str]]
 
@@ -65,8 +66,12 @@ class ClusterTopology:
             return cls(
                 name=data["cluster_name"],
                 vip=data["vip"],
-                pod_cidr=data.get("pod_cidr", "10.42.0.0/16"),
-                svc_cidr=data.get("svc_cidr", "10.43.0.0/16"),
+                pod_cidr=data.get("pod_cidr", "172.16.0.0/16"),
+                svc_cidr=data.get("svc_cidr", "172.17.0.0/16"),
+                # WP08 (2026-07-08): default to 172.17.0.10 for cicd-
+                # compatible svc CIDR; apps will read 172.19.0.10
+                # from output.json (output.tf contract).
+                cluster_dns=data.get("cluster_dns", "172.17.0.10"),
                 control_plane=cps,
                 worker=wks,
             )

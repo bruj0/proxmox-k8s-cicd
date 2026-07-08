@@ -13,8 +13,14 @@ Usage examples:
   # SSH into the first worker
   python -m tools.ssh_proxy --cluster cicd --role worker
 
+  # SSH into a specific node by name (cicd-cp-1, cicd-w-1, apps-cp-1, ...)
+  python -m tools.ssh_proxy --cluster cicd --node cicd-w-1
+
   # Run a one-off command non-interactively
   python -m tools.ssh_proxy --cluster apps --role control_plane -- hostname
+
+Node targeting precedence: --node wins over --name wins over --role.
+With no flag, the first control-plane VM is used.
 
   # For an apiserver port-forward (the canonical "I want kubectl/k9s
   # to talk to a cluster"), use `kubeconfig-puller --port-forward`
@@ -99,19 +105,19 @@ def _resolve_target(
     topo: ClusterTopology,
     role: str | None,
     name: str | None,
+    node: str | None = None,
 ) -> dict[str, str]:
-    """Pick exactly one VM from the topology based on --role/--name.
+    """Pick exactly one VM from the topology based on --node/--name/--role.
 
-    When both are given, --name wins. When neither is given, the
-    first control-plane VM is used (the canonical place to land
-    when triaging a cluster).
+    Precedence: --node > --name > --role > (default: first CP).
     """
-    if name:
+    target_name = node or name
+    if target_name:
         for n in topo.all_nodes:
-            if n["name"] == name:
+            if n["name"] == target_name:
                 return dict(n)
         raise SystemExit(
-            f"no node named {name!r} in cluster {topo.name!r}; "
+            f"no node named {target_name!r} in cluster {topo.name!r}; "
             f"available: {[n['name'] for n in topo.all_nodes]}"
         )
     if role in (None, "control_plane", "control-plane"):
@@ -175,10 +181,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="node role to land on (default: first control plane)",
     )
     parser.add_argument(
-        "--name",
+        "--node",
+        dest="node",
         help=(
-            "exact node name (e.g. cicd-cp-1) -- overrides --role. "
-            "Run with no --role/--name to land on the first CP."
+            "exact node name (e.g. cicd-w-1, apps-cp-1). Overrides "
+            "--name and --role. Lists nodes from "
+            "infra/clusters/<name>/output.json on miss."
+        ),
+    )
+    parser.add_argument(
+        "--name",
+        dest="name",
+        help=(
+            "alias for --node (kept for back-compat with existing "
+            "operator muscle memory). Ignored if --node is also set."
         ),
     )
     parser.add_argument(
@@ -228,14 +244,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
     topo = ClusterTopology.from_output_json(output_json)
-    target = _resolve_target(topo, args.role, args.name)
+    target = _resolve_target(topo, args.role, args.name, args.node)
     target_ip = target["ip"]
     logger.info(
         "ssh_proxy.connect",
         cluster=args.cluster,
         node=target["name"],
         ip=target_ip,
-        port_forwards=list(args.port_forward),
     )
     proxy = PveSshProxy(logger=logger)
 

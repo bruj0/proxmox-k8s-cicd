@@ -157,6 +157,60 @@ def test_k3s_server_disables_embedded_kube_proxy() -> None:
     )
 
 
+def test_k3s_server_pins_nonoverlapping_cluster_cidrs() -> None:
+    """§14.4 second root cause (WP08, 2026-07-08, k3s-io/k3s#4627):
+    the k3s default --cluster-cidr=10.42.0.0/16 and
+    --service-cidr=10.43.0.0/16 OVERLAP the host LAN 10.0.0.0/8 on
+    this cluster, which breaks the legacy kube-proxy MASQUERADE
+    chain (the source pod CIDR contains the apiserver's host IP so
+    the RETURN short-circuits) and confuses cilium's bpf SNAT.
+    Fix: k3s_installer must pin --cluster-cidr, --service-cidr, and
+    --cluster-dns explicitly in plan_server.
+
+    The test exercises plan_server with the cicd-shape cluster dict
+    (svc_cidr 172.17.0.0/16, pod_cidr 172.16.0.0/16, cluster_dns
+    172.17.0.10) and asserts the produced flag list includes all
+    three with the expected values.
+    """
+    from lib.k3s_installer import K3sInstaller
+
+    plan = K3sInstaller(
+        cluster={
+            "name": "cicd",
+            "vip": "10.0.0.30",
+            "pod_cidr": "172.16.0.0/16",
+            "svc_cidr": "172.17.0.0/16",
+            "cluster_dns": "172.17.0.10",
+        },
+        ssh_proxy_target="root@kvm.bruj0.net -p 6022",
+        logger=__import__("lib.log", fromlist=["StructuredLogger"]).StructuredLogger(
+            "test_k3s_server_pins_nonoverlapping_cluster_cidrs"
+        ),
+    ).plan_server(
+        {"name": "cicd-cp-1", "ip": "10.0.0.65"},
+        vip="10.0.0.30",
+    )
+    flags = " ".join(plan.exec_flags)
+    assert "--cluster-cidr=172.16.0.0/16" in flags, (
+        f"k3s install flags must pin cluster-cidr to a non-overlapping "
+        f"range (got: {flags!r}); k3s-io/k3s#4627 explains the root cause."
+    )
+    assert "--service-cidr=172.17.0.0/16" in flags, (
+        f"k3s install flags must pin service-cidr to a non-overlapping "
+        f"range (got: {flags!r})"
+    )
+    assert "--cluster-dns=172.17.0.10" in flags, (
+        f"k3s install flags must pin cluster-dns into the new svc_cidr "
+        f"so pod->coredns routing is consistent (got: {flags!r})"
+    )
+    # Regression guard: the in-cluster apiserver SAN must still be
+    # present (WP07 contract).
+    assert "--tls-san=172.17.0.1" in flags, (
+        f"k3s install flags must include the svc-gateway TLS SAN "
+        f"(got: {flags!r})"
+    )
+
+
 def test_bootstrap_missing_output_json_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """M4 acceptance: missing output.json fails clearly, not silently."""
     monkeypatch.setattr(subprocess, "run", _stub_ok)

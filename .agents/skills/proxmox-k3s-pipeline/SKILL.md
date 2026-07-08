@@ -1507,14 +1507,14 @@ the wp07_live_apply script (the live-apply helper).
 **4b.3.4 -- The `certgen` binary's apiserver call (used to
 patch the topology-injector webhook caBundle + write the
 `envoy-gateway` Secret) fails on this cluster** with
-`net/http: TLS handshake timeout` to `https://10.43.0.1:443/api`.
+`net/http: TLS handshake timeout` to `https://<svc_cidr>.0.1:443/api`.
 Two contributing causes: (1) the k3s server's serving cert
 did not list `kubernetes.default.svc` as a SAN until WP07
-added `--tls-san=10.43.0.1 --tls-san=kubernetes.default.svc`
+added `--tls-san=<svc_cidr>.0.1 --tls-san=kubernetes.default.svc`
 to the server ExecStart (recipe change in
 `tools/lib/k3s_installer.py::plan_server`, live-applied to
 cicd-cp-1 via `systemctl edit k3s.service`); (2) under the
-hood, pods on this cluster cannot reach `10.0.0.65:6443`
+hood, pods on this cluster cannot reach `<cp_node_ip>:6443`
 (the apiserver's direct node IP) at the TCP layer -- this
 is the §14.4 in-cluster-routing blocker, NOT a WP07 recipe
 bug. Until §14.4 is fixed, the certgen must be run with
@@ -1525,23 +1525,39 @@ created manually. See `scripts/wp07_live_apply.py` for the
 full pattern.
 
 **4b.3.5 -- The cilium BPF LB maps the apiserver service IP
-correctly (`10.43.0.1:443 → 10.0.0.65:6443`) but the
+correctly (`<svc_cidr>.0.1:443 → <cp_node_ip>:6443`) but the
 cluster's pod→apiserver TLS handshakes hung on the return
-path even with the correct BPF map.** Root-caused 2026-07-08
-via `iptables-save -t nat | grep 6443` on cicd-w-1: the
-embedded k3s kube-proxy wrote `KUBE-SVC` + `KUBE-SEP` DNAT
-rules but omitted the companion `KUBE-MARK-MASQ` rule that
-makes the apiserver's response source-port match the
-ClusterIP that the pod's socket is bound to. TCP completed
-the handshake, but the TLS ServerHello (~5 KB with the cert
-chain) was dropped because the response packet's src
-(`10.0.0.65:6443`) didn't match the pod's expected src
-(`10.43.0.1:443`). Cilium eBPF (set to `kubeProxyReplacement: true`)
-didn't write a MASQUERADE either because DSR mode doesn't
-need one for NodePorts but DOES need one for the
-`kubernetes` ClusterIP traffic.
+path even with the correct BPF map.** Two stacked root
+causes, both fixed 2026-07-08 in WP07 (recipe) and WP08
+(network design). **Root cause #1 (WP07)**: the embedded
+k3s kube-proxy wrote `KUBE-SVC` + `KUBE-SEP` DNAT rules but
+omitted the companion `KUBE-MARK-MASQ` rule that makes the
+apiserver's response source-port match the ClusterIP that
+the pod's socket is bound to. TCP completed the handshake,
+but the TLS ServerHello (~5 KB with the cert chain) was
+dropped because the response packet's src (`<cp_node_ip>:6443`)
+didn't match the pod's expected src (`<svc_cidr>.0.1:443`).
+Cilium eBPF (set to `kubeProxyReplacement: true`) didn't
+write a MASQUERADE either because DSR mode doesn't need one
+for NodePorts but DOES need one for the `kubernetes`
+ClusterIP traffic. **Root cause #2 (WP08, k3s-io/k3s#4627)**:
+the k3s defaults `--cluster-cidr=10.42.0.0/16` and
+`--service-cidr=10.43.0.0/16` overlap the host LAN
+`10.0.0.0/8` on this host. The legacy kube-proxy MASQUERADE
+chain short-circuits on the RETURN rule (source pod CIDR
+contains the apiserver's host IP, which sits in 10.0.0.0/8),
+so no SNAT is applied and the cilium bpf ct can't match the
+return path. Fix: pin the cluster's pod_cidr / svc_cidr /
+cluster_dns to non-overlapping RFC1918 ranges
+(172.16.0.0/16 + 172.17.0.0/16 for cicd, 172.20.0.0/16 +
+172.21.0.0/16 for apps, etc.) and tell cilium to connect
+to the `kubernetes` Service ClusterIP (not the VIP) at
+startup. See `docs/cluster-instances.md` for the
+"non-overlapping CIDR" gotcha and the per-cluster convention.
 
-**Fix (committed 2026-07-08, 164 tests passing):**
+**Fix (committed 2026-07-08, two-part):**
+
+*WP07 (recipe):*
 
 1. Add `--disable-kube-proxy` to
    `tools/lib/k3s_installer.py::_SERVER_BASE_FLAGS` so cilium
@@ -1550,22 +1566,46 @@ need one for NodePorts but DOES need one for the
    socket-level acceleration).
 2. Keep `cilium.kubeProxyReplacement: "true"` (revert any
    `false` workaround) and set
-   `k8sServiceHost: <vip>` + `k8sServicePort: "6443"` so
-   cilium-agent can reach the apiserver via the kube-vip VIP
-   (already on L2 ARP) during its own startup -- without
+   `k8sServiceHost: <svc_cidr>.0.1` + `k8sServicePort: "6443"`
+   so cilium-agent can reach the apiserver via the `kubernetes`
+   Service ClusterIP during its own startup -- without
    this, cilium-agent's first apiserver call hits
-   `10.43.0.1:443` and crashes.
+   `<svc_cidr>.0.1:443` and crashes. (Earlier draft used the
+   VIP, but the ClusterIP is more reliable because it doesn't
+   require the kube-vip daemonset to be up at cilium-agent
+   boot time.)
 3. Set `cilium.mtu: "1450"` so the vxlan-encapsulated
    packets don't exceed the underlying eth0 MTU; without
    this, large TLS ServerHello responses get fragmented at
    the vxlan encap and the conntrack return-path drops the
    fragments.
 
+*WP08 (network design, k3s-io/k3s#4627):*
+
+4. Pin `--cluster-cidr`, `--service-cidr`, and `--cluster-dns`
+   to non-overlapping RFC1918 ranges at install time
+   (`tools/lib/k3s_installer.py::plan_server` reads
+   `pod_cidr` / `svc_cidr` / `cluster_dns` from the cluster
+   dict). The cicd cluster uses pod=172.16.0.0/16,
+   svc=172.17.0.0/16, dns=172.17.0.10; the apps cluster uses
+   pod=172.20.0.0/16, svc=172.21.0.0/16, dns=172.21.0.10.
+   The 3-step gap (cicd 172.16/17, apps 172.20/21) makes
+   tcpdumps and PCAPs visually distinguishable. Nth new
+   cluster increments the second octet by 4: 172.24/172.25,
+   172.28/172.29, ...
+5. Set `cilium.ipv4NativeRoutingCIDR` to the cluster's
+   `pod_cidr` (was hard-coded `10.0.0.0/8`, which overlapped
+   the host LAN and contributed to the same
+   `FromTunnel` bpf ct entries that masked the underlying
+   kube-proxy MASQUERADE root cause).
+
 The recipe is pinned by `test_cilium_replaces_kube_proxy`,
-`test_cilium_k8s_service_host_is_vip_not_clusterip`,
-`test_cilium_mtu_is_1450_for_vxlan` (in
-`tools/tests/test_remaining_releases.py`), and
-`test_k3s_server_disables_embedded_kube_proxy` (in
+`test_cilium_k8s_service_host_is_clusterip_not_vip`,
+`test_cilium_mtu_is_1450_for_vxlan`,
+`test_cilium_native_routing_cidr_follows_pod_cidr` (in
+`tools/tests/test_remaining_releases.py`),
+`test_k3s_server_disables_embedded_kube_proxy`, and
+`test_k3s_server_pins_nonoverlapping_cluster_cidrs` (in
 `tools/tests/test_bootstrap_cluster.py`). After applying
 this recipe on a fresh cluster, `proxmox-ccm`,
 `csi-provisioner`, and the certgen Job all complete their

@@ -113,7 +113,22 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
     pinned by tests/test_remaining_releases.py + test_agent_skill.py
     so a stale-pin regression fails CI.
     """
-    pod_cidr = cluster.get("pod_cidr", "10.42.0.0/16")
+    pod_cidr = cluster.get("pod_cidr", "172.16.0.0/16")
+    # WP08 (2026-07-08, §14.4 second root cause): the apiserver host
+    # the cilium agent talks to during its own startup is the ClusterIP
+    # itself (NOT the kube-vip VIP). The cluster's service CIDR is the
+    # `kubernetes` Service ClusterIP = <svc_first_three_octets>.1, e.g.
+    # 172.17.0.1 for cicd (svc_cidr=172.17.0.0/16) or 172.19.0.1 for
+    # apps (svc_cidr=172.19.0.0/16). We deliberately pass the
+    # ClusterIP, not the VIP, because (a) the k3s server's serving
+    # cert has --tls-san=<vip> but it ALSO has --tls-san=<svc_gateway>
+    # via k3s_installer.plan_server, and (b) using the ClusterIP
+    # means cilium-agent can reach the apiserver even if the
+    # kube-vip daemonset is not yet up (which it is NOT in the
+    # current cicd state -- the daemonset was force-deleted
+    # during the §14.4 chase).
+    svc_cidr = str(cluster.get("svc_cidr", "172.17.0.0/16"))
+    k8s_service_host = ".".join(svc_cidr.split(".")[:3] + ["1"])
     vip = str(cluster.get("vip", ""))
     return [
         HelmRelease(
@@ -134,7 +149,7 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
                 #    it at the kube-vip VIP (which is already reachable
                 #    via L2 ARP before any pod network exists).
                 "kubeProxyReplacement": "true",
-                "k8sServiceHost": vip,
+                "k8sServiceHost": k8s_service_host,
                 "k8sServicePort": "6443",
                 # 2. mtu=1450: vxlan adds 50 bytes of overhead to the
                 #    underlying eth0 mtu=1500. Without this, large TLS
@@ -145,7 +160,17 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
                 #    identified).
                 "mtu": "1450",
                 "gatewayAPI.enabled": "true",
-                "ipv4NativeRoutingCIDR": "10.0.0.0/8",
+                # WP08: ipv4NativeRoutingCIDR follows the new
+                # pod_cidr (172.16.0.0/16 for cicd). Anything in
+                # 172.16.0.0/16 is a pod IP and stays on the vxlan
+                # overlay; everything else (host LAN 10.0.0.0/8 +
+                # service CIDR 172.17.0.0/16) goes via the kernel
+                # routing table. This is the new key: the old
+                # `10.0.0.0/8` would have overlapped the host LAN
+                # and caused cilium to rewrite the apiserver's
+                # own responses back into the vxlan (the same
+                # root cause as k3s#4627).
+                "ipv4NativeRoutingCIDR": pod_cidr,
                 "ipam.mode": "cluster-pool",
                 "ipam.operator.clusterPoolIPv4PodCIDRList": pod_cidr,
                 "hubble.enabled": "false",

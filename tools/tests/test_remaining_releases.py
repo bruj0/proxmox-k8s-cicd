@@ -129,7 +129,8 @@ def test_cilium_replaces_kube_proxy() -> None:
     the return path.
     """
     rels = first_two_releases(
-        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "10.42.0.0/16"}
+        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "172.16.0.0/16",
+         "svc_cidr": "172.17.0.0/16"}
     )
     cilium = next(r for r in rels if r.name == "cilium")
     assert cilium.values["kubeProxyReplacement"] == "true", (
@@ -137,18 +138,27 @@ def test_cilium_replaces_kube_proxy() -> None:
     )
 
 
-def test_cilium_k8s_service_host_is_vip_not_clusterip() -> None:
-    """§14.4 fix: cilium must connect to the apiserver via the kube-vip
-    VIP (already reachable via L2 ARP before any pod network exists),
-    NOT the ClusterIP 10.43.0.1. Without this, cilium-agent fails its
-    initial apiserver handshake (chicken-and-egg).
+def test_cilium_k8s_service_host_is_clusterip_not_vip() -> None:
+    """§14.4 + §14.4-second (WP08, 2026-07-08): cilium must connect to
+    the apiserver via the `kubernetes` Service ClusterIP
+    (<svc_cidr_first_three_octets>.1, e.g. 172.17.0.1 for cicd), NOT
+    the kube-vip VIP. The ClusterIP works because (a) it sits inside
+    the new non-overlapping svc_cidr (172.17.0.0/16) so the legacy
+    kube-proxy MASQUERADE chain no longer short-circuits, and (b) the
+    k3s server's serving cert carries --tls-san=<svc_gateway> via
+    k3s_installer.plan_server so the TLS handshake succeeds. The
+    ClusterIP path also means we no longer depend on the kube-vip
+    daemonset being up at cilium-agent startup time.
     """
     rels = first_two_releases(
-        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "10.42.0.0/16"}
+        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "172.16.0.0/16",
+         "svc_cidr": "172.17.0.0/16"}
     )
     cilium = next(r for r in rels if r.name == "cilium")
-    assert cilium.values["k8sServiceHost"] == "10.0.0.30", (
-        "k8sServiceHost must equal the kube-vip VIP, not the ClusterIP"
+    assert cilium.values["k8sServiceHost"] == "172.17.0.1", (
+        f"k8sServiceHost must equal the kubernetes Service ClusterIP "
+        f"(172.17.0.1 for cicd svc_cidr=172.17.0.0/16), not the VIP. "
+        f"Got: {cilium.values['k8sServiceHost']!r}"
     )
     assert cilium.values["k8sServicePort"] == "6443"
 
@@ -160,10 +170,30 @@ def test_cilium_mtu_is_1450_for_vxlan() -> None:
     vxlan encap and the conntrack return path drops the fragments.
     """
     rels = first_two_releases(
-        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "10.42.0.0/16"}
+        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "172.16.0.0/16",
+         "svc_cidr": "172.17.0.0/16"}
     )
     cilium = next(r for r in rels if r.name == "cilium")
     assert cilium.values["mtu"] == "1450"
+
+
+def test_cilium_native_routing_cidr_follows_pod_cidr() -> None:
+    """WP08 (2026-07-08): ipv4NativeRoutingCIDR must equal the cluster's
+    pod_cidr (172.16.0.0/16 for cicd). The old hard-coded `10.0.0.0/8`
+    was wrong: it overlapped the host LAN and caused cilium to rewrite
+    the apiserver's own responses back into the vxlan tunnel,
+    contributing to the same `FromTunnel` bpf ct entries that
+    masked the underlying kube-proxy MASQUERADE root cause.
+    """
+    rels = first_two_releases(
+        {"name": "cicd", "vip": "10.0.0.30", "pod_cidr": "172.16.0.0/16",
+         "svc_cidr": "172.17.0.0/16"}
+    )
+    cilium = next(r for r in rels if r.name == "cilium")
+    assert cilium.values["ipv4NativeRoutingCIDR"] == "172.16.0.0/16", (
+        f"ipv4NativeRoutingCIDR must match the cluster's pod_cidr. "
+        f"Got: {cilium.values['ipv4NativeRoutingCIDR']!r}"
+    )
 
 
 def test_cert_manager_release_has_no_acme_solvers() -> None:

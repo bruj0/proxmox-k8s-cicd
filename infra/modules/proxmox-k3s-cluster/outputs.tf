@@ -95,12 +95,17 @@ resource "local_sensitive_file" "cluster_output" {
     control_plane_count = var.control_plane.count
     worker_count        = var.workers.count
     # Skill Step 2 success-criterion contract: cicd|apps output.json
-    # MUST expose pod_cidr + svc_cidr (tools/lib/talos_client.py reads
-    # these). Added 2026-07-06 -- they were missing from the
-    # local_sensitive_file body, so the SS3 ClusterTopology loader
-    # couldn't reconcile the cluster's network map.
+    # MUST expose pod_cidr + svc_cidr + cluster_dns (tools/lib/talos_client.py
+    # reads these). Added 2026-07-06; cluster_dns added 2026-07-08
+    # (WP08) so the bootstrap script can pass --cluster-dns to k3s
+    # and put the in-cluster coredns service IP in the new non-overlapping
+    # svc CIDR (172.17.0.10 for cicd, 172.19.0.10 for apps). Without
+    # this, k3s keeps its hard-coded default (10.43.0.10) which sits
+    # inside the 10.0.0.0/8 host LAN and breaks pod->coredns routing
+    # for the same reason the ClusterIP was broken.
     pod_cidr            = var.pod_cidr
     svc_cidr            = var.svc_cidr
+    cluster_dns         = var.cluster_dns
     talos_dir           = "${path.module}/../../clusters/${var.cluster_name}/talos"
     nodes               = local.nodes
     helm_releases       = [

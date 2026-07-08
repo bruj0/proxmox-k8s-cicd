@@ -237,8 +237,41 @@ class K3sInstaller:
         # builds (see `_run_install_k3s` -- the dict carries
         # svc_cidr from output.json: cicd=10.43.0.0/16, apps=10.45.0.0/16).
         # Gateway address = <first three octets>.1.
-        svc_cidr = str(vm.get("svc_cidr") or "10.43.0.0/16")
+        # WP08 (2026-07-08, §14.4 second root cause): the k3s default
+        # `--cluster-cidr=10.42.0.0/16` and `--service-cidr=10.43.0.0/16`
+        # **overlap with the host LAN** (10.0.0.0/8 in this cluster,
+        # 10.0.10.0/24 on the SDN). This causes the legacy kube-proxy
+        # iptables MASQUERADE rule to be skipped for pod->apiserver
+        # traffic (the source pod CIDR contains the apiserver's host
+        # IP, so the RETURN short-circuits) and cilium's bpf SNAT
+        # source to be misrouted. See k3s-io/k3s#4627. Fix: pin the
+        # CIDRs to non-overlapping ranges (172.16/172.17 RFC1918 by
+        # default) at install time. Defaults are chosen so the
+        # terraform-side `pod_cidr` and `svc_cidr` variables in
+        # infra/clusters/<name>/variables.tf can override per-cluster.
+        # cluster_dns is the in-cluster coredns service IP; per k3s
+        # docs it must be in the service CIDR.
+        #
+        # Precedence: per-VM dict > cluster dict > safe default. The
+        # bootstrap script populates all three in the per-VM dict, so
+        # the cluster-dict fallback is for unit tests and one-off
+        # callers.
+        svc_cidr = str(
+            vm.get("svc_cidr")
+            or self.cluster.get("svc_cidr")
+            or "172.17.0.0/16"
+        )
         svc_gateway = ".".join(svc_cidr.split(".")[:3] + ["1"])
+        pod_cidr = str(
+            vm.get("pod_cidr")
+            or self.cluster.get("pod_cidr")
+            or "172.16.0.0/16"
+        )
+        cluster_dns = str(
+            vm.get("cluster_dns")
+            or self.cluster.get("cluster_dns")
+            or "172.17.0.10"
+        )
         flags = [
             *_SERVER_BASE_FLAGS,
             f"--node-ip={node_ip}",
@@ -252,6 +285,11 @@ class K3sInstaller:
             # to the svc gateway IP.
             f"--tls-san={svc_gateway}",
             "--tls-san=kubernetes.default.svc",
+            # WP08: non-overlapping CIDRs (see k3s#4627). Required
+            # because the host LAN is 10.0.0.0/8.
+            f"--cluster-cidr={pod_cidr}",
+            f"--service-cidr={svc_cidr}",
+            f"--cluster-dns={cluster_dns}",
         ]
         env = {
             "INSTALL_K3S_VERSION": self._versions.k3s_stable_version,

@@ -46,8 +46,13 @@ def _write_apps_cluster(repo_root: Path) -> Path:
     output = {
         "cluster_name": "apps",
         "vip": "10.0.0.40",
-        "pod_cidr": "10.44.0.0/16",
-        "svc_cidr": "10.45.0.0/16",
+        # WP08: shifted to 172.20/172.21 (RFC1918, 3-step gap from
+        # cicd's 172.16/172.17 for visual distinguishability in
+        # tcpdump / pcap output). The old 10.44/10.45 ranges
+        # overlapped the 10.0.0.0/8 host LAN (k3s#4627).
+        "pod_cidr": "172.20.0.0/16",
+        "svc_cidr": "172.21.0.0/16",
+        "cluster_dns": "172.21.0.10",
         "nodes": [
             {"name": "apps-cp1", "ip": "10.0.0.211", "role": "control_plane"},
             {"name": "apps-cp2", "ip": "10.0.0.212", "role": "control_plane"},
@@ -223,8 +228,11 @@ def test_externalname_phase_skips_for_cicd_cluster(
     output = {
         "cluster_name": "cicd",
         "vip": "10.0.0.30",
-        "pod_cidr": "10.42.0.0/16",
-        "svc_cidr": "10.43.0.0/16",
+        # WP08: shifted to 172.16/172.17 (RFC1918) so the cluster
+        # CIDRs don't overlap the 10.0.0.0/8 host LAN (k3s#4627).
+        "pod_cidr": "172.16.0.0/16",
+        "svc_cidr": "172.17.0.0/16",
+        "cluster_dns": "172.17.0.10",
         "nodes": [
             {"name": "cicd-cp1", "ip": "10.0.0.201", "role": "control_plane"},
         ],

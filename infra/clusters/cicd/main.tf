@@ -134,8 +134,21 @@ module "cicd" {
   ip_start                    = "10.0.1.0/24"
   image_id                    = length(data.local_file.image_id.content) > 0 ? chomp(data.local_file.image_id.content) : ""
   vnet_bridge                 = "vnet0"
-  pod_cidr                    = "10.42.0.0/16"
-  svc_cidr                    = "10.43.0.0/16"
+  # WP08 (2026-07-08): pod_cidr + svc_cidr shifted from 10.42/10.43 to
+  # 172.16/172.17. The old 10.42/10.43 ranges overlapped the host LAN
+  # 10.0.0.0/8, which broke pod->apiserver routing per k3s-io/k3s#4627.
+  # Convention (per docs/cluster-instances.md):
+  #   cicd: pod=172.16.0.0/16, svc=172.17.0.0/16
+  #   apps: pod=172.20.0.0/16, svc=172.21.0.0/16
+  # A 3-step gap between cicd (172.16/172.17) and apps (172.20/172.21)
+  # so tcpdumps and PCAPs can be eyeballed for the right cluster
+  # without pulling up output.json (cf. user request 2026-07-08:
+  # "use different cidr for the clusters so its easy to distinguish
+  # between them"). The Nth new cluster increments by 4:
+  # (172.24, 172.25), (172.28, 172.29), ...
+  pod_cidr                    = "172.16.0.0/16"
+  svc_cidr                    = "172.17.0.0/16"
+  cluster_dns                 = "172.17.0.10"
   cf_api_token                = jsondecode(data.local_sensitive_file.tokens_output.content).cf_api_token
   cf_account_id               = jsondecode(data.local_sensitive_file.tokens_output.content).cf_account_id
   cf_tunnel_name              = "cicd"
