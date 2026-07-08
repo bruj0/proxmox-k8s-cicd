@@ -299,27 +299,39 @@ the repo root.
 ### Pull a kubectl config that talks to a cluster
 
 ```bash
-# Opens an ssh -L forward 127.0.0.1:16443 -> cicd-cp-1:6443
-# (k3s binds the apiserver on the CP loopback pre-kube-vip), then
-# writes a kubeconfig whose server: URL points at the forward.
+# Default: pull /etc/rancher/k3s/k3s.yaml from the first control
+# plane, start the apiserver forward as a detached background
+# process, rewrite the server: URL to point at the forward, and
+# exit. The whole thing is non-blocking -- the tool returns
+# immediately and the operator can use the kubeconfig from
+# another terminal.
 kubeconfig-puller --cluster cicd
+# [kubeconfig_puller] tunnel pid=434599; kill it with: kill 434599
 
-# In another terminal (or background job) -- the tunnel is up:
+# From any other terminal -- kubectl works through the tunnel:
 KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy kubectl get nodes
 KUBECONFIG=infra/clusters/cicd/kubeconfig.pveproxy k9s
+
+# Pass --no-tunnel if you'd rather start the forward yourself
+# (e.g. in a script that runs `ssh-proxy --port-forward` later).
+# The kubeconfig is still written, with a free port picked for it.
+kubeconfig-puller --cluster cicd --no-tunnel
+# [kubeconfig_puller] start the tunnel when you need it:
+#   ssh-proxy --cluster cicd --port-forward 44493:127.0.0.1:6443
 ```
 
-The puller blocks until you Ctrl-C; on exit it tears the forward
-down so a stale kubeconfig can't accidentally talk to a
-decommissioned cluster. If you'd rather start the tunnel yourself
-(via `ssh-proxy --port-forward 16443:127.0.0.1:6443`) and just
-rewrite the kubeconfig, pass `--no-tunnel --local-port 16443` to
-the puller.
+The kubeconfig's `server:` URL points at `https://127.0.0.1:<port>`
+where `<port>` is the operator's local forwarding target. Stale
+kubeconfigs that point at a closed port fail loudly with
+`connection refused` rather than silently talking to the wrong
+cluster. The tunnel survives `kubeconfig-puller`'s exit so the
+operator can run as many kubectl/k9s commands as they want and
+`kill <pid>` the tunnel when they're done.
 
 ## Development
 
 ```bash
-make test           # 132 pytest tests
+make test           # 142 pytest tests
 make lint           # ruff + mypy on tools/
 make test-infra-tokens    # tofu test for infra/tokens
 make test-infra-modules   # tofu test for every module under infra/modules

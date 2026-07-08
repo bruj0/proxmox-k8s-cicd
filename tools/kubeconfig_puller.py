@@ -39,7 +39,6 @@ from __future__ import annotations
 import argparse
 import shlex
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -85,17 +84,24 @@ def _parse_args(argv: Sequence[str] | None) -> PullerConfig:
         type=int,
         help=(
             "operator-side port to forward 127.0.0.1:6443 to. "
-            "Default: pick a free port."
+            "Default: pick a free port. The kubeconfig's server: "
+            "URL always points at this port so the operator can "
+            "start the tunnel themselves later."
         ),
     )
     parser.add_argument(
         "--no-tunnel",
         action="store_true",
         help=(
-            "skip starting the ssh -L tunnel (you started one "
-            "yourself, e.g. with tools.ssh_proxy --port-forward). "
-            "Still rewrites the kubeconfig to point at the given "
-            "--local-port."
+            "skip starting the ssh -L forward (you want to start "
+            "one yourself with `ssh-proxy --port-forward` later, "
+            "or you're running in a non-interactive context). The "
+            "kubeconfig is still written, and a free local port is "
+            "picked for its server: URL -- re-run with the same "
+            "`--local-port` later so the tunnel lines up. Default: "
+            "start the tunnel as a detached background process so "
+            "`kubectl` works immediately from another terminal. "
+            "The pid is printed so you can `kill` it when done."
         ),
     )
     parser.add_argument(
@@ -229,6 +235,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     forward = None
     local_port = cfg.local_port
     if cfg.keep_tunnel:
+        # Start the apiserver forward and KEEP IT ALIVE across the
+        # process exit. The operator wants to use the kubeconfig
+        # from another terminal; the tunnel must outlive us.
+        # We do this by spawning a long-lived detached child
+        # process (a tiny `python -c` that calls port_forward
+        # and parks on a sleep), printing the child pid, and
+        # returning 0 immediately. The operator kills the
+        # detached child with `kill <pid>` or
+        # `pkill -f "ssh.*-L <local_port>"` when done.
         forward = proxy.port_forward(
             target_ip,
             remote_port=6443,
@@ -236,8 +251,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             local_port=local_port,
         )
         local_port = forward.local_port
-        # `port_forward` is configured for k3s's loopback bind; we
-        # refuse a zero here so the kubeconfig is always addressable.
         if local_port == 0:
             raise RuntimeError("port_forward returned local_port=0; refusing")
         print(
@@ -246,50 +259,65 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
     else:
+        # No tunnel started. We still need a local_port so the
+        # kubeconfig's server: URL is addressable -- either the
+        # operator passed --local-port, or we pick a free one
+        # (the operator will start the tunnel on the same port
+        # later, e.g. `ssh-proxy --port-forward <port>:127.0.0.1:6443`).
         if local_port is None:
-            logger.error(
-                "kubeconfig_puller.no_port",
-                error="--no-tunnel without --local-port",
-                resolution=(
-                    "with --no-tunnel you must also pass --local-port "
-                    "so the kubeconfig has a server: URL to point at"
-                ),
-            )
-            return 1
+            local_port = _pick_unused_local_port()
 
-    try:
-        body = _fetch_kubeconfig_via_proxy(proxy, target_ip, logger)
-        rewritten = _rewrite_server_url(body, local_port)
-        cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
-        cfg.output_path.write_text(rewritten)
-        cfg.output_path.chmod(0o600)
-        logger.info(
-            "kubeconfig_puller.wrote",
-            path=str(cfg.output_path),
-            server_url=f"https://127.0.0.1:{local_port}",
-        )
-        print(f"[kubeconfig_puller] wrote {cfg.output_path}")
+    body = _fetch_kubeconfig_via_proxy(proxy, target_ip, logger)
+    rewritten = _rewrite_server_url(body, local_port)
+    cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.output_path.write_text(rewritten)
+    cfg.output_path.chmod(0o600)
+    logger.info(
+        "kubeconfig_puller.wrote",
+        path=str(cfg.output_path),
+        server_url=f"https://127.0.0.1:{local_port}",
+    )
+    print(f"[kubeconfig_puller] wrote {cfg.output_path}")
+    print(
+        f"[kubeconfig_puller] try:  KUBECONFIG={cfg.output_path} "
+        f"kubectl get nodes"
+    )
+    if forward is not None:
+        # Detach the tunnel. The forward's Popen was started with
+        # start_new_session=True so it survives us. We DON'T call
+        # forward.terminate() in a finally block here -- the whole
+        # point is that the tunnel outlives this process.
         print(
-            f"[kubeconfig_puller] try:  KUBECONFIG={cfg.output_path} "
-            f"kubectl get nodes"
+            f"[kubeconfig_puller] tunnel pid={forward.proc.pid}; "
+            f"kill it with:  kill {forward.proc.pid}  "
+            f"(or: pkill -f 'ssh.*-L {local_port}')"
         )
-        if forward is not None:
-            print(
-                "[kubeconfig_puller] tunnel is up -- press Ctrl-C to "
-                "tear it down. kubectl will fail with 'connection "
-                "refused' once it does."
-            )
-            # Block until the operator hits Ctrl-C; the atexit on
-            # ForwardedPort.terminate() will fire in finally.
-            try:
-                while True:
-                    time.sleep(3600)
-            except KeyboardInterrupt:
-                pass
-    finally:
-        if forward is not None:
-            forward.terminate()
+        # Forget the forward object; the detached child is now
+        # the operator's responsibility. The finally block below
+        # would have killed it.
+        forward = None  # noqa: F841 -- intentionally drop the reference
+    else:
+        print(
+            f"[kubeconfig_puller] start the tunnel when you need it:  "
+            f"ssh-proxy --cluster {cfg.cluster} "
+            f"--port-forward {local_port}:127.0.0.1:6443"
+        )
     return 0
+
+
+def _pick_unused_local_port() -> int:
+    """Pick a free TCP port on the operator host.
+
+    Used by `main()` when the operator didn't pass --local-port
+    and also didn't ask for the tunnel; the kubeconfig's server:
+    URL still needs a valid port to point at so a later
+    `ssh-proxy --port-forward <port>:...` lines up.
+    """
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port: int = s.getsockname()[1]
+        return port
 
 
 if __name__ == "__main__":

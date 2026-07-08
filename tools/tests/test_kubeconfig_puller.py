@@ -83,6 +83,9 @@ def test_parse_args_default_output_path(tmp_path) -> None:
     assert cfg.output_path == (
         tmp_path / "infra" / "clusters" / "cicd" / "kubeconfig.pveproxy"
     )
+    # Default is "tunnel up": the kubeconfig-puller starts the
+    # apiserver forward as a detached background process. Tests
+    # that want to opt out use --no-tunnel.
     assert cfg.keep_tunnel is True
     assert cfg.local_port is None
 
@@ -99,10 +102,28 @@ def test_parse_args_explicit_output_path(tmp_path) -> None:
     assert cfg.local_port == 16443
 
 
-def test_parse_args_no_tunnel_requires_local_port() -> None:
-    """`--no-tunnel` with no `--local-port` is an error path; we
-    surface that in main(), not at parse time. But the parser must
-    at least preserve the flag."""
+def test_parse_args_with_tunnel_flag() -> None:
+    """Default: the apiserver forward is started as a detached
+    background process. No flag is required. The tool returns
+    immediately and the operator can use the kubeconfig from
+    another terminal."""
+    cfg = _parse_args(["--cluster", "cicd"])
+    assert cfg.keep_tunnel is True
+
+
+def test_parse_args_default_does_not_block() -> None:
+    """`kubeconfig-puller --cluster <name>` (no flags) must not
+    block. The tunnel is started as a detached background
+    process; the tool returns immediately. Pinning the default
+    so a future refactor can't reintroduce the original
+    `while True: sleep(3600)` blocking loop."""
+    cfg = _parse_args(["--cluster", "cicd"])
+    assert cfg.keep_tunnel is True  # default is "tunnel up by default"
+
+
+def test_parse_args_no_tunnel_flag() -> None:
+    """`--no-tunnel` is the opt-out: pull the kubeconfig, write
+    it, print a one-liner the operator can paste to start the
+    tunnel later, exit. No background process is left behind."""
     cfg = _parse_args(["--cluster", "cicd", "--no-tunnel"])
     assert cfg.keep_tunnel is False
-    assert cfg.local_port is None
