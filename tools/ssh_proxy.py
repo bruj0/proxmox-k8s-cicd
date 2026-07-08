@@ -16,8 +16,17 @@ Usage examples:
   # Run a one-off command non-interactively
   python -m tools.ssh_proxy --cluster apps --role control_plane -- hostname
 
-  # Forward the k8s apiserver to a local port (great for k9s)
-  python -m tools.ssh_proxy --cluster cicd --port-forward 6443:127.0.0.1:6443
+  # Forward the k8s apiserver to a local port (great for k9s).
+  # Bare --port-forward (no value) defaults to local 6443 -> first CP's
+  # loopback 6443, the canonical k3s apiserver forward.
+  python -m tools.ssh_proxy --cluster cicd --port-forward
+
+  # Custom forward (e.g. to a non-standard local port)
+  python -m tools.ssh_proxy --cluster cicd --port-forward 6444:127.0.0.1:6443
+
+  # Multiple forwards (one bare, one explicit)
+  python -m tools.ssh_proxy --cluster cicd --port-forward \
+      --port-forward 9001:127.0.0.1:9001
 
 Why a CLI and not just a shell alias: the operator's machine is on
 10.x.x.x, NOT on the SDN. The cluster VMs (10.0.0.50-200) need a
@@ -235,10 +244,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--port-forward",
         action="append",
+        nargs="?",
+        const="6443:127.0.0.1:6443",
         default=[],
         metavar="LOCAL[:BIND]:REMOTE",
         help=(
             "open an ssh -L tunnel before exec'ing the foreground ssh. "
+            "Pass the flag with no value to use the default k3s apiserver "
+            "tunnel (local 6443 -> first CP's loopback 6443). Pass a "
+            "value (e.g. 6444:127.0.0.1:6443) for a custom forward. "
             "Repeatable. Bind defaults to 127.0.0.1 (k3s binds the "
             "apiserver on the CP node's loopback pre-kube-vip)."
         ),
