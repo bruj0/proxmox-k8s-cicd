@@ -303,6 +303,14 @@ def first_two_releases(cluster: Mapping[str, object]) -> list[HelmRelease]:
                 "cgroup.hostRoot": "/sys/fs/cgroup",
                 "cgroup.autoMount.enabled": "false",
                 "hubble.enabled": "false",
+                # WP09 (2026-07-09): single-CP cluster. The cilium
+                # chart's default is `replicas: 2` for HA, but with
+                # only one control plane the second operator pod
+                # stays Pending forever and helm `--wait` times out.
+                # `operator.replicas=1` matches the topology and
+                # matches the cilium-agent DaemonSet which is
+                # already node-bound (one per cluster node).
+                "operator.replicas": "1",
             },
         ),
         # WP08 (2026-07-08): the kube-vip release is gone. cicd runs

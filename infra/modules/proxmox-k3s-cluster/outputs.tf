@@ -1,35 +1,23 @@
 ###############################################################################
-# Module outputs + output.json writer.
+# Module outputs.
 #
-# SS2 -> SS3 contract: this file at clusters/<cluster_name>/output.json is the
-# canonical handoff that SS3 (bootstrap_cluster.py) consumes. Schema:
+# SS2 -> SS3 contract: infra/clusters/<cluster_name>/output.json is the
+# canonical handoff that SS3 (tools/bootstrap_cluster.py) consumes. It is
+# written by the bootstrap dispatcher, NOT by tofu. Tofu had a
+# `local_sensitive_file.cluster_output` resource here historically (it
+# would emit a snapshot on every apply), but the snapshot went stale the
+# moment SDN auto-allocated IPs and the bootstrap discovered the live
+# values via qemu-guest-agent. Two writers with different refresh cadences
+# is a recipe for drift. The bootstrap is now the sole writer of
+# output.json; this file just declares the canonical `output` blocks so
+# other operators can `tofu output -json` for documentation / debugging.
 #
-#   {
-#     "cluster_name":         "cicd",
-#     "vnet_bridge":          "vnet0",
-#     "control_plane_count":  1,
-#     "worker_count":         1,
-#     "pod_cidr":             "172.16.0.0/16",
-#     "svc_cidr":             "172.17.0.0/16",
-#     "cluster_dns":          "172.17.0.10",
-#     "nodes":                [{"role": "control_plane", "name": ..., "vmid": ..., "ip": ""}],
-#     "helm_releases":        ["cilium", "kube-vip", ...]
-#   }
-#
-# 2026-07-08 schema changes:
-#   - vip + talos_dir removed: VIP is a kube-vip service concept the
-#     bootstrap can derive (or hasn't been needed since the
-#     Ubuntu+k3s pivot), and Talos has been replaced with Ubuntu+k3s.
-#   - nodes[].ip removed from this file: Proxmox SDN auto-allocates
-#     IPs from the DHCP pool (10.0.0.50-200 on this host) and the
-#     bootstrap discovers them via qemu-guest-agent at runtime.
-#     scripts/sync_dns_to_sdn.py is the canonical source of truth
-#     for post-apply IP wiring.
-#   - nodes[].mac and nodes[].talos_hostname removed (Talos-specific).
-#
-# file_permission = "0600" — the output contains the cluster identity +
-# topology invariants, which are not world-readable secrets but should
-# not be readable to other operator accounts on the same workstation.
+# 2026-07-09 schema changes (move writer from tofu -> bootstrap):
+#   - `local_sensitive_file.cluster_output` REMOVED from this file.
+#   - The helm_releases list is no longer emitted; it is a static
+#     declaration that lives in bootstrap_cluster.py (see
+#     `tools/lib/helm_client.py::gateway_releases` and the bootstrap
+#     helm install path).
 ###############################################################################
 
 output "cluster_name" {
@@ -73,7 +61,7 @@ output "cluster_dns" {
 }
 
 output "helm_releases" {
-  description = "Helm releases SS3 will install in order. Listed here so SS3 does not need to know which chart versions the module pinned."
+  description = "Helm releases SS3 will install in order. The bootstrap reads its own copy (tools/lib/helm_client.py) instead of consuming this output, but we keep it for `tofu output -json` tooling."
   value = [
     # WP08 (2026-07-08): kube-vip removed. The cluster runs
     # single-control-plane, so the apiserver endpoint is the CP
@@ -90,38 +78,4 @@ output "helm_releases" {
     # renders into infra/clusters/<name>/manifests/.
     "traefik-helmchartconfig",
   ]
-}
-
-resource "local_sensitive_file" "cluster_output" {
-  # Module lives at infra/modules/proxmox-k3s-cluster/; cluster root
-  # at infra/clusters/<name>/. So `../../clusters/<name>/output.json`
-  # is two levels up (== `infra/`), then into clusters/<name>/.
-  filename        = "${path.module}/../../clusters/${var.cluster_name}/output.json"
-  file_permission = "0600"
-
-  content = jsonencode({
-    cluster_name        = var.cluster_name
-    vnet_bridge         = var.vnet_bridge
-    control_plane_count = var.control_plane.count
-    worker_count        = var.workers.count
-    pod_cidr            = var.pod_cidr
-    svc_cidr            = var.svc_cidr
-    cluster_dns         = var.cluster_dns
-    nodes               = local.nodes
-    helm_releases       = [
-      # WP08: kube-vip removed. The cluster runs single-CP;
-      # the apiserver endpoint is the CP host IP directly.
-      "cilium",
-      "proxmox-cloud-controller-manager",
-      "proxmox-csi-plugin",
-      "cert-manager",
-      "cloudflare-tunnel-ingress-controller",
-      # WP07: Envoy Gateway (GatewayClass=envoy).
-      "envoy-gateway",
-      # Traefik is configured via the HelmChartConfig that this
-      # module renders into infra/clusters/<name>/manifests/.
-      # It is NOT a separate helm release SS3 installs.
-      "traefik-helmchartconfig",
-    ]
-  })
 }

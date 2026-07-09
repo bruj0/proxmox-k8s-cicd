@@ -118,6 +118,7 @@ from lib.secret_loader import SecretLoader  # type: ignore[import-not-found]  # 
 # adapter; nothing in it knows about Talos or any specific cluster
 # runtime.
 from lib.cluster_topology import ClusterTopology  # type: ignore[import-not-found]  # noqa: E402
+from lib.cluster_topology_writer import write_output_json  # type: ignore[import-not-found]  # noqa: E402
 
 # log_path is set in `main()` once we know the cluster name + UTC
 # stamp. The StructuredLogger writes one JSON object per line for
@@ -1661,9 +1662,34 @@ def bootstrap(
     state = State(cluster=cluster_name, repo_root=repo_root).load()
 
     requested = _parse_phases(phases)
+    # Materialise infra/clusters/<name>/output.json if missing or stale.
+    # 2026-07-09: tofu no longer emits this file; the bootstrap is the
+    # sole writer. Discovery needs the PVE token which other phases also
+    # read from .env via `_load_cluster_secrets`, but we read it inline
+    # here so the topology writer doesn't have to depend on that helper.
+    pve_token = (
+        os.environ.get("PROXMOX_API_TOKEN")
+        or os.environ.get("PROXMOX_VE_API_TOKEN")
+        or ""
+    )
+    if pve_token:
+        try:
+            write_output_json(
+                cluster_dir,
+                cluster_name=cluster_name,
+                pve_token=pve_token,
+            )
+        except Exception as exc:  # pragma: no cover -- defensive
+            # Don't fail the bootstrap because of a discovery hiccup;
+            # surface it but continue (network may have been transient).
+            _LOG.warn(
+                "topology.write_partial",
+                cluster=cluster_name,
+                message=str(exc),
+            )
     # Load topology once up-front so phases can share it. If output.json is
-    # missing, fail fast with the structured message rather than letting
-    # each phase rediscover the gap.
+    # missing or malformed, fail fast with the structured message rather than
+    # letting each phase rediscover the gap.
     topo = _load_topology(cluster_dir)
     _LOG.info("bootstrap.start", cluster=cluster_name, phases=",".join(requested))
 

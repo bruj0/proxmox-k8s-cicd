@@ -129,7 +129,14 @@ module "cicd" {
 
   pve_node                    = "BigBertha"
   cluster_name                = "cicd"
-  vmid_start                  = 200
+  # 2026-07-09 reconciled to live PVE state: cicd VMs were originally
+  # applied when the PVE pool had free VMIDs 111/112; the historical
+  # `200` here drifted. tofu `proxmox_cloned_vm.node[*].id` is 112/111
+  # and that's immutable. Update `vmid_start` to 111 so the bootstrap
+  # topology writer and any future tofu plan agree with live state.
+  # The apply that follows is a no-op for the VM resources (idempotent
+  # on existing clone entries).
+  vmid_start                  = 111
   image_id                    = length(data.local_file.image_id.content) > 0 ? chomp(data.local_file.image_id.content) : ""
   vnet_bridge                 = "vnet0"
   # 2026-07-08: vip + ip_start inputs removed from the module. The

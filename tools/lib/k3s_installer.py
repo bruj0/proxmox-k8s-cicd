@@ -214,16 +214,16 @@ class K3sInstaller:
 
     def plan_server(self, vm: Mapping[str, Any], *, vip: str) -> ServerInstallPlan:
         """Render the server install plan for one control-plane VM."""
-        if not vip:
-            raise K3sInstallerError(
-                "blank_vip",
-                node=vm.get("name"),
-                resolution=(
-                    "WP08 (2026-07-08): vip argument is now ignored; "
-                    "agents join on the CP host IP. Leave as a "
-                    "deprecation stub for callers still passing it."
-                ),
-            )
+        # WP09 (2026-07-09): the `vip` parameter is now an unused
+        # deprecation stub. WP08 removed the kube-vip VIP layer
+        # (single-CP clusters join on the CP host IP), but the
+        # validation in this method still rejected empty vip and
+        # crashed the bootstrap with a `blank_vip` error. Treat
+        # empty vip as a no-op (the join target is the CP host IP
+        # pulled from cluster["control_plane_ip"] / self._cp_ip()
+        # below). vip is kept in the signature so existing callers
+        # do not need to change.
+        _ = vip  # intentionally unused
         node_ip = str(vm["ip"])
         node_name = str(vm["name"])
         # --tls-san=<cp_ip> is REQUIRED (WP08, 2026-07-08: the VIP
@@ -320,16 +320,9 @@ class K3sInstaller:
         token: str,
     ) -> AgentInstallPlan:
         """Render the agent install plan for one worker VM."""
-        if not vip:
-            raise K3sInstallerError(
-                "blank_vip",
-                node=vm.get("name"),
-                resolution=(
-                    "WP08 (2026-07-08): vip argument is now ignored; "
-                    "agents join on the CP host IP. Leave as a "
-                    "deprecation stub for callers still passing it."
-                ),
-            )
+        # WP09 (2026-07-09): see plan_server -- vip is an unused
+        # deprecation stub.
+        _ = vip  # intentionally unused
         if not token:
             raise K3sInstallerError(
                 "blank_token",

@@ -135,7 +135,14 @@ module "apps" {
   pve_node = "BigBertha"
 
   cluster_name                = "apps"
-  vmid_start                  = 210
+  # 2026-07-09 reconciled to live PVE state: apps VMs were originally
+  # applied when the PVE pool had free VMIDs 113/114; the historical
+  # `210` here drifted. tofu `proxmox_cloned_vm.node[*].id` is 114/113
+  # and that's immutable (you cannot re-allocate an existing VM). Update
+  # `vmid_start` to 113 so the bootstrap topology writer and any future
+  # tofu plan agree with live state. The apply that follows is a
+  # no-op for the VM resources (idempotent on existing clone entries).
+  vmid_start                  = 113
   image_id                    = length(data.local_file.image_id.content) > 0 ? chomp(data.local_file.image_id.content) : ""
   vnet_bridge                 = "vnet0"
   # See cicd/main.tf for the design rationale. pod_cidr/svc_cidr/

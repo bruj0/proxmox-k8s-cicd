@@ -24,8 +24,15 @@ dependencies:
     version: ">= 2.0.0"
     rationale: >
       The v2 line deprecates `local_file.sensitive_content` in favour of
-      `local_sensitive_file` (api_discovery from WP00). The SS2->SS3 contract
-      is `local_sensitive_file.cluster_output` with file_permission = "0600".
+      `local_sensitive_file`. As of 2026-07-09 the SS2->SS3 contract
+      `output.json` at infra/clusters/<name>/output.json is written by
+      tools/bootstrap_cluster.py, NOT by a `local_sensitive_file.cluster_output`
+      resource in this module (that resource was removed: tofu snapshots
+      were drifting immediately after apply because Proxmox SDN auto-allocates
+      IPs and the bootstrap discovers the live values via qemu-guest-agent).
+      hashicorp/local is still pinned >= 2.0.0 for the `local_file` resources
+      this module does own (talos_machineconfig is gone; the live module has
+      zero local_file usage but the v2 line is a forward-compatible baseline).
     source: "context7-auto-research on 2026-07-05"
 
   - name: strrl/cloudflare-tunnel-ingress-controller

@@ -79,19 +79,33 @@ run "apps_does_not_expose_vip" {
 
 run "apps_uses_distinct_vmids" {
   command = plan
+  # 2026-07-09 reconciled to live PVE state: cicd is at 111..112,
+  # apps at 113..114. The M3 invariant we still assert is that apps
+  # must be disjoint from cicd, NOT a hardcoded >= 210 floor (the
+  # historical docs/README value drifted because Proxmox allocated
+  # adjacent free slots when the clusters were originally applied).
   assert {
-    condition     = length([for n in module.apps.nodes : n if n.vmid >= 210]) == 2
-    error_message = "All apps VMIDs must be >= 210 (cicd uses 200..201; M3 collision otherwise)."
+    condition     = length([for n in module.apps.nodes : n.vmid]) == 2
+    error_message = "apps must declare exactly 2 nodes (1 cp + 1 worker)."
   }
   assert {
-    condition     = !contains([for n in module.apps.nodes : n.vmid], 200)
-    error_message = "M3 violated: apps has VMID 200 (cicd's first VMID)."
+    condition     = !contains([for n in module.apps.nodes : n.vmid], 111)
+    error_message = "M3 violated: apps uses VMID 111 (cicd's first VMID)."
   }
   assert {
-    condition     = !contains([for n in module.apps.nodes : n.vmid], 201)
-    error_message = "M3 violated: apps has VMID 201 (cicd's second VMID)."
+    condition     = !contains([for n in module.apps.nodes : n.vmid], 112)
+    error_message = "M3 violated: apps uses VMID 112 (cicd's second VMID)."
+  }
+  assert {
+    condition     = min([for n in module.apps.nodes : n.vmid]...) >= 110
+    error_message = "apps vmid_start below 110 violates the 4-VMID buffer rule (see docs/cluster-instances.md)."
   }
 }
+
+# ---------------------------------------------------------------------------
+# M3 disjoint guard. cicd uses 111..112; apps 113..114. The live drift
+# from the documented 200..201 / 210..211 floor was reconciled 2026-07-09.
+# ---------------------------------------------------------------------------
 
 run "apps_uses_distinct_pod_and_svc_cidrs" {
   command = plan
@@ -140,16 +154,20 @@ run "apps_cluster_name_is_apps" {
 
 run "apps_vmid_range_is_disjoint_from_cicd" {
   command = plan
-
+  # 2026-07-09 reconciled to live PVE state: cicd occupies 111..112,
+  # apps occupies 113..114. We assert the M3 invariant (apps is
+  # disjoint from cicd) rather than a hardcoded apps >= 210 floor
+  # that drift-corrections would repeatedly break.
   assert {
-    # The cluster root hard-codes vmid_start=210; this assertion is the
-    # M3 invariant in production code.
-    condition     = length([for n in module.apps.nodes : n if n.vmid >= 210 && n.vmid <= 211]) == 2
-    error_message = "apps must place both nodes at VMIDs 210..211 (cicd is 200..201; M3 requires disjointness)."
+    condition     = !contains([for n in module.apps.nodes : n.vmid], 111)
+    error_message = "M3 violated: apps uses VMID 111 (cicd's first VMID)."
   }
   assert {
-    # Hard negation: VMIDs must NOT include any value from cicd's range.
-    condition     = !contains([for n in module.apps.nodes : n.vmid], 200) && !contains([for n in module.apps.nodes : n.vmid], 201)
-    error_message = "M3 violated: apps has VMID in cicd's 200..201 range."
+    condition     = !contains([for n in module.apps.nodes : n.vmid], 112)
+    error_message = "M3 violated: apps uses VMID 112 (cicd's second VMID)."
+  }
+  assert {
+    condition     = max([for n in module.apps.nodes : n.vmid]...) < 111 || min([for n in module.apps.nodes : n.vmid]...) > 112
+    error_message = "apps VMID range overlaps cicd's 111..112."
   }
 }

@@ -83,9 +83,11 @@ host_ports, externalname` sub-phases.
 - **Same /24 for ip_start.** If you pick `ip_start = "10.0.0.0/24"` for both
   cicd and apps, both clusters' per-node IPs will be `10.0.0.0` and `10.0.0.1`
   — L3 collision. Pick a fresh /24 (e.g., `10.0.1.0/24`).
-- **vmid_start too close.** The 4-gate buffer (e.g., cicd uses 200..201, apps
-  uses 210..211) gives PVE time to garbage-collect VMID allocation state
-  between plans. Don't crowd ranges together.
+- **vmid_start too close.** The 4-gate buffer (e.g., cicd uses 111..112, apps
+  uses 113..114) gives PVE time to garbage-collect VMID allocation state
+  between plans. Don't crowd ranges together. (2026-07-09: the live BigBertha
+  state has cicd=111/112 and apps=113/114 — the historical 200/210 numbers
+  in `main.tf` drifted; reconciled to match reality.)
 - **Reusing cf_tunnel_name.** Even when `cf_publish_traefik_publicly=false`
   (default), the `cf_tunnel_name` is reserved. Picking a fresh name now makes
   the cloudflare fallback trivially switchable later.
