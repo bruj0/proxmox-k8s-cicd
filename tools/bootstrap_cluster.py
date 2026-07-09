@@ -84,8 +84,9 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import IO, Iterable, Sequence
 
 # tools/ is the project root for sys.path purposes during tests.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -95,6 +96,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # package lives next to bootstrap_cluster.py and is added to sys.path above.
 from lib.helm_client import (  # type: ignore[import-not-found]  # noqa: E402
     HelmClient,
+    HelmRelease,
     apply_manifest,
     first_two_releases,
     gateway_releases,
@@ -117,6 +119,12 @@ from lib.secret_loader import SecretLoader  # type: ignore[import-not-found]  # 
 # runtime.
 from lib.cluster_topology import ClusterTopology  # type: ignore[import-not-found]  # noqa: E402
 
+# log_path is set in `main()` once we know the cluster name + UTC
+# stamp. The StructuredLogger writes one JSON object per line for
+# every step event (kubernetes-style audit log) into that file.
+# The subprocess-level output (helm, kubectl, etc.) is also
+# appended via `_tee_subprocess` so the operator can replay the
+# exact commands + output that landed on the cluster.
 _LOG = StructuredLogger("bootstrap_cluster")  # noqa: E402
 
 
@@ -495,40 +503,62 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
         "control_plane_ip": topo.control_plane[0]["ip"] if topo.control_plane else "",
     }
     secrets = _load_cluster_secrets()
-    try:
-        # WP08: only cilium remains in the first pair (kube-vip removed
-        # 2026-07-08; single-CP cicd doesn't need a VIP layer).
-        client.install_or_upgrade(first_two_releases(cluster_dict))
-        # Remaining four (WP05): proxmox-ccm, proxmox-csi, cloudflare-tunnel,
-        # cert-manager.
-        remaining, traefik_apply = remaining_releases(cluster_dict, secrets)
-        client.install_or_upgrade(remaining)
-        # WP07: Envoy Gateway v1.8.2 (GatewayClass=envoy
-        # implementation). Requires the standard Gateway API CRDs
-        # to already be present (the `gateway_crds` phase ran
-        # before `helm`); the chart's own CRD install is disabled
-        # via values (`crds.enabled=false`).
-        client.install_or_upgrade(gateway_releases())
-        # Traefik is installed via the Talos HelmChartConfig mechanism (the
-        # SS2 module rendered the YAML into infra/clusters/<name>/manifests/ at
-        # apply time). SS3's job is to apply that file. If it does not
-        # exist yet (first WP05 run before tofu apply re-renders), warn.
-        if traefik_apply is not None:
-            try:
-                apply_manifest(traefik_apply, kubeconfig)
-            except subprocess.CalledProcessError as exc:
-                raise BootstrapError("helm", {"reason": str(exc)}) from exc
-        else:
-            _LOG.warn(
-                "helm.traefik_noapply",
-                message=(
-                    "no HelmChartConfig manifest found under "
-                    f"{cluster_dir}/manifests; expect kube-system/Traefik to "
-                    "use its bundled defaults."
-                ),
-            )
-    except subprocess.CalledProcessError as exc:
-        raise BootstrapError("helm", {"reason": str(exc)}) from exc
+    # WP08: we install each release in its own try/except so a
+    # failure in one chart (e.g. proxmox-ccm can't reach the
+    # PVE FQDN) doesn't block the others. Cilium is the hard
+    # dependency for the rest of the cluster; envoy-gateway has
+    # its own wait_for_ready gate; the remaining four are
+    # auxiliary (cert-manager / cloudflare-tunnel are
+    # nice-to-haves for production but not required for the
+    # bootstrap itself).
+    install_releases_with_logging(
+        client,
+        kubeconfig,
+        first_two_releases(cluster_dict),
+        hard_required={"cilium"},
+    )
+    remaining, traefik_apply = remaining_releases(cluster_dict, secrets)
+    install_releases_with_logging(client, kubeconfig, remaining, hard_required=set())
+    # WP07: Envoy Gateway v1.8.2 (GatewayClass=envoy
+    # implementation). Requires the standard Gateway API CRDs
+    # to already be present (the `gateway_crds` phase ran
+    # before `helm`); the chart's own CRD install is disabled
+    # via values (`crds.enabled=false`). Released with
+    # `wait=False` (see tools/lib/helm_client.py); we block on
+    # the controller Deployment reaching Available before the
+    # gateway_smoke phase can run.
+    for r in gateway_releases():
+        try:
+            client.install_or_upgrade([r])
+        except subprocess.CalledProcessError as exc:
+            raise BootstrapError(
+                "helm", {"reason": f"envoy-gateway install failed: {exc}"}
+            ) from exc
+        try:
+            r.wait_for_ready(kubeconfig, timeout_s=180)
+        except RuntimeError as exc:
+            raise BootstrapError(
+                "helm", {"reason": f"envoy-gateway did not become Ready: {exc}"}
+            ) from exc
+        _LOG.info("helm.gateway_ready", release=r.name)
+    # Traefik is installed via the Talos HelmChartConfig mechanism (the
+    # SS2 module rendered the YAML into infra/clusters/<name>/manifests/ at
+    # apply time). SS3's job is to apply that file. If it does not
+    # exist yet (first WP05 run before tofu apply re-renders), warn.
+    if traefik_apply is not None:
+        try:
+            apply_manifest(traefik_apply, kubeconfig)
+        except subprocess.CalledProcessError as exc:
+            raise BootstrapError("helm", {"reason": str(exc)}) from exc
+    else:
+        _LOG.warn(
+            "helm.traefik_noapply",
+            message=(
+                "no HelmChartConfig manifest found under "
+                f"{cluster_dir}/manifests; expect kube-system/Traefik to "
+                "use its bundled defaults."
+            ),
+        )
     # WP07 (2026-07-08): the proxmox-csi-plugin chart 0.5.9 has
     # NO way to set the `is-default-class` annotation via values
     # (the `default: true` key on the storageClass list is dead
@@ -544,6 +574,103 @@ def _run_helm(state: State, cluster_dir: Path, topo: ClusterTopology) -> None:
     #   test_post_install_patches_proxmox_lvm_thin_default
     _ensure_csi_default_sc(kubeconfig, "proxmox-lvm-thin", "proxmox-csi-plugin")
     state.phases_done.add("helm")
+
+
+def install_releases_with_logging(
+    client: HelmClient,
+    kubeconfig: Path,
+    releases: Sequence[HelmRelease],
+    *,
+    hard_required: set[str],
+) -> None:
+    """Install each Helm release, soft-failing non-required charts.
+
+    Some auxiliary charts (proxmox-cloud-controller-manager,
+    proxmox-csi-plugin, cloudflare-tunnel-ingress-controller,
+    cert-manager) can fail to install on a freshly-bootstrapped
+    cluster where the in-cluster apiserver is reachable but
+    DNS / PVE URL resolution isn't yet stable. We don't want a
+    pccm image-pull failure or a cloudflare-tunnel FQDN misconfig
+    to block the gateway_smoke or csi_smoke phases from running
+    later (once the cluster has settled).
+
+    Releases in `hard_required` (e.g. cilium) raise on failure;
+    everything else logs a warning and continues.
+    """
+    for r in releases:
+        try:
+            client.install_or_upgrade([r])
+        except subprocess.CalledProcessError as exc:
+            if r.name in hard_required:
+                raise
+            _LOG.warn(
+                "helm.install_failed",
+                message=(
+                    f"helm install for release {r.name!r} failed "
+                    f"(rc={exc.returncode}). Skipping; downstream "
+                    "phases will surface the missing chart if they "
+                    "depend on it."
+                ),
+                release=r.name,
+            )
+
+
+def _tee_subprocess(cmd: Sequence[str], *, step: str, timeout: int | None = None) -> int:
+    """Run `cmd` and stream stdout+stderr to both the operator's terminal
+    and the per-run logfile in `logs/`.
+
+    Mirrors the pattern in scripts/apply_tofu.py so the operator can
+    replay the exact output of any sub-step (helm upgrade,
+    kubectl wait, ssh-cat-the-kubeconfig, etc.) without rerunning
+    the bootstrap.
+
+    The function logs a one-line `step_cmd` audit record via
+    StructuredLogger (so the JSON-line log stays consistent with
+    the per-step events) and writes the human-readable body
+    to the same file. A `step_cmd_done` audit record captures
+    the return code.
+    """
+    cmd_list = [str(a) for a in cmd]
+    _LOG.info("step_cmd", step=step, cmd=cmd_list)
+    log_path = _LOG.log_path
+    with log_path.open("a", encoding="utf-8") if log_path else _null_open() as log_fh:
+        header = (
+            f"\n===== {step} | cmd={' '.join(cmd_list)} | "
+            f"logfile={log_path} =====\n"
+        )
+        if log_fh:
+            log_fh.write(header)
+        print(header, flush=True)
+        # Tee stdout/stderr: line-by-line into both the log file and
+        # the operator's terminal.
+        proc = subprocess.Popen(
+            cmd_list,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None  # for the type-checker
+        for line in proc.stdout:
+            if log_fh:
+                log_fh.write(line)
+                if not line.endswith("\n"):
+                    log_fh.write("\n")
+            print(line, end="", flush=True)
+        proc.wait(timeout=timeout)
+    rc = proc.returncode if proc.returncode is not None else -1
+    _LOG.info("step_cmd_done", step=step, returncode=rc)
+    return rc
+
+
+class _null_open:
+    """No-op context manager used when StructuredLogger has no log_path."""
+
+    def __enter__(self) -> "IO[str] | None":
+        return None
+
+    def __exit__(self, *exc: object) -> None:
+        return None
 
 
 def _ensure_csi_default_sc(
@@ -1610,6 +1737,25 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     phases = [p for p in args.phases.split(",") if p]
+    # WP08 (2026-07-08): every bootstrap run lands a per-cluster,
+    # per-run log file under logs/ (gitignored) so the operator
+    # can replay the exact helm/kubectl/openssl commands + output
+    # that landed on the cluster. The same run also writes
+    # JSON-line audit records via the StructuredLogger; the
+    # tee helper appends human-readable subprocess output to
+    # the same file.
+    log_subdir = Path(args.repo_root) / "logs"
+    log_subdir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = log_subdir / f"bootstrap_{args.cluster}_{stamp}.log"
+    log_path.touch()
+    _LOG.log_path = log_path
+    _LOG.info(
+        "bootstrap.start",
+        cluster=args.cluster,
+        phases=",".join(phases),
+        logfile=str(log_path.relative_to(Path(args.repo_root))),
+    )
     try:
         bootstrap(
             cluster_name=args.cluster,

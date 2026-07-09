@@ -314,6 +314,20 @@ def test_bootstrap_full_happy_path(
                 "contexts: []\nusers: []\n",
                 stderr="",
             )
+        # WP08 (2026-07-08): the envoy-gateway chart ships with
+        # `wait=False`; the `_run_helm` phase blocks on the controller
+        # Deployment reaching Available by polling `kubectl get
+        # deployment -n envoy-gateway-system envoy-gateway -o
+        # jsonpath={.status.availableReplicas}`. Fake the test by
+        # returning "1" so the wait loop exits immediately.
+        if (
+            cmd
+            and cmd[0] == "kubectl"
+            and "get" in cmd
+            and "deployment" in cmd
+            and "envoy-gateway" in cmd
+        ):
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="1", stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)

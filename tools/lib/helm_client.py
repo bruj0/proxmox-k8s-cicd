@@ -64,6 +64,13 @@ class HelmRelease:
     # breaks. --set-string preserves the value's string type.
     # Applied AFTER `values` so callers can layer both.
     set_strings: Mapping[str, str] = field(default_factory=dict)
+    # When False, helm runs without `--wait` and with
+    # `--skip-crds`. The caller is responsible for gating on the
+    # release's primary workload (see `wait_for_ready`) BEFORE
+    # downstream phases touch the cluster. Used for envoy-gateway,
+    # whose pre-install `certgen` Job hangs when the CNI is not
+    # yet Ready.
+    wait: bool = True
 
     def install_cmd(self, kubeconfig: Path) -> list[str]:
         cmd = [
@@ -77,10 +84,24 @@ class HelmRelease:
             "--create-namespace",
             "--version",
             self.version,
-            "--wait",
             "--kubeconfig",
             str(kubeconfig),
         ]
+        # `--wait` blocks until every Pod in the release is Ready.
+        # Some charts (notably envoyproxy/gateway-helm) ship a
+        # pre-install `certgen` Job that needs to reach the
+        # in-cluster apiserver via the kube-proxy / cilium socket
+        # path. If cilium is not yet Ready (typical on a fresh
+        # cluster), the Job hangs and `--wait` never returns.
+        # For releases with `wait=False`, use `--skip-crds`
+        # (the bootstrap owns CRDs via `gateway_crds`) and omit
+        # `--wait`. The `_run_gateway_smoke` phase blocks on the
+        # controller Deployment being Available, which is the same
+        # guarantee `--wait` would have given.
+        if self.wait:
+            cmd.append("--wait")
+        else:
+            cmd.append("--skip-crds")
         for k, v in self.values.items():
             cmd += ["--set", f"{k}={v}"]
         for k, v in self.set_strings.items():
@@ -88,6 +109,52 @@ class HelmRelease:
         if self.values_file is not None:
             cmd += ["-f", str(self.values_file)]
         return cmd
+
+    def wait_for_ready(
+        self, kubeconfig: Path, *, timeout_s: int = 180, kind: str = "deployment",
+        name: str | None = None,
+    ) -> None:
+        """Block until the release's primary workload is Available.
+
+        Used as the post-install gate for `wait=False` releases
+        (e.g. envoy-gateway). Default targets the `deployment`
+        with the same name as the release; override `kind` /
+        `name` for DaemonSet or differently-named workloads.
+
+        Mirrors the spirit of `--wait` without paying the
+        cost on releases whose pre-install Jobs can hang on a
+        not-yet-ready CNI.
+        """
+        import time
+
+        target_name = name or self.name
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            cmd = [
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "get",
+                kind,
+                "-n",
+                self.namespace,
+                target_name,
+                "-o",
+                "jsonpath={.status.availableReplicas}",
+            ]
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=15,
+            )
+            try:
+                if int(r.stdout.strip() or "0") >= 1:
+                    return
+            except ValueError:
+                pass
+            time.sleep(2)
+        raise RuntimeError(
+            f"{kind}/{target_name} in namespace {self.namespace} did not "
+            f"become Available within {timeout_s}s"
+        )
 
 
 class HelmClient:
@@ -511,6 +578,15 @@ def gateway_releases() -> list[HelmRelease]:
                 # HPA is off by default.
                 "deployment.replicas": "1",
             },
+            # WP08 (2026-07-08): the envoy-gateway chart ships a
+            # pre-install `certgen` Job that needs to reach the
+            # in-cluster apiserver via the kube-proxy / cilium
+            # socket. On a fresh cluster the CNI is not yet Ready,
+            # the Job hangs forever, and `--wait` never returns.
+            # Run without `--wait` (helm installs the chart fast
+            # anyway) and gate on the controller Deployment
+            # reaching Available in `_run_gateway_smoke`.
+            wait=False,
         ),
     ]
 
